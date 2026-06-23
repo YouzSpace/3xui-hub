@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN" class="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ControlHub</title>
+    <script>
+      // 预置主题类，避免页面加载闪烁（默认亮色）
+      (function () {
+        try {
+          var t = localStorage.getItem('ch-theme');
+          if (t === 'dark') {
+            document.documentElement.classList.remove('light');
+            document.documentElement.classList.add('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script type="module" crossorigin src="/assets/index-DBLJ1M9t.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/client-DveEcsKp.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-BvyiYRo2.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

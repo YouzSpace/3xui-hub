@@ -1,0 +1,1 @@
+import{E as e,k as t,mt as n,n as r,p as i}from"./client-DveEcsKp.js";var a=r({__name:`Card`,props:{padding:{type:Boolean,default:!0}},setup(r){return(a,o)=>(e(),i(`div`,{class:n([`ch-card`,{"ch-card--flush":!r.padding}])},[t(a.$slots,`default`,{},void 0,!0)],2))}},[[`__scopeId`,`data-v-9bca7751`]]);export{a as t};
