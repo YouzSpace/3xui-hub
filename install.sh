@@ -609,7 +609,7 @@ NGINX
 
     # 测试并重载 Nginx
     nginx -t 2>&1 | tee -a "$LOG_FILE" || error_exit "Nginx 配置错误"
-    systemctl reload nginx
+    systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
 
     success "Nginx 配置完成"
 }
@@ -699,6 +699,10 @@ main() {
             apt) apt-get install -y git ;;
         esac
     fi
+
+    # 确保所有服务运行
+    systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
+    systemctl start nginx 2>/dev/null || true
 
     # 安装 MySQL
     install_mysql
