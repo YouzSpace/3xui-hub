@@ -419,6 +419,12 @@ EOF
     info "生成 APP_KEY..."
     php artisan key:generate 2>&1 | tee -a "$LOG_FILE" || error_exit "APP_KEY 生成失败"
 
+    # 设置 .env 权限（确保 PHP-FPM 用户可读写）
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+    chown "$NGINX_USER":"$NGINX_USER" .env 2>/dev/null || true
+    chmod 664 .env 2>/dev/null || true
+
     # 创建 MySQL 数据库
     if command -v mysql &>/dev/null; then
         mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1 | tee -a "$LOG_FILE" || warn "MySQL 数据库创建失败，请手动创建"
