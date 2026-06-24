@@ -166,6 +166,10 @@ install_php() {
                 sed -i 's|^listen = .*|listen = /run/php-fpm/www.sock|' "$FPM_CONF"
                 sed -i 's/^listen\.owner = .*/listen.owner = nginx/' "$FPM_CONF"
                 sed -i 's/^listen\.group = .*/listen.group = nginx/' "$FPM_CONF"
+                sed -i 's/^listen\.acl_users = .*/listen.acl_users = nginx/' "$FPM_CONF"
+                # 取消注释 listen.owner/group
+                sed -i 's/^;listen\.owner/listen.owner/' "$FPM_CONF"
+                sed -i 's/^;listen\.group/listen.group/' "$FPM_CONF"
             fi
 
             mkdir -p /run/php-fpm
