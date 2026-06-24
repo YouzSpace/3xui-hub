@@ -369,9 +369,6 @@ setup_env() {
     info "安装 Composer 依赖..."
     composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
 
-    info "安装 Composer 依赖..."
-    composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
-
     # 生成 .env（始终使用自定义配置，不用 .env.example）
     cat > .env << EOF
 APP_NAME=ControlHub
@@ -413,7 +410,8 @@ EOF
     info "填充默认数据..."
     php artisan db:seed --force 2>&1 | tee -a "$LOG_FILE" || error_exit "数据填充失败"
 
-    # 设置权限
+    # 设置权限（确保 storage 目录存在）
+    mkdir -p storage/{app/public,framework/{cache/data,sessions,testing,views},logs}
     chmod -R 755 storage bootstrap/cache
     # 自动检测 Nginx worker 用户
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
