@@ -115,7 +115,7 @@ install_php() {
             success "PHP 8.4 已安装"
             return 0
         else
-            warn "当前 PHP 版本: $PHP_VER，需要 8.4"
+            warn "当前 PHP 版本: $PHP_VER，需要 8.4，将重新安装"
         fi
     fi
 
@@ -123,12 +123,47 @@ install_php() {
 
     case $PKG_MANAGER in
         yum)
-            # 安装 EPEL 和 Remi 仓库
-            yum install -y epel-release 2>/dev/null || true
-            yum install -y https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION%%.*}.rpm 2>/dev/null || true
-            yum module reset php -y 2>/dev/null || true
-            yum module enable php:remi-8.4 -y 2>/dev/null || true
-            yum install -y php php-fpm php-cli php-mbstring php-fileinfo php-gd php-opcache php-pdo php-sqlite3 php-xml php-zip php-curl
+            # CentOS/RHEL: 使用 Remi 仓库安装 PHP 8.4
+            # 确定主版本号
+            OS_MAJOR=${OS_VERSION%%.*}
+
+            # 安装 EPEL（CentOS 10 可能不需要）
+            dnf install -y epel-release 2>/dev/null || true
+
+            # 安装 Remi 仓库
+            if ! rpm -q remi-release &>/dev/null; then
+                info "安装 Remi 仓库..."
+                dnf install -y "https://rpms.remirepo.net/enterprise/remi-release-${OS_MAJOR}.rpm" 2>/dev/null || true
+            fi
+
+            # 尝试用 module 方式（CentOS 8/9），失败则直接装 remi 包（CentOS 10+）
+            if dnf module reset php -y 2>/dev/null && dnf module enable php:remi-8.4 -y 2>/dev/null; then
+                info "通过 module 安装 PHP 8.4..."
+                dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-sqlite3 php-xml php-pecl-zip php-curl
+            else
+                info "通过 Remi 直接安装 PHP 8.4..."
+                # 启用 remi-php84 仓库
+                dnf config-manager --set-enabled remi-php84 2>/dev/null || \
+                    dnf install -y php84-php php84-php-fpm php84-php-cli php84-php-mbstring php84-php-gd php84-php-opcache php84-php-pdo php84-php-sqlite3 php84-php-xml php84-php-pecl-sqlite3 php84-php-pecl-zip php84-php-curl 2>/dev/null || \
+                    dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-sqlite3 php-xml php-pecl-zip php-curl
+            fi
+
+            # 配置 PHP-FPM: 用户改为 nginx，socket 路径统一
+            FPM_CONF=$(find /etc/php-fpm.d /opt/remi -name "www.conf" 2>/dev/null | head -1)
+            if [ -n "$FPM_CONF" ]; then
+                sed -i 's/^user = .*/user = nginx/' "$FPM_CONF"
+                sed -i 's/^group = .*/group = nginx/' "$FPM_CONF"
+                sed -i 's|^listen = .*|listen = /run/php-fpm/www.sock|' "$FPM_CONF"
+                sed -i 's/^listen\.owner = .*/listen.owner = nginx/' "$FPM_CONF"
+                sed -i 's/^listen\.group = .*/listen.group = nginx/' "$FPM_CONF"
+            fi
+
+            # 确保 socket 目录存在
+            mkdir -p /run/php-fpm
+
+            # 启动 PHP-FPM
+            systemctl enable php-fpm 2>/dev/null || true
+            systemctl restart php-fpm
             ;;
         apt)
             apt-get update -y
@@ -141,7 +176,7 @@ install_php() {
                 add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
             fi
             apt-get update -y
-            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-fileinfo php8.4-gd php8.4-opcache php8.4-pdo php8.4-sqlite3 php8.4-xml php8.4-zip php8.4-curl
+            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-sqlite3 php8.4-xml php8.4-zip php8.4-curl
             ;;
     esac
 
@@ -149,6 +184,12 @@ install_php() {
     PHP_INI=$(php --ini | grep "Loaded Configuration" | awk '{print $NF}')
     if [ -n "$PHP_INI" ]; then
         sed -i 's/disable_functions = .*/disable_functions =/' "$PHP_INI" 2>/dev/null || true
+    fi
+
+    # 验证 PHP 版本
+    PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "unknown")
+    if [ "$PHP_VER" != "8.4" ]; then
+        error_exit "PHP 8.4 安装失败，当前版本: $PHP_VER"
     fi
 
     success "PHP 8.4 安装完成"
@@ -267,25 +308,57 @@ QUEUE_CONNECTION=sync
 EOF
 
     # 生成 APP_KEY
-    php artisan key:generate 2>&1 | tee -a "$LOG_FILE"
+    info "生成 APP_KEY..."
+    php artisan key:generate 2>&1 | tee -a "$LOG_FILE" || error_exit "APP_KEY 生成失败"
 
     # 创建数据库
     touch database/database.sqlite
 
     # 运行迁移
-    php artisan migrate --force 2>&1 | tee -a "$LOG_FILE"
+    info "运行数据库迁移..."
+    php artisan migrate --force 2>&1 | tee -a "$LOG_FILE" || error_exit "数据库迁移失败"
 
     # 填充默认管理员
-    php artisan db:seed --force 2>&1 | tee -a "$LOG_FILE"
+    info "填充默认数据..."
+    php artisan db:seed --force 2>&1 | tee -a "$LOG_FILE" || error_exit "数据填充失败"
 
     # 设置权限
     chmod -R 755 storage bootstrap/cache
-    # 设置权限（自动检测 Nginx worker 用户）
+    # 自动检测 Nginx worker 用户
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
     chown -R "$NGINX_USER":"$NGINX_USER" storage database 2>/dev/null || true
 
     success "环境配置完成"
+}
+
+# 检测 PHP-FPM socket 路径
+detect_fpm_sock() {
+    # 按优先级查找 socket 文件
+    local SOCK_PATHS=(
+        "/run/php/php8.4-fpm.sock"
+        "/run/php-fpm/www.sock"
+        "/var/run/php-fpm/www.sock"
+        "/tmp/php-cgi-84.sock"
+    )
+
+    for sock in "${SOCK_PATHS[@]}"; do
+        if [ -S "$sock" ]; then
+            echo "$sock"
+            return 0
+        fi
+    done
+
+    # 全局搜索
+    FOUND=$(find /run /var/run /tmp -name "*.sock" 2>/dev/null | grep -i php | head -1)
+    if [ -n "$FOUND" ]; then
+        echo "$FOUND"
+        return 0
+    fi
+
+    # 兜底默认值
+    echo "/run/php/php8.4-fpm.sock"
+    return 1
 }
 
 # 配置 Nginx
@@ -301,7 +374,6 @@ setup_nginx() {
         info "使用 IP: $DOMAIN"
     fi
 
-    # 更新 .env APP_URL（在 SSL 判断之后设置）
     # 询问 SSL
     SSL_ENABLED=false
     echo ""
@@ -338,19 +410,12 @@ setup_nginx() {
         sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
     fi
 
+    # 检测 PHP-FPM socket
+    FPM_SOCK=$(detect_fpm_sock)
+    info "PHP-FPM socket: $FPM_SOCK"
+
     # 生成 Nginx 配置
     NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"
-
-    # 检测 PHP-FPM socket 路径
-    if [ -S "/run/php/php8.4-fpm.sock" ]; then
-        FPM_SOCK="/run/php/php8.4-fpm.sock"
-    elif [ -S "/tmp/php-cgi-84.sock" ]; then
-        FPM_SOCK="/tmp/php-cgi-84.sock"
-    else
-        FPM_SOCK="/run/php/php8.4-fpm.sock"
-        warn "未检测到 PHP-FPM socket，使用默认路径"
-    fi
-    info "PHP-FPM socket: $FPM_SOCK"
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
@@ -370,7 +435,7 @@ server {
     ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    location ~ [^/]\.php(/|$) {
+    location ~ [^/]\\.php(/|$) {
         fastcgi_pass unix:${FPM_SOCK};
         fastcgi_index index.php;
         include fastcgi_params;
@@ -385,7 +450,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~* \.(env|git|sqlite) {
+    location ~* \\.(env|git|sqlite) {
         return 404;
     }
 }
@@ -398,7 +463,7 @@ server {
     root ${INSTALL_DIR}/backend/public;
     index index.html index.php;
 
-    location ~ [^/]\.php(/|$) {
+    location ~ [^/]\\.php(/|$) {
         fastcgi_pass unix:${FPM_SOCK};
         fastcgi_index index.php;
         include fastcgi_params;
@@ -413,7 +478,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~* \.(env|git|sqlite) {
+    location ~* \\.(env|git|sqlite) {
         return 404;
     }
 }
@@ -484,10 +549,10 @@ show_result() {
 main() {
     echo -e "${BLUE}"
     echo "  ____  _____ _   _ ____  _   _ _   _ __  __ _____   ____  _   _ "
-    echo " / ___|| ____| \ | |  _ \| | | | \ | |  \/  | ____| | __ )| | | |"
-    echo " \___ \|  _| |  \| | |_) | | | |  \| | |\/| |  _|   |  _ \| | | |"
-    echo "  ___) | |___| |\  |  __/| |_| | |\  | |  | | |___  | |_) | |_| |"
-    echo " |____/|_____|_| \_|_|    \___/|_| \_|_|  |_|_____| |____/ \___/ "
+    echo " / ___|| ____| \\ | |  _ \\| | | | \\ | |  \\/  | ____| | __ )| | | |"
+    echo " \\___ \\|  _| |  \\| | |_) | | | |  \\| | |\\/| |  _|   |  _ \\| | | |"
+    echo "  ___) | |___| |\\  |  __/| |_| | |\\  | |  | | |___  | |_) | |_| |"
+    echo " |____/|_____|_| \\_|_|    \\___/|_| \\_|_|  |_|_____| |____/ \\___/ "
     echo -e "${NC}"
     echo "  3x-ui 订阅管理中枢 · 一键安装脚本 v${VERSION}"
     echo ""
