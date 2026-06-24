@@ -379,10 +379,10 @@ setup_nginx() {
 
     echo ""
     echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
-    read -r DOMAIN
+    read -r DOMAIN < /dev/tty || DOMAIN=""
 
     if [ -z "$DOMAIN" ]; then
-        DOMAIN=$(curl -s ifconfig.me 2>/dev/null || echo "localhost")
+        DOMAIN=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
         info "使用 IP: $DOMAIN"
     fi
 
@@ -390,7 +390,7 @@ setup_nginx() {
     SSL_ENABLED=false
     echo ""
     echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
-    read -r SSL_CHOICE
+    read -r SSL_CHOICE < /dev/tty || SSL_CHOICE="n"
 
     if [ "$SSL_CHOICE" = "y" ] || [ "$SSL_CHOICE" = "Y" ]; then
         SSL_ENABLED=true
