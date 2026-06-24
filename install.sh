@@ -264,10 +264,32 @@ install_mysql() {
             systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null || true
             ;;
         apt)
-            # 非交互式安装
-            DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
-            systemctl enable mysql
-            systemctl start mysql
+            # 检查是否能直接安装 mysql-server
+            if apt-cache show mysql-server &>/dev/null; then
+                DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+            else
+                # Debian/Ubuntu 默认仓库没有 mysql-server，添加 MySQL 官方仓库
+                info "添加 MySQL 官方 APT 仓库..."
+                apt-get install -y wget gnupg2 lsb-release ca-certificates 2>/dev/null || true
+                
+                # 下载 MySQL APT 配置包
+                MYSQL_APT_DEB="mysql-apt-config_0.8.32-1_all.deb"
+                wget -q "https://dev.mysql.com/get/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || \
+                    wget -q "https://repo.mysql.com/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || true
+                
+                if [ -f "/tmp/${MYSQL_APT_DEB}" ]; then
+                    DEBIAN_FRONTEND=noninteractive dpkg -i "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || true
+                    apt-get update -qq 2>/dev/null || true
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+                    rm -f "/tmp/${MYSQL_APT_DEB}"
+                else
+                    # 如果 MySQL 仓库添加失败，使用 MariaDB 作为替代
+                    warn "无法添加 MySQL 仓库，使用 MariaDB 替代..."
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server
+                fi
+            fi
+            systemctl enable mysql 2>/dev/null || systemctl enable mariadb 2>/dev/null || true
+            systemctl start mysql 2>/dev/null || systemctl start mariadb 2>/dev/null || true
             ;;
     esac
 
