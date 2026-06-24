@@ -319,10 +319,15 @@ cmd_ssl() {
             curl -s https://get.acme.sh | sh 2>&1 | tail -1
         fi
 
-        # 申请证书
+        # 申请证书（用 pipefail 捕获 acme.sh 真实退出码）
         echo -e "${BLUE}申请 SSL 证书...${NC}"
-        $HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot /var/www/html 2>&1 | tail -3
-        if [ $? -ne 0 ]; then
+        set -o pipefail
+        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "$BACKEND_DIR/public" 2>&1)
+        ACME_EXIT=$?
+        set +o pipefail
+        echo "$ACME_OUTPUT" | tail -5
+
+        if [ $ACME_EXIT -ne 0 ]; then
             echo -e "${RED}SSL 申请失败，请确保域名已解析到本机 IP${NC}"
             return 1
         fi
@@ -332,73 +337,84 @@ cmd_ssl() {
             --key-file /etc/nginx/ssl/${DOMAIN}.key \
             --fullchain-file /etc/nginx/ssl/${DOMAIN}.pem 2>&1 | tail -1
 
+        # 验证证书文件存在
+        if [ ! -f "/etc/nginx/ssl/${DOMAIN}.pem" ] || [ ! -f "/etc/nginx/ssl/${DOMAIN}.key" ]; then
+            echo -e "${RED}证书文件生成失败${NC}"
+            return 1
+        fi
+
         PROTO="https"
-        cat > /etc/nginx/conf.d/3xui-hub.conf << NGINX
+        cat > /etc/nginx/conf.d/3xui-hub.conf << 'NGINX_SSL'
 server {
     listen 80;
-    server_name ${DOMAIN};
-    return 301 https://\$host\$request_uri;
+    server_name DOMAIN_PLACEHOLDER;
+    return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name ${DOMAIN};
-    root ${BACKEND_DIR}/public;
+    server_name DOMAIN_PLACEHOLDER;
+    root BACKEND_PLACEHOLDER/public;
     index index.html index.php;
 
-    ssl_certificate /etc/nginx/ssl/${DOMAIN}.pem;
-    ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
+    ssl_certificate /etc/nginx/ssl/DOMAIN_PLACEHOLDER.pem;
+    ssl_certificate_key /etc/nginx/ssl/DOMAIN_PLACEHOLDER.key;
     ssl_protocols TLSv1.2 TLSv1.3;
 
     location ~ [^/]\.php(/|$) {
         fastcgi_pass unix:/run/php/php8.4-fpm.sock;
         fastcgi_index index.php;
         include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
 
     location ~ ^/(api|admin-api) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files $uri $uri/ /index.php?$query_string;
     }
 
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files $uri $uri/ /index.html;
     }
 
     location ~* \.(env|git) {
         return 404;
     }
 }
-NGINX
+NGINX_SSL
+        # 替换占位符
+        sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
+        sed -i "s|BACKEND_PLACEHOLDER|${BACKEND_DIR}|g" /etc/nginx/conf.d/3xui-hub.conf
     else
         PROTO="http"
-        cat > /etc/nginx/conf.d/3xui-hub.conf << NGINX
+        cat > /etc/nginx/conf.d/3xui-hub.conf << 'NGINX_HTTP'
 server {
     listen 80;
-    server_name ${DOMAIN};
-    root ${BACKEND_DIR}/public;
+    server_name DOMAIN_PLACEHOLDER;
+    root BACKEND_PLACEHOLDER/public;
     index index.html index.php;
 
     location ~ [^/]\.php(/|$) {
         fastcgi_pass unix:/run/php/php8.4-fpm.sock;
         fastcgi_index index.php;
         include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
 
     location ~ ^/(api|admin-api) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files $uri $uri/ /index.php?$query_string;
     }
 
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files $uri $uri/ /index.html;
     }
 
     location ~* \.(env|git) {
         return 404;
     }
 }
-NGINX
+NGINX_HTTP
+        sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
+        sed -i "s|BACKEND_PLACEHOLDER|${BACKEND_DIR}|g" /etc/nginx/conf.d/3xui-hub.conf
     fi
 
     # 更新 .env
