@@ -465,7 +465,7 @@ detect_fpm_sock() {
 
     # 兜底默认值
     echo "/run/php/php8.4-fpm.sock"
-    return 1
+    return 0
 }
 
 # 配置 Nginx
