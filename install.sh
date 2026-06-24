@@ -479,8 +479,8 @@ detect_fpm_sock() {
 setup_nginx() {
     info "配置 Nginx..."
 
-    # 交互模式才询问，管道模式直接用默认值
-    if [ -t 0 ] && [ -e /dev/tty ]; then
+    # 通过 /dev/tty 读取用户输入（curl | bash 时 stdin 被管道占用，但 /dev/tty 仍可用）
+    if [ -e /dev/tty ]; then
         echo ""
         echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
         read -r DOMAIN < /dev/tty || DOMAIN=""
@@ -495,7 +495,7 @@ setup_nginx() {
 
     # 询问 SSL
     SSL_ENABLED=false
-    if [ -t 0 ] && [ -e /dev/tty ]; then
+    if [ -e /dev/tty ]; then
         echo ""
         echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
         read -r SSL_CHOICE < /dev/tty || SSL_CHOICE="n"
