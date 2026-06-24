@@ -457,7 +457,7 @@ detect_fpm_sock() {
     done
 
     # 全局搜索
-    FOUND=$(find /run /var/run /tmp -name "*.sock" 2>/dev/null | grep -i php | head -1)
+    FOUND=$(find /run /var/run /tmp -name "*.sock" 2>/dev/null | grep -i php | head -1 || true)
     if [ -n "$FOUND" ]; then
         echo "$FOUND"
         return 0
