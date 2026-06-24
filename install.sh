@@ -268,6 +268,8 @@ install_mysql() {
     if command -v mysql &>/dev/null; then
         MYSQL_VER=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
         success "MySQL 已安装 (v$MYSQL_VER)"
+        # 确保服务运行
+        systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
         return 0
     fi
 
@@ -699,10 +701,6 @@ main() {
             apt) apt-get install -y git ;;
         esac
     fi
-
-    # 确保所有服务运行
-    systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
-    systemctl start nginx 2>/dev/null || true
 
     # 安装 MySQL
     install_mysql
