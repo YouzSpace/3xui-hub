@@ -479,59 +479,12 @@ detect_fpm_sock() {
 setup_nginx() {
     info "配置 Nginx..."
 
-    # 通过 /dev/tty 读取用户输入（curl | bash 时 stdin 被管道占用，但 /dev/tty 仍可用）
-    if [ -e /dev/tty ]; then
-        echo ""
-        echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
-        read -r DOMAIN < /dev/tty || DOMAIN=""
-    else
-        DOMAIN=""
-    fi
+    # 默认使用 IP
+    DOMAIN=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+    info "使用 IP: $DOMAIN"
 
-    if [ -z "$DOMAIN" ]; then
-        DOMAIN=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
-        info "使用 IP: $DOMAIN"
-    fi
-
-    # 询问 SSL
-    SSL_ENABLED=false
-    if [ -e /dev/tty ]; then
-        echo ""
-        echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
-        read -r SSL_CHOICE < /dev/tty || SSL_CHOICE="n"
-    else
-        SSL_CHOICE="n"
-    fi
-
-    if [ "$SSL_CHOICE" = "y" ] || [ "$SSL_CHOICE" = "Y" ]; then
-        SSL_ENABLED=true
-        info "正在申请 SSL 证书..."
-
-        # 安装 acme.sh
-        if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
-            curl https://get.acme.sh | sh 2>&1 | tee -a "$LOG_FILE"
-        fi
-
-        # 申请证书
-        $HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot /var/www/html 2>&1 | tee -a "$LOG_FILE" || {
-            warn "SSL 申请失败，使用 HTTP"
-            SSL_ENABLED=false
-        }
-
-        if [ "$SSL_ENABLED" = true ]; then
-            mkdir -p /etc/nginx/ssl
-            $HOME/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-                --key-file /etc/nginx/ssl/${DOMAIN}.key \
-                --fullchain-file /etc/nginx/ssl/${DOMAIN}.pem 2>&1 | tee -a "$LOG_FILE"
-        fi
-    fi
-
-    # 根据 SSL 设置 APP_URL
-    if [ "$SSL_ENABLED" = true ]; then
-        sed -i "s|APP_URL=.*|APP_URL=https://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
-    else
-        sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
-    fi
+    # 设置 APP_URL
+    sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
 
     # 确保 PHP-FPM 运行
     systemctl start php8.4-fpm 2>/dev/null || systemctl start php-fpm 2>/dev/null || true
@@ -666,6 +619,7 @@ show_result() {
     echo ""
     echo -e "  ${RED}首次登录后请立即修改密码！${NC}"
     echo ""
+    echo -e "  绑定域名/SSL:  ${BLUE}3hub ssl${NC}"
     echo -e "  管理命令:  ${BLUE}3hub${NC} 查看所有可用命令"
     echo ""
     echo -e "${GREEN}============================================================${NC}"
