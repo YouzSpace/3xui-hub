@@ -446,7 +446,7 @@ EOF
     # 自动检测 Nginx worker 用户
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
-    chown -R "$NGINX_USER":"$NGINX_USER" storage database 2>/dev/null || true
+    chown -R "$NGINX_USER":"$NGINX_USER" "$INSTALL_DIR/backend" 2>/dev/null || true
 
     success "环境配置完成"
 }
