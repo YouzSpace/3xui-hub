@@ -4,15 +4,11 @@
 # https://github.com/YouzSpace/3xui-hub
 # ============================================================
 
-# 管道执行时（curl | bash）自动下载后重新运行，保留终端交互
+# 管道执行时（curl | bash）自动保存后重新运行，保留终端交互
 if [ ! -t 0 ]; then
     TMP_SCRIPT="/tmp/3xui-hub-install-$$.sh"
-    curl -fsSL "https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh" -o "$TMP_SCRIPT" 2>/dev/null || \
-        wget -q "https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh" -O "$TMP_SCRIPT" 2>/dev/null
-    if [ -f "$TMP_SCRIPT" ]; then
-        exec bash "$TMP_SCRIPT"
-    fi
-    # 下载失败则继续执行（降级处理）
+    cat > "$TMP_SCRIPT"
+    exec bash "$TMP_SCRIPT"
 fi
 
 set -e
