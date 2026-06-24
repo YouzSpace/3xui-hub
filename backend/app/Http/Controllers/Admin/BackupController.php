@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Artisan;
 
 /**
  * 数据库备份管理（MySQL）。
@@ -421,6 +422,12 @@ class BackupController extends Controller
         try {
             // 导入时恢复 .env（如果是 zip）
             $sqlPath = $this->extractBackupFile($backupFile, !empty($data['restore_env']));
+
+            // 恢复 .env 后清配置缓存（确保 APP_KEY 等立即生效）
+            if (!empty($data['restore_env'])) {
+                \Artisan::call('config:clear');
+                \Artisan::call('cache:clear');
+            }
 
             // 如果用户指定了站点地址，更新 .env 中的 APP_URL
             if (!empty($data['site_url']) && !empty($data['restore_env'])) {
