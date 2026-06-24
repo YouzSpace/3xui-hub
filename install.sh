@@ -264,27 +264,32 @@ install_mysql() {
             systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null || true
             ;;
         apt)
-            # 检查是否能直接安装 mysql-server
-            if apt-cache show mysql-server &>/dev/null; then
+            # 检测是否能直接安装 mysql-server（用 dry-run 检查）
+            if apt-get install --dry-run -y mysql-server &>/dev/null; then
+                info "从 APT 仓库安装 MySQL..."
                 DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
             else
-                # Debian/Ubuntu 默认仓库没有 mysql-server，添加 MySQL 官方仓库
+                # 默认仓库没有 mysql-server，添加 MySQL 官方仓库
                 info "添加 MySQL 官方 APT 仓库..."
                 apt-get install -y wget gnupg2 lsb-release ca-certificates 2>/dev/null || true
                 
+                MYSQL_REPO_OK=false
                 # 下载 MySQL APT 配置包
                 MYSQL_APT_DEB="mysql-apt-config_0.8.32-1_all.deb"
-                wget -q "https://dev.mysql.com/get/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || \
-                    wget -q "https://repo.mysql.com/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || true
-                
-                if [ -f "/tmp/${MYSQL_APT_DEB}" ]; then
+                if wget -q --timeout=15 "https://dev.mysql.com/get/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || \
+                   wget -q --timeout=15 "https://repo.mysql.com/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null; then
                     DEBIAN_FRONTEND=noninteractive dpkg -i "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || true
                     apt-get update -qq 2>/dev/null || true
-                    DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+                    if apt-get install --dry-run -y mysql-server &>/dev/null; then
+                        DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+                        MYSQL_REPO_OK=true
+                    fi
                     rm -f "/tmp/${MYSQL_APT_DEB}"
-                else
-                    # 如果 MySQL 仓库添加失败，使用 MariaDB 作为替代
-                    warn "无法添加 MySQL 仓库，使用 MariaDB 替代..."
+                fi
+                
+                if [ "$MYSQL_REPO_OK" = false ]; then
+                    # MySQL 仓库不可用，使用 MariaDB 作为替代
+                    warn "无法安装 MySQL，使用 MariaDB 替代（兼容 MySQL）..."
                     DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server
                 fi
             fi
