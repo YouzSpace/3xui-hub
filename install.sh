@@ -298,12 +298,12 @@ install_mysql() {
             ;;
     esac
 
-    # 安全初始化（设置 root 密码等）
-    if command -v mysql_secure_installation &>/dev/null; then
-        info "MySQL 安全初始化..."
-        # 自动化：设置 root 空密码（首次安装）
-        mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
-    fi
+    # 安全初始化（设置 root 空密码，允许 TCP 连接）
+    info "配置数据库认证..."
+    # 兼容 MySQL 和 MariaDB 的认证方式
+    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY ''; FLUSH PRIVILEGES;" 2>/dev/null || \
+        mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING ''; FLUSH PRIVILEGES;" 2>/dev/null || \
+        mysql -u root -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD(''); FLUSH PRIVILEGES;" 2>/dev/null || true
 
     if ! command -v mysql &>/dev/null; then
         error_exit "MySQL 安装失败"
@@ -457,9 +457,14 @@ detect_fpm_sock() {
 setup_nginx() {
     info "配置 Nginx..."
 
-    echo ""
-    echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
-    read -r DOMAIN < /dev/tty || DOMAIN=""
+    # 管道执行时（curl | bash）跳过交互，使用默认值
+    if [ -t 0 ] && [ -e /dev/tty ]; then
+        echo ""
+        echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
+        read -r DOMAIN < /dev/tty || DOMAIN=""
+    else
+        DOMAIN=""
+    fi
 
     if [ -z "$DOMAIN" ]; then
         DOMAIN=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
@@ -468,9 +473,13 @@ setup_nginx() {
 
     # 询问 SSL
     SSL_ENABLED=false
-    echo ""
-    echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
-    read -r SSL_CHOICE < /dev/tty || SSL_CHOICE="n"
+    if [ -t 0 ] && [ -e /dev/tty ]; then
+        echo ""
+        echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
+        read -r SSL_CHOICE < /dev/tty || SSL_CHOICE="n"
+    else
+        SSL_CHOICE="n"
+    fi
 
     if [ "$SSL_CHOICE" = "y" ] || [ "$SSL_CHOICE" = "Y" ]; then
         SSL_ENABLED=true
