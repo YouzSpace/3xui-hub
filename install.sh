@@ -526,6 +526,9 @@ setup_nginx() {
         sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
     fi
 
+    # 确保 PHP-FPM 运行
+    systemctl start php8.4-fpm 2>/dev/null || systemctl start php-fpm 2>/dev/null || true
+
     # 检测 PHP-FPM socket
     FPM_SOCK=$(detect_fpm_sock)
     info "PHP-FPM socket: $FPM_SOCK"
