@@ -322,7 +322,7 @@ cmd_ssl() {
         # 申请证书（用 pipefail 捕获 acme.sh 真实退出码）
         echo -e "${BLUE}申请 SSL 证书...${NC}"
         set -o pipefail
-        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "$BACKEND_DIR/public" 2>&1)
+        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "$BACKEND_DIR/public" --server letsencrypt 2>&1)
         ACME_EXIT=$?
         set +o pipefail
         echo "$ACME_OUTPUT" | tail -5
