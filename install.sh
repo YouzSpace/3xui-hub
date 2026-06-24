@@ -47,11 +47,28 @@ error() {
 error_exit() {
     error "$1"
     echo ""
-    echo -e "${RED}安装失败！${NC} 查看日志: ${LOG_FILE}"
-    echo -e "常见修复方法:"
-    echo -e "  1. 检查网络连接"
-    echo -e "  2. 确保有 root 权限"
-    echo -e "  3. 查看日志: cat ${LOG_FILE}"
+    echo -e "${RED}============================================================${NC}"
+    echo -e "${RED}  安装失败！${NC}"
+    echo -e "${RED}============================================================${NC}"
+    echo ""
+    # 生成可复制的错误报告
+    echo -e "${YELLOW}请复制以下信息发给开发者排查：${NC}"
+    echo -e "${BLUE}---------- 复制开始 ----------${NC}"
+    echo "【错误】$1"
+    echo "【系统】$OS $OS_VERSION ($PKG_MANAGER)"
+    echo "【架构】$(uname -m)"
+    echo "【时间】$(date '+%Y-%m-%d %H:%M:%S')"
+    # 显示日志最后几行关键错误
+    if [ -f "$LOG_FILE" ]; then
+        LAST_ERROR=$(grep -i 'error\|fatal\|fail\|denied\|not found\|No such' "$LOG_FILE" | tail -5)
+        if [ -n "$LAST_ERROR" ]; then
+            echo "【日志】$LAST_ERROR"
+        fi
+    fi
+    echo -e "${BLUE}---------- 复制结束 ----------${NC}"
+    echo ""
+    echo -e "完整日志: ${LOG_FILE}"
+    echo -e "查看命令: ${YELLOW}cat ${LOG_FILE}${NC}"
     exit 1
 }
 
