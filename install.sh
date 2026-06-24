@@ -298,9 +298,7 @@ setup_nginx() {
         info "使用 IP: $DOMAIN"
     fi
 
-    # 更新 .env APP_URL
-    sed -i "s|APP_URL=.*|APP_URL=https://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
-
+    # 更新 .env APP_URL（在 SSL 判断之后设置）
     # 询问 SSL
     SSL_ENABLED=false
     echo ""
@@ -330,6 +328,13 @@ setup_nginx() {
         fi
     fi
 
+    # 根据 SSL 设置 APP_URL
+    if [ "$SSL_ENABLED" = true ]; then
+        sed -i "s|APP_URL=.*|APP_URL=https://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
+    else
+        sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
+    fi
+
     # 生成 Nginx 配置
     NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"
 
@@ -356,7 +361,7 @@ server {
     listen 443 ssl http2;
     server_name ${DOMAIN};
     root ${INSTALL_DIR}/backend/public;
-    index index.php index.html;
+    index index.html index.php;
 
     ssl_certificate /etc/nginx/ssl/${DOMAIN}.pem;
     ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
@@ -388,7 +393,7 @@ server {
     listen 80;
     server_name ${DOMAIN};
     root ${INSTALL_DIR}/backend/public;
-    index index.php index.html;
+    index index.html index.php;
 
     location ~ [^/]\.php(/|$) {
         fastcgi_pass unix:${FPM_SOCK};
