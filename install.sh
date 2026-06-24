@@ -268,6 +268,11 @@ install_mysql() {
     if command -v mysql &>/dev/null; then
         MYSQL_VER=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
         success "MySQL 已安装 (v$MYSQL_VER)"
+        # 确保数据目录存在
+        if [ ! -d /var/lib/mysql/mysql ]; then
+            info "初始化数据库..."
+            mysql_install_db --user=mysql 2>/dev/null || mariadb-install-db --user=mysql 2>/dev/null || true
+        fi
         # 确保服务运行
         systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
         return 0
