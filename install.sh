@@ -469,6 +469,15 @@ main() {
     install_composer
     install_nginx
 
+    # 确保 git 可用
+    if ! command -v git &>/dev/null; then
+        info "安装 Git..."
+        case $PKG_MANAGER in
+            yum) yum install -y git ;;
+            apt) apt-get install -y git ;;
+        esac
+    fi
+
     # 部署项目
     deploy_project
 
