@@ -124,33 +124,43 @@ install_php() {
     case $PKG_MANAGER in
         yum)
             # CentOS/RHEL: 使用 Remi 仓库安装 PHP 8.4
-            # 确定主版本号
             OS_MAJOR=${OS_VERSION%%.*}
 
-            # 安装 EPEL（CentOS 10 可能不需要）
-            dnf install -y epel-release 2>/dev/null || true
+            # 安装 EPEL（Remi 依赖它）
+            info "安装 EPEL 仓库..."
+            if ! rpm -q epel-release &>/dev/null; then
+                dnf install -y epel-release 2>/dev/null || \
+                    dnf install -y "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${OS_MAJOR}.noarch.rpm" 2>/dev/null || true
+            fi
 
             # 安装 Remi 仓库
             if ! rpm -q remi-release &>/dev/null; then
                 info "安装 Remi 仓库..."
-                dnf install -y "https://rpms.remirepo.net/enterprise/remi-release-${OS_MAJOR}.rpm" 2>/dev/null || true
+                dnf install -y "https://rpms.remirepo.net/enterprise/remi-release-${OS_MAJOR}.rpm" || \
+                    error_exit "Remi 仓库安装失败"
             fi
 
-            # 尝试用 module 方式（CentOS 8/9），失败则直接装 remi 包（CentOS 10+）
+            # CentOS 8/9: 用 module 方式
+            # CentOS 10+: module 不可用，用 php84-* 包直接装
             if dnf module reset php -y 2>/dev/null && dnf module enable php:remi-8.4 -y 2>/dev/null; then
                 info "通过 module 安装 PHP 8.4..."
                 dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-sqlite3 php-xml php-pecl-zip php-curl
+                FPM_SERVICE="php-fpm"
+                FPM_CONF="/etc/php-fpm.d/www.conf"
             else
-                info "通过 Remi 直接安装 PHP 8.4..."
-                # 启用 remi-php84 仓库
-                dnf config-manager --set-enabled remi-php84 2>/dev/null || \
-                    dnf install -y php84-php php84-php-fpm php84-php-cli php84-php-mbstring php84-php-gd php84-php-opcache php84-php-pdo php84-php-sqlite3 php84-php-xml php84-php-pecl-sqlite3 php84-php-pecl-zip php84-php-curl 2>/dev/null || \
-                    dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-sqlite3 php-xml php-pecl-zip php-curl
+                info "通过 Remi php84 安装 PHP 8.4..."
+                dnf install -y php84-php php84-php-fpm php84-php-cli php84-php-mbstring \
+                    php84-php-gd php84-php-opcache php84-php-pdo php84-php-sqlite3 \
+                    php84-php-xml php84-php-pecl-zip php84-php-curl
+                # 创建符号链接
+                ln -sf /opt/remi/php84/root/usr/bin/php /usr/bin/php
+                ln -sf /opt/remi/php84/root/usr/sbin/php-fpm /usr/sbin/php-fpm
+                FPM_SERVICE="php84-php-fpm"
+                FPM_CONF="/etc/opt/remi/php84/php-fpm.d/www.conf"
             fi
 
-            # 配置 PHP-FPM: 用户改为 nginx，socket 路径统一
-            FPM_CONF=$(find /etc/php-fpm.d /opt/remi -name "www.conf" 2>/dev/null | head -1)
-            if [ -n "$FPM_CONF" ]; then
+            # 配置 PHP-FPM
+            if [ -f "$FPM_CONF" ]; then
                 sed -i 's/^user = .*/user = nginx/' "$FPM_CONF"
                 sed -i 's/^group = .*/group = nginx/' "$FPM_CONF"
                 sed -i 's|^listen = .*|listen = /run/php-fpm/www.sock|' "$FPM_CONF"
@@ -158,12 +168,9 @@ install_php() {
                 sed -i 's/^listen\.group = .*/listen.group = nginx/' "$FPM_CONF"
             fi
 
-            # 确保 socket 目录存在
             mkdir -p /run/php-fpm
-
-            # 启动 PHP-FPM
-            systemctl enable php-fpm 2>/dev/null || true
-            systemctl restart php-fpm
+            systemctl enable "$FPM_SERVICE" 2>/dev/null || true
+            systemctl restart "$FPM_SERVICE"
             ;;
         apt)
             apt-get update -y
@@ -339,6 +346,7 @@ detect_fpm_sock() {
         "/run/php/php8.4-fpm.sock"
         "/run/php-fpm/www.sock"
         "/var/run/php-fpm/www.sock"
+        "/var/opt/remi/php84/run/php-fpm/www.sock"
         "/tmp/php-cgi-84.sock"
     )
 
