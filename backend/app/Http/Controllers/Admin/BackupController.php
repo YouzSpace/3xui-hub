@@ -451,7 +451,7 @@ class BackupController extends Controller
         $mysql = $this->findMysqlTool('mysql');
 
         $cmd = sprintf(
-            '%s --host=%s --port=%s --user=%s --password=%s %s < %s 2>nul',
+            '%s --host=%s --port=%s --user=%s --password=%s %s < %s 2>/dev/null',
             escapeshellarg($mysql),
             escapeshellarg($cfg['host']),
             escapeshellarg($cfg['port']),
@@ -486,7 +486,7 @@ class BackupController extends Controller
         try {
             // 导入 SQL 到临时库
             $cmd = sprintf(
-                '%s --host=%s --port=%s --user=%s --password=%s %s < %s 2>nul',
+                '%s --host=%s --port=%s --user=%s --password=%s %s < %s 2>/dev/null',
                 escapeshellarg($mysql),
                 escapeshellarg($cfg['host']),
                 escapeshellarg($cfg['port']),
