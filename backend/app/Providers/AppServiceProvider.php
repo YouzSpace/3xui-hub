@@ -20,13 +20,13 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // SQLite 优化：WAL 提升并发写，开启外键约束
+        // SQLite 优化（仅当使用 SQLite 时生效）
         if (config('database.default') === 'sqlite') {
             try {
                 DB::statement('PRAGMA journal_mode=WAL;');
                 DB::statement('PRAGMA foreign_keys=ON;');
             } catch (\Throwable $e) {
-                // 数据库未就绪时忽略（如 migrate 阶段）
+                // 数据库未就绪时忽略
             }
         }
     }

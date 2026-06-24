@@ -62,11 +62,12 @@ cmd_status() {
     PHP_VER=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
     echo -e "PHP:       ${GREEN}${PHP_VER}${NC}"
 
-    # 数据库大小
-    DB_FILE="$BACKEND_DIR/database/database.sqlite"
-    if [ -f "$DB_FILE" ]; then
-        DB_SIZE=$(du -h "$DB_FILE" | awk '{print $1}')
-        echo -e "数据库:    ${GREEN}${DB_SIZE}${NC}"
+    # 数据库
+    if command -v mysql &>/dev/null; then
+        DB_SIZE=$(mysql -u root controlhub -e "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS size_mb FROM information_schema.tables WHERE table_schema = 'controlhub';" -sN 2>/dev/null)
+        echo -e "数据库:    ${GREEN}${DB_SIZE} MB (MySQL)${NC}"
+    else
+        echo -e "数据库:    ${YELLOW}MySQL${NC}"
     fi
 
     # 统计
@@ -74,7 +75,8 @@ cmd_status() {
     echo -e "${CYAN}--- 数据统计 ---${NC}"
     php artisan tinker --execute="
         echo '用户:      ' . \App\Models\User::count() . PHP_EOL;
-        echo '节点:      ' . \App\Models\Node::count() . PHP_EOL;
+        echo '服务器:    ' . \App\Models\Node::count() . PHP_EOL;
+        echo '节点:      ' . \App\Models\NodeInbound::count() . PHP_EOL;
         echo '套餐:      ' . \App\Models\Plan::count() . PHP_EOL;
         echo '订单:      ' . \App\Models\Order::count() . PHP_EOL;
         echo '支付配置:  ' . \App\Models\PaymentConfig::count() . PHP_EOL;
@@ -256,16 +258,17 @@ cmd_backup() {
 
     BACKUP_DIR="/tmp/3xui-hub-backup"
     mkdir -p "$BACKUP_DIR"
-    BACKUP_FILE="$BACKUP_DIR/backup-$(date +%Y%m%d%H%M%S).sqlite"
+    BACKUP_FILE="$BACKUP_DIR/backup-$(date +%Y%m%d%H%M%S).sql.gz"
 
-    # Checkpoint
-    php artisan tinker --execute="DB::statement('PRAGMA wal_checkpoint(TRUNCATE)');" 2>/dev/null
-
-    # 复制
-    cp "$BACKEND_DIR/database/database.sqlite" "$BACKUP_FILE"
-
-    echo -e "${GREEN}备份完成: ${BACKUP_FILE}${NC}"
-    echo -e "大小: $(du -h "$BACKUP_FILE" | awk '{print $1}')"
+    # mysqldump
+    if command -v mysqldump &>/dev/null; then
+        mysqldump -u root --single-transaction controlhub 2>/dev/null | gzip > "$BACKUP_FILE"
+        echo -e "${GREEN}备份完成: ${BACKUP_FILE}${NC}"
+        echo -e "大小: $(du -h "$BACKUP_FILE" | awk '{print $1}')"
+    else
+        echo -e "${RED}mysqldump 不可用，无法备份${NC}"
+        return 1
+    fi
 }
 
 # 查看日志

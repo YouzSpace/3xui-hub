@@ -144,13 +144,13 @@ install_php() {
             # CentOS 10+: module 不可用，用 php84-* 包直接装
             if dnf module reset php -y 2>/dev/null && dnf module enable php:remi-8.4 -y 2>/dev/null; then
                 info "通过 module 安装 PHP 8.4..."
-                dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-sqlite3 php-xml php-pecl-zip php-curl
+                dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-mysql php-xml php-pecl-zip php-curl
                 FPM_SERVICE="php-fpm"
                 FPM_CONF="/etc/php-fpm.d/www.conf"
             else
                 info "通过 Remi php84 安装 PHP 8.4..."
                 dnf install -y php84-php php84-php-fpm php84-php-cli php84-php-mbstring \
-                    php84-php-gd php84-php-opcache php84-php-pdo php84-php-sqlite3 \
+                    php84-php-gd php84-php-opcache php84-php-pdo php84-php-mysql \
                     php84-php-xml php84-php-pecl-zip php84-php-curl
                 # 创建符号链接
                 ln -sf /opt/remi/php84/root/usr/bin/php /usr/bin/php
@@ -187,7 +187,7 @@ install_php() {
                 add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
             fi
             apt-get update -y
-            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-sqlite3 php8.4-xml php8.4-zip php8.4-curl
+            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl
             ;;
     esac
 
@@ -246,6 +246,45 @@ install_nginx() {
     success "Nginx 安装完成"
 }
 
+# 安装 MySQL
+install_mysql() {
+    if command -v mysql &>/dev/null; then
+        MYSQL_VER=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        success "MySQL 已安装 (v$MYSQL_VER)"
+        return 0
+    fi
+
+    info "安装 MySQL..."
+
+    case $PKG_MANAGER in
+        yum)
+            dnf install -y mysql mysql-server 2>/dev/null || \
+                yum install -y mysql mysql-server
+            systemctl enable mysqld 2>/dev/null || systemctl enable mysql 2>/dev/null || true
+            systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null || true
+            ;;
+        apt)
+            # 非交互式安装
+            DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+            systemctl enable mysql
+            systemctl start mysql
+            ;;
+    esac
+
+    # 安全初始化（设置 root 密码等）
+    if command -v mysql_secure_installation &>/dev/null; then
+        info "MySQL 安全初始化..."
+        # 自动化：设置 root 空密码（首次安装）
+        mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY ''; FLUSH PRIVILEGES;" 2>/dev/null || true
+    fi
+
+    if ! command -v mysql &>/dev/null; then
+        error_exit "MySQL 安装失败"
+    fi
+
+    success "MySQL 安装完成"
+}
+
 # 部署项目
 deploy_project() {
     info "部署项目..."
@@ -299,6 +338,12 @@ setup_env() {
     info "配置环境..."
 
     cd "$INSTALL_DIR/backend"
+    # 安装 PHP 依赖
+    info "安装 Composer 依赖..."
+    composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
+
+    info "安装 Composer 依赖..."
+    composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
 
     # 生成 .env（始终使用自定义配置，不用 .env.example）
     cat > .env << EOF
@@ -308,10 +353,14 @@ APP_KEY=
 APP_DEBUG=false
 APP_URL=http://localhost
 
-DB_CONNECTION=sqlite
-DB_DATABASE=${INSTALL_DIR}/backend/database/database.sqlite
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=controlhub
+DB_USERNAME=root
+DB_PASSWORD=
 
-SESSION_DRIVER=file
+SESSION_DRIVER=database
 SESSION_LIFETIME=120
 
 CACHE_STORE=file
@@ -322,8 +371,12 @@ EOF
     info "生成 APP_KEY..."
     php artisan key:generate 2>&1 | tee -a "$LOG_FILE" || error_exit "APP_KEY 生成失败"
 
-    # 创建数据库
-    touch database/database.sqlite
+    # 创建 MySQL 数据库
+    if command -v mysql &>/dev/null; then
+        mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1 | tee -a "$LOG_FILE" || warn "MySQL 数据库创建失败，请手动创建"
+    else
+        warn "mysql 命令不可用，请手动创建 MySQL 数据库: controlhub"
+    fi
 
     # 运行迁移
     info "运行数据库迁移..."
@@ -462,7 +515,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~* \\.(env|git|sqlite) {
+    location ~* \\.(env|git) {
         return 404;
     }
 }
@@ -490,7 +543,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~* \\.(env|git|sqlite) {
+    location ~* \\.(env|git) {
         return 404;
     }
 }
@@ -592,6 +645,9 @@ main() {
             apt) apt-get install -y git ;;
         esac
     fi
+
+    # 安装 MySQL
+    install_mysql
 
     # 部署项目
     deploy_project

@@ -38,12 +38,21 @@ class Node extends Model
         return $this->hasMany(NodeInbound::class);
     }
 
-    /** 取某协议的 inbound_id，无则 null。 */
+    /** 取某协议的第一个 inbound_id，无则 null。 */
     public function inboundIdFor(string $protocol): ?int
     {
         $row = $this->inbounds()->where('protocol', $protocol)->first();
 
         return $row?->inbound_id;
+    }
+
+    /** 取某协议的全部 inbound_id。 */
+    public function inboundIdsFor(string $protocol): array
+    {
+        return $this->inbounds()
+            ->where('protocol', $protocol)
+            ->pluck('inbound_id')
+            ->toArray();
     }
 
     protected function password(): Attribute

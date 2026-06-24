@@ -110,13 +110,13 @@ class UserAdminService
         ];
 
         foreach (Node::where('enabled', true)->get() as $node) {
-            $inboundId = $node->inboundIdFor($user->protocol);
-            if ($inboundId === null) {
+            $inboundIds = $node->inboundIdsFor($user->protocol);
+            if (empty($inboundIds)) {
                 continue;
             }
 
             try {
-                $created = $this->clientFactory->forNode($node)->addClient($client, [$inboundId]);
+                $created = $this->clientFactory->forNode($node)->addClient($client, $inboundIds);
                 if (!empty($created['uuid']) && !$user->uuid) {
                     $user->forceFill(['uuid' => $created['uuid']])->save();
                 }
@@ -135,8 +135,8 @@ class UserAdminService
         $users = User::whereNotNull('plan_id')->get();
 
         foreach ($users as $user) {
-            $inboundId = $node->inboundIdFor($user->protocol);
-            if ($inboundId === null) {
+            $inboundIds = $node->inboundIdsFor($user->protocol);
+            if (empty($inboundIds)) {
                 continue;
             }
 
@@ -147,7 +147,7 @@ class UserAdminService
                     'totalGB' => $user->traffic_limit > 0 ? (int) $user->traffic_limit : 0,
                     'expiryTime' => $user->expired_at ? (int) ($user->expired_at->timestamp * 1000) : 0,
                     'limitIp' => 0,
-                ], [$inboundId]);
+                ], $inboundIds);
             } catch (\Throwable $e) {
                 report($e);
             }

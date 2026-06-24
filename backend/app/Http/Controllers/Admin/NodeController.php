@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\NodeInbound;
+use App\Models\User;
 use App\Services\ThreeXUi\ThreeXUiClient;
 use App\Services\ThreeXUiClientFactory;
 use App\Services\UserAdminService;
@@ -97,6 +98,21 @@ class NodeController extends Controller
 
     public function destroy(Node $node): \Illuminate\Http\JsonResponse
     {
+        // 同步删除 3x-ui 上该节点各入站的所有 client
+        $client = ThreeXUiClient::fromNode($node);
+        $inboundIds = $node->inbounds()->pluck('inbound_id')->toArray();
+        User::whereNotNull('email')->each(function (User $user) use ($client, $inboundIds) {
+            $email = $user->clientEmail();
+            foreach ($inboundIds as $inboundId) {
+                try {
+                    $client->deleteClient($email, false, $inboundId);
+                } catch (\Throwable) {
+                    // 不存在，忽略
+                }
+            }
+            try { $client->deleteClient($email); } catch (\Throwable) {}
+        });
+
         $node->delete();
 
         return $this->success(null, '已删除');

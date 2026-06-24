@@ -161,21 +161,27 @@ class ThreeXUiClient
         return is_array($obj) ? $obj : null;
     }
 
-    /** POST /panel/api/clients/update/{email}，body = 完整 client（替换非 patch）。 */
-    public function updateClient(string $email, array $client): bool
+    /** POST /panel/api/clients/update/{email}，body = 完整 client（替换非 patch）。可指定 inboundId。 */
+    public function updateClient(string $email, array $client, ?int $inboundId = null): bool
     {
-        $this->request('POST', self::EP_CLIENTS_UPDATE . rawurlencode($email), [
-            'json' => $client,
-        ]);
+        $options = ['json' => $client];
+        if ($inboundId !== null) {
+            $options['query'] = ['inboundId' => $inboundId];
+        }
+        $this->request('POST', self::EP_CLIENTS_UPDATE . rawurlencode($email), $options);
 
         return true;
     }
 
-    /** POST /panel/api/clients/del/{email}?keepTraffic=0|1。 */
-    public function deleteClient(string $email, bool $keepTraffic = false): bool
+    /** POST /panel/api/clients/del/{email}?keepTraffic=0|1。可指定 inboundId 精确删除。 */
+    public function deleteClient(string $email, bool $keepTraffic = false, ?int $inboundId = null): bool
     {
+        $query = ['keepTraffic' => $keepTraffic ? '1' : '0'];
+        if ($inboundId !== null) {
+            $query['inboundId'] = $inboundId;
+        }
         $this->request('POST', self::EP_CLIENTS_DEL . rawurlencode($email), [
-            'query' => ['keepTraffic' => $keepTraffic ? '1' : '0'],
+            'query' => $query,
         ]);
 
         return true;

@@ -99,18 +99,34 @@ class BanService
         foreach (Node::where('enabled', true)->get() as $node) {
             try {
                 $client = $this->clientFactory->forNode($node);
-                $resp = $client->getClient($email);
-                if ($resp === null) {
-                    continue;
+                // 逐个入站更新 enable 状态
+                $inboundIds = $node->inboundIdsFor($user->protocol);
+                foreach ($inboundIds as $inboundId) {
+                    try {
+                        $resp = $client->getClient($email);
+                        if ($resp === null) continue;
+                        $clientData = $resp['client'] ?? $resp;
+                        $clientData['enable'] = $enable;
+                        if (isset($clientData['id'])) {
+                            $clientData['id'] = (string) $clientData['id'];
+                        }
+                        $client->updateClient($email, $clientData, $inboundId);
+                    } catch (\Throwable) {
+                        // 入站不存在或 client 不存在，忽略
+                    }
                 }
-                // getClient 返回 {client: {...}, inboundIds: [...]}，需要取内层 client
-                $clientData = $resp['client'] ?? $resp;
-                $clientData['enable'] = $enable;
-                // 3x-ui updateClient 要求 id 为 string
-                if (isset($clientData['id'])) {
-                    $clientData['id'] = (string) $clientData['id'];
-                }
-                $client->updateClient($email, $clientData);
+                // 兜底不带 inboundId 再更新一次
+                try {
+                    $resp = $client->getClient($email);
+                    if ($resp !== null) {
+                        $clientData = $resp['client'] ?? $resp;
+                        $clientData['enable'] = $enable;
+                        if (isset($clientData['id'])) {
+                            $clientData['id'] = (string) $clientData['id'];
+                        }
+                        $client->updateClient($email, $clientData);
+                    }
+                } catch (\Throwable) {}
             } catch (\Throwable $e) {
                 report($e);
             }

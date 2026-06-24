@@ -105,13 +105,25 @@ class UserController extends Controller
 
     public function destroy(User $user): \Illuminate\Http\JsonResponse
     {
-        // 同步删除 3x-ui 各节点上的 client
+        // 同步删除 3x-ui 各节点各入站上的 client
         $email = $user->clientEmail();
-        Node::where('enabled', true)->each(function (Node $node) use ($email) {
+        Node::each(function (Node $node) use ($email, $user) {
             try {
-                ThreeXUiClient::fromNode($node)->deleteClient($email);
+                $client = ThreeXUiClient::fromNode($node);
+                $inboundIds = $node->inboundIdsFor($user->protocol);
+                foreach ($inboundIds as $inboundId) {
+                    try {
+                        $client->deleteClient($email, false, $inboundId);
+                    } catch (\Throwable) {
+                        // 已删除或不存在，忽略
+                    }
+                }
+                // 兜底：不带 inboundId 再删一次
+                try {
+                    $client->deleteClient($email);
+                } catch (\Throwable) {}
             } catch (\Throwable) {
-                // 节点离线或 client 不存在，忽略
+                // 节点离线，忽略
             }
         });
 

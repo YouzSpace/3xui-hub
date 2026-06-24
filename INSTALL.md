@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 
 ### 环境要求
 
-- PHP 8.4+（扩展：fileinfo、pdo_sqlite、mbstring、gd）
+- PHP 8.4+（扩展：fileinfo、pdo_mysql、mbstring、gd）
 - Composer 2.2+
 - Nginx
 
@@ -56,7 +56,7 @@ git clone https://github.com/YouzSpace/3xui-hub.git /www/wwwroot/3xui-hub
 cd /www/wwwroot/3xui-hub/backend
 cp .env.example .env
 php artisan key:generate
-touch database/database.sqlite
+mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 php artisan migrate --seed
 
 # 3. 复制前端到 public
@@ -97,7 +97,7 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    location ~* \.(env|git|sqlite) {
+    location ~* \.(env|git) {
         return 404;
     }
 }

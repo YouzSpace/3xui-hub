@@ -31,28 +31,28 @@ class ProtocolSwitchService
         }
 
         $email = $user->clientEmail();
-        $attached = []; // [nodeId => newInboundId] 已 attach，用于回滚
+        $attached = []; // [nodeId => [newInboundIds]] 已 attach，用于回滚
 
         try {
             DB::transaction(function () use ($user, $newProtocol, $oldProtocol, $email, &$attached) {
                 foreach (Node::where('enabled', true)->get() as $node) {
-                    $newInbound = $node->inboundIdFor($newProtocol);
-                    $oldInbound = $node->inboundIdFor($oldProtocol);
+                    $newInbounds = $node->inboundIdsFor($newProtocol);
+                    $oldInbounds = $node->inboundIdsFor($oldProtocol);
 
-                    if ($newInbound === null) {
-                        continue; // 该节点无新协议 inbound，跳过（订阅不含此节点）
+                    if (empty($newInbounds)) {
+                        continue; // 该节点无新协议 inbound，跳过
                     }
 
                     $client = $this->clientFactory->forNode($node);
 
-                    if ($oldInbound !== null && $oldInbound !== $newInbound) {
-                        $client->attachClient($email, [$newInbound]);
-                        $attached[$node->id] = $newInbound;
-                        $client->detachClient($email, [$oldInbound]);
-                    } else {
-                        // 无旧 inbound（首次），仅 attach
-                        $client->attachClient($email, [$newInbound]);
-                        $attached[$node->id] = $newInbound;
+                    // attach 所有新协议 inbound
+                    $client->attachClient($email, $newInbounds);
+                    $attached[$node->id] = $newInbounds;
+
+                    // detach 所有旧协议 inbound（排除和新协议相同的）
+                    $toDetach = array_diff($oldInbounds, $newInbounds);
+                    if (!empty($toDetach)) {
+                        $client->detachClient($email, array_values($toDetach));
                     }
                 }
 
@@ -60,16 +60,16 @@ class ProtocolSwitchService
             });
         } catch (\Throwable $e) {
             // 回滚：detach 已 attach 的新 inbound，恢复旧
-            foreach ($attached as $nodeId => $newInbound) {
+            foreach ($attached as $nodeId => $newInbounds) {
                 $node = Node::find($nodeId);
                 if (!$node) {
                     continue;
                 }
                 try {
-                    $this->clientFactory->forNode($node)->detachClient($email, [$newInbound]);
-                    $oldInbound = $node->inboundIdFor($oldProtocol);
-                    if ($oldInbound !== null) {
-                        $this->clientFactory->forNode($node)->attachClient($email, [$oldInbound]);
+                    $this->clientFactory->forNode($node)->detachClient($email, $newInbounds);
+                    $oldInbounds = $node->inboundIdsFor($oldProtocol);
+                    if (!empty($oldInbounds)) {
+                        $this->clientFactory->forNode($node)->attachClient($email, $oldInbounds);
                     }
                 } catch (\Throwable $rollbackErr) {
                     report($rollbackErr);
