@@ -132,8 +132,14 @@ install_php() {
             ;;
         apt)
             apt-get update -y
-            apt-get install -y software-properties-common
-            add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
+            if [ "$OS" = "debian" ]; then
+                apt-get install -y apt-transport-https lsb-release ca-certificates curl gnupg
+                curl -sSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/php.gpg 2>/dev/null
+                echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+            else
+                apt-get install -y software-properties-common
+                add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
+            fi
             apt-get update -y
             apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-fileinfo php8.4-gd php8.4-opcache php8.4-pdo php8.4-sqlite3 php8.4-xml php8.4-zip php8.4-curl
             ;;
