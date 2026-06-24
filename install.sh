@@ -4,6 +4,17 @@
 # https://github.com/YouzSpace/3xui-hub
 # ============================================================
 
+# 管道执行时（curl | bash）自动下载后重新运行，保留终端交互
+if [ ! -t 0 ]; then
+    TMP_SCRIPT="/tmp/3xui-hub-install-$$.sh"
+    curl -fsSL "https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh" -o "$TMP_SCRIPT" 2>/dev/null || \
+        wget -q "https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh" -O "$TMP_SCRIPT" 2>/dev/null
+    if [ -f "$TMP_SCRIPT" ]; then
+        exec bash "$TMP_SCRIPT"
+    fi
+    # 下载失败则继续执行（降级处理）
+fi
+
 set -e
 
 # 颜色
@@ -472,14 +483,9 @@ detect_fpm_sock() {
 setup_nginx() {
     info "配置 Nginx..."
 
-    # 管道执行时（curl | bash）跳过交互，使用默认值
-    if [ -t 0 ] && [ -e /dev/tty ]; then
-        echo ""
-        echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
-        read -r DOMAIN < /dev/tty || DOMAIN=""
-    else
-        DOMAIN=""
-    fi
+    echo ""
+    echo -e "${BLUE}请输入域名或 IP（直接回车使用 IP）:${NC}"
+    read -r DOMAIN || DOMAIN=""
 
     if [ -z "$DOMAIN" ]; then
         DOMAIN=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
@@ -488,13 +494,9 @@ setup_nginx() {
 
     # 询问 SSL
     SSL_ENABLED=false
-    if [ -t 0 ] && [ -e /dev/tty ]; then
-        echo ""
-        echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
-        read -r SSL_CHOICE < /dev/tty || SSL_CHOICE="n"
-    else
-        SSL_CHOICE="n"
-    fi
+    echo ""
+    echo -e "${BLUE}是否开启 SSL？(y/N):${NC}"
+    read -r SSL_CHOICE || SSL_CHOICE="n"
 
     if [ "$SSL_CHOICE" = "y" ] || [ "$SSL_CHOICE" = "Y" ]; then
         SSL_ENABLED=true
