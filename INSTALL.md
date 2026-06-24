@@ -1,202 +1,120 @@
-# ControlHub 部署指南
+# 3xui-hub 安装指南
 
-3x-ui 订阅管理中枢。Laravel 后端 + Vue3 前端 + SQLite。
+## 一键安装
 
-## 环境要求
+```bash
+curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh | bash
+```
 
-- PHP 8.4+
+安装过程中：
+1. 自动安装 PHP 8.4、Composer、Nginx
+2. 输入域名或 IP（直接回车使用 IP）
+3. 选择是否开启 SSL（y/N）
+
+安装完成后自动显示访问地址和默认账号。
+
+## 3hub 管理命令
+
+安装后可使用 `3hub` 命令管理系统：
+
+```bash
+3hub status        # 查看系统状态
+3hub check-update  # 检测更新
+3hub update        # 更新系统
+3hub admin-user    # 修改管理员账号
+3hub admin-pass    # 修改管理员密码
+3hub sync          # 手动同步流量
+3hub sync-status   # 查看自动同步状态
+3hub backup        # 导出数据库备份
+3hub log           # 查看最近错误日志
+3hub restart       # 重启 PHP-FPM 和 Nginx
+3hub help          # 显示帮助
+```
+
+## 默认账号
+
+- **管理员**: admin / admin123
+- 首次登录后请立即修改密码！
+
+## 手动安装
+
+如需手动安装，参考以下步骤：
+
+### 环境要求
+
+- PHP 8.4+（扩展：fileinfo、pdo_sqlite、mbstring、gd）
 - Composer 2.2+
-- PHP 扩展：fileinfo、pdo_sqlite、openssl、mbstring、gd（图形验证码）
 - Nginx
 
-## PHP 配置
-
-宝塔 → PHP 8.4 → 设置 → 配置修改：
-
-1. `disable_functions` 中删掉 `putenv`（否则 Composer 报错）
-2. 开启 `fileinfo` 扩展
-3. 开启 `gd` 扩展（图形验证码需要）
-
-## 安装步骤
-
-### 1. 上传文件
-
-把 `backend/` 和 `frontend/` 上传到服务器，建议结构：
-
-```
-/www/wwwroot/your-domain.com/
-├── backend/
-│   ├── app/
-│   ├── bootstrap/
-│   ├── config/
-│   ├── database/
-│   ├── public/        ← 网站根目录
-│   ├── resources/
-│   ├── routes/
-│   ├── storage/
-│   ├── vendor/
-│   ├── artisan
-│   ├── composer.json
-│   └── .env
-└── frontend/
-    └── dist/          ← 前端构建产物
-```
-
-### 2. 配置 .env
+### 步骤
 
 ```bash
-cd /path/to/backend
-cp .env.example .env   # 或手动创建
-```
+# 1. 克隆项目
+git clone https://github.com/YouzSpace/3xui-hub.git /www/wwwroot/3xui-hub
 
-编辑 `.env`：
-
-```env
-APP_NAME=ControlHub
-APP_ENV=production
-APP_KEY=                # 运行 php artisan key:generate 自动生成
-APP_DEBUG=false
-APP_URL=https://your-domain.com
-
-DB_CONNECTION=sqlite
-DB_DATABASE=/path/to/backend/database/database.sqlite
-
-SESSION_DRIVER=file
-SESSION_LIFETIME=120
-
-CACHE_STORE=file
-QUEUE_CONNECTION=sync
-```
-
-### 3. 初始化
-
-```bash
-cd /path/to/backend
-
-# 创建数据库
-touch database/database.sqlite
-
-# 生成 APP_KEY
+# 2. 配置后端
+cd /www/wwwroot/3xui-hub/backend
+cp .env.example .env
 php artisan key:generate
-
-# 运行迁移 + 填充默认管理员
+touch database/database.sqlite
 php artisan migrate --seed
 
-# 设置权限
+# 3. 复制前端到 public
+cp -r ../frontend/dist/* public/
+
+# 4. 设置权限
 chmod -R 755 storage bootstrap/cache
 chown -R www:www storage database
+
+# 5. 配置 Nginx（参考下方配置）
+
+# 6. 配置 cron（流量自动同步）
+crontab -e
+# 添加: * * * * * cd /www/wwwroot/3xui-hub/backend && php artisan schedule:run >> /dev/null 2>&1
 ```
 
-默认管理员：`admin` / `admin123`（首次登录后务必修改）
-
-### 4. 复制前端文件
-
-```bash
-# 把前端 dist 内容复制到 backend/public
-cp -r ../frontend/dist/* public/
-cp ../frontend/dist/index.html public/
-```
-
-### 5. Nginx 配置
+### Nginx 配置示例
 
 ```nginx
 server {
-    listen 443 ssl;
+    listen 80;
     server_name your-domain.com;
-    root /path/to/backend/public;
+    root /www/wwwroot/3xui-hub/backend/public;
     index index.php index.html;
 
-    # SSL 证书配置（略）
-
-    # PHP-FPM
     location ~ [^/]\.php(/|$) {
-        fastcgi_pass unix:/tmp/php-cgi-84.sock;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
         fastcgi_index index.php;
-        include fastcgi.conf;
-        include pathinfo.conf;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
 
-    # API 路由 → Laravel
     location ~ ^/(api|admin-api) {
         try_files $uri $uri/ /index.php?$query_string;
     }
 
-    # Vue Router history 模式
     location / {
         try_files $uri $uri/ /index.html;
     }
 
-    # 禁止访问敏感文件
     location ~* \.(env|git|sqlite) {
         return 404;
     }
 }
 ```
 
-验证并重载：
-
-```bash
-nginx -t && nginx -s reload
-```
-
-### 6. 验证
-
-- 访问 `https://your-domain.com/` — 用户登录页
-- 访问 `https://your-domain.com/admin/login` — 管理员登录（admin / admin123）
-- 测试 API：`curl https://your-domain.com/api/ping`
-
-## 功能说明
-
-### 管理员端（/admin）
-
-- **仪表盘**：用户统计、节点状态
-- **用户管理**：增删改查、分配套餐、重置流量、续费
-- **节点管理**：添加 3x-ui 节点、配置入站、测试连接
-- **套餐管理**：创建套餐（周期/总量）、设置价格
-- **订单管理**：查看支付订单
-- **设置 → 安全**：修改密码、谷歌二步验证
-- **设置 → 支付**：配置支付接口
-
-### 用户端（/）
-
-- **登录**：邮箱密码登录 / Token 登录
-- **注册**：邮箱注册（需图形验证码）
-- **仪表盘**：流量统计、订阅地址、节点列表、订购订阅、最近订单
-
-## 支付配置
-
-1. 管理后台 → 设置 → 支付 → 新建配置
-2. 填写支付平台提供的参数（商户号、网关地址、银行编码、API密钥）
-3. 回调地址留空则自动生成：`https://your-domain.com/api/payment/notify`
-
-## 更新部署
-
-```bash
-# 前端重新构建
-cd frontend && npm run build
-
-# 上传修改的文件到服务器
-scp -r dist/* server:/path/backend/public/
-scp backend/app/... server:/path/backend/app/...
-
-# 清除缓存
-ssh server "cd /path/backend && php artisan config:clear && php artisan route:clear"
-```
-
 ## 常见问题
 
+### 安装失败
+查看安装日志：`cat /tmp/3xui-hub-install.log`
+
+### 流量不同步
+检查 cron 是否配置：`3hub sync-status`
+
 ### 500 错误
+查看日志：`3hub log` 或 `tail -20 /www/wwwroot/3xui-hub/backend/storage/logs/laravel.log`
 
-检查 Laravel 日志：`tail -20 storage/logs/laravel.log`
-
-### 登录后提示 "The MAC is invalid"
-
-APP_KEY 不一致，重新运行 `php artisan key:generate` 或从本地复制 `.env` 中的 APP_KEY。
-
-### 支付下单失败 "不存在的银行编码"
-
-在支付平台后台查看正确的银行编码，填入支付配置。
-
-### 图形验证码不显示
-
-确保 PHP 安装了 `gd` 扩展。
+### 忘记密码
+```bash
+3hub admin-pass
+```

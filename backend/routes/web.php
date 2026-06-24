@@ -1,10 +1,12 @@
 <?php
 
 use App\Http\Controllers\Admin\AuthController as AdminAuthController;
+use App\Http\Controllers\Admin\BackupController as AdminBackupController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Admin\PaymentController as AdminPaymentController;
 use App\Http\Controllers\Admin\PlanController as AdminPlanController;
+use App\Http\Controllers\Admin\SyncTrafficController as AdminSyncTrafficController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
 use Illuminate\Support\Facades\Route;
 
@@ -55,6 +57,14 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
 
     // 订单管理
     Route::get('/orders', [AdminOrderController::class, 'index']);
+
+    // 流量同步
+    Route::post('/sync-traffic', [AdminSyncTrafficController::class, 'sync']);
+
+    // 备份管理
+    Route::get('/backup/export', [AdminBackupController::class, 'export']);
+    Route::post('/backup/preview', [AdminBackupController::class, 'preview']);
+    Route::post('/backup/import', [AdminBackupController::class, 'import']);
 
     // 支付配置管理
     Route::get('/payments', [AdminPaymentController::class, 'index']);
