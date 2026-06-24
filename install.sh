@@ -280,8 +280,8 @@ EOF
 
     # 设置权限
     chmod -R 755 storage bootstrap/cache
-    # 设置权限（自动检测 Nginx 用户）
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | head -1)
+    # 设置权限（自动检测 Nginx worker 用户）
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
     chown -R "$NGINX_USER":"$NGINX_USER" storage database 2>/dev/null || true
 
