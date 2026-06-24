@@ -248,9 +248,8 @@ setup_env() {
 
     cd "$INSTALL_DIR/backend"
 
-    # 生成 .env
-    if [ ! -f ".env" ]; then
-        cp .env.example .env 2>/dev/null || cat > .env << 'EOF'
+    # 生成 .env（始终使用自定义配置，不用 .env.example）
+    cat > .env << EOF
 APP_NAME=ControlHub
 APP_ENV=production
 APP_KEY=
@@ -258,7 +257,7 @@ APP_DEBUG=false
 APP_URL=http://localhost
 
 DB_CONNECTION=sqlite
-DB_DATABASE=/www/wwwroot/3xui-hub/backend/database/database.sqlite
+DB_DATABASE=${INSTALL_DIR}/backend/database/database.sqlite
 
 SESSION_DRIVER=file
 SESSION_LIFETIME=120
@@ -266,7 +265,6 @@ SESSION_LIFETIME=120
 CACHE_STORE=file
 QUEUE_CONNECTION=sync
 EOF
-    fi
 
     # 生成 APP_KEY
     php artisan key:generate 2>&1 | tee -a "$LOG_FILE"
