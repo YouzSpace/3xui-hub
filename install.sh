@@ -201,14 +201,35 @@ deploy_project() {
     # 创建目录
     mkdir -p "$INSTALL_DIR"
 
-    # 克隆项目
+    # 克隆项目（国内镜像加速 + 浅克隆）
     if [ -d "$INSTALL_DIR/.git" ]; then
         info "更新现有项目..."
         cd "$INSTALL_DIR"
         git pull 2>&1 | tee -a "$LOG_FILE"
     else
-        info "下载项目..."
-        git clone "$REPO_URL" "$INSTALL_DIR" 2>&1 | tee -a "$LOG_FILE"
+        info "下载项目（浅克隆，体积最小化）..."
+
+        # 国内镜像列表，按优先级尝试
+        MIRRORS=(
+            "https://ghfast.top/https://github.com/YouzSpace/3xui-hub.git"
+            "https://ghproxy.net/https://github.com/YouzSpace/3xui-hub.git"
+            "https://github.com/YouzSpace/3xui-hub.git"
+        )
+
+        CLONED=false
+        for MIRROR_URL in "${MIRRORS[@]}"; do
+            info "尝试: ${MIRROR_URL%%://*}..."
+            if git clone --depth 1 --single-branch --branch main "$MIRROR_URL" "$INSTALL_DIR" 2>&1 | tee -a "$LOG_FILE"; then
+                CLONED=true
+                break
+            fi
+            warn "失败，尝试下一个..."
+            rm -rf "$INSTALL_DIR" 2>/dev/null
+        done
+
+        if [ "$CLONED" = false ]; then
+            error_exit "所有下载源均失败，请检查网络"
+        fi
     fi
 
     cd "$INSTALL_DIR"
