@@ -335,6 +335,17 @@ setup_nginx() {
     # 生成 Nginx 配置
     NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"
 
+    # 检测 PHP-FPM socket 路径
+    if [ -S "/run/php/php8.4-fpm.sock" ]; then
+        FPM_SOCK="/run/php/php8.4-fpm.sock"
+    elif [ -S "/tmp/php-cgi-84.sock" ]; then
+        FPM_SOCK="/tmp/php-cgi-84.sock"
+    else
+        FPM_SOCK="/run/php/php8.4-fpm.sock"
+        warn "未检测到 PHP-FPM socket，使用默认路径"
+    fi
+    info "PHP-FPM socket: $FPM_SOCK"
+
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
 server {
@@ -354,7 +365,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     location ~ [^/]\.php(/|$) {
-        fastcgi_pass unix:/run/php/php8.4-fpm.sock 2>/dev/null || fastcgi_pass unix:/tmp/php-cgi-84.sock;
+        fastcgi_pass unix:${FPM_SOCK};
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
@@ -382,7 +393,7 @@ server {
     index index.php index.html;
 
     location ~ [^/]\.php(/|$) {
-        fastcgi_pass unix:/run/php/php8.4-fpm.sock 2>/dev/null || fastcgi_pass unix:/tmp/php-cgi-84.sock;
+        fastcgi_pass unix:${FPM_SOCK};
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
