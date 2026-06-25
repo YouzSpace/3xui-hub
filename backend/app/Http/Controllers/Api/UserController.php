@@ -50,7 +50,7 @@ class UserController extends Controller
             'traffic_limit' => (int) $user->traffic_limit,
             'traffic_used' => (int) $user->traffic_used,
             'monthly_traffic_used' => (int) $user->monthly_traffic_used,
-            'monthly_traffic_limit' => $user->plan?->monthly_traffic ?? 0,
+            'monthly_traffic_limit' => (int) $user->monthly_traffic_limit,
             'expired_at' => $user->expired_at?->toIso8601String(),
             'enabled' => (bool) $user->enabled,
         ]);

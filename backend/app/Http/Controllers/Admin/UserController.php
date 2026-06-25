@@ -68,6 +68,7 @@ class UserController extends Controller
             'traffic_limit' => isset($data['traffic_limit']) ? (int) $data['traffic_limit'] : $user->traffic_limit,
             'traffic_used' => isset($data['traffic_used']) ? (int) $data['traffic_used'] : $user->traffic_used,
             'monthly_traffic_used' => isset($data['monthly_traffic_used']) ? (int) $data['monthly_traffic_used'] : $user->monthly_traffic_used,
+            'monthly_traffic_limit' => isset($data['monthly_traffic_limit']) ? (int) $data['monthly_traffic_limit'] : $user->monthly_traffic_limit,
             'expired_at' => array_key_exists('expired_at', $data) ? $data['expired_at'] : $user->expired_at,
             'enabled' => isset($data['enabled']) ? (bool) $data['enabled'] : $user->enabled,
         ])->save();
@@ -77,13 +78,6 @@ class UserController extends Controller
             $user->load('plan');
             $this->service->applyPlan($user);
             $this->service->provisionClient($user);
-
-            $reason = $this->banService->banReason($user);
-            if ($reason !== false) {
-                $this->banService->ban($user);
-            } elseif (!$user->enabled) {
-                $this->banService->unban($user);
-            }
         }
 
         // 手动改 enabled 时：同步到 3x-ui 节点
@@ -170,6 +164,7 @@ class UserController extends Controller
             'traffic_limit' => ['sometimes', 'integer', 'min:0'],
             'traffic_used' => ['sometimes', 'integer', 'min:0'],
             'monthly_traffic_used' => ['sometimes', 'integer', 'min:0'],
+            'monthly_traffic_limit' => ['sometimes', 'integer', 'min:0'],
             'expired_at' => ['sometimes', 'nullable', 'date'],
             'enabled' => ['sometimes', 'boolean'],
         ];
@@ -191,7 +186,7 @@ class UserController extends Controller
             'traffic_limit' => (int) $u->traffic_limit,
             'traffic_used' => (int) $u->traffic_used,
             'monthly_traffic_used' => (int) $u->monthly_traffic_used,
-            'monthly_traffic_limit' => $u->plan?->monthly_traffic ?? 0,
+            'monthly_traffic_limit' => (int) $u->monthly_traffic_limit,
             'expired_at' => $u->expired_at?->toIso8601String(),
             'enabled' => (bool) $u->enabled,
             'created_at' => $u->created_at?->toIso8601String(),

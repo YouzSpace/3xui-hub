@@ -28,25 +28,14 @@ class BanService
             return 'ban';
         }
 
-        $plan = $user->plan;
+        // 周期套餐：当月流量超限
+        if ($user->plan_id && $user->monthly_traffic_limit > 0 && $user->monthly_traffic_used >= $user->monthly_traffic_limit) {
+            return 'disable';
+        }
 
-        if ($plan && $plan->isPeriod()) {
-            // 周期套餐：当月流量超限
-            if ($plan->monthly_traffic > 0 && $user->monthly_traffic_used >= $plan->monthly_traffic) {
-                return 'disable';
-            }
-            // 周期套餐：总流量超限
-            if ($plan->period_traffic > 0 && $user->traffic_used >= $plan->period_traffic) {
-                return 'ban';
-            }
-        } elseif ($plan && $plan->isTotal()) {
-            // 总量套餐：总流量超限
-            if ($plan->total_traffic > 0 && $user->traffic_used >= $plan->total_traffic) {
-                return 'ban';
-            }
-        } else {
-            // 无套餐：不封禁
-            return false;
+        // 周期/总量套餐：总流量超限
+        if ($user->plan_id && $user->traffic_limit > 0 && $user->traffic_used >= $user->traffic_limit) {
+            return 'ban';
         }
 
         return false;

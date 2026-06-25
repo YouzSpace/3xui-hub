@@ -35,6 +35,7 @@ class UserAdminService
                 'traffic_limit' => 0,
                 'traffic_used' => 0,
                 'monthly_traffic_used' => 0,
+                'monthly_traffic_limit' => 0,
                 'expired_at' => null,
             ])->save();
             return;
@@ -45,6 +46,7 @@ class UserAdminService
                 'traffic_limit' => $plan->period_traffic ?? 0,
                 'traffic_used' => 0,
                 'monthly_traffic_used' => 0,
+                'monthly_traffic_limit' => $plan->monthly_traffic ?? 0,
                 'expired_at' => Carbon::now()->addMonths($plan->months)->toDateString(),
             ])->save();
         } else {
@@ -52,6 +54,7 @@ class UserAdminService
                 'traffic_limit' => $plan->total_traffic ?? 0,
                 'traffic_used' => 0,
                 'monthly_traffic_used' => 0,
+                'monthly_traffic_limit' => 0,
                 'expired_at' => null,
             ])->save();
         }
@@ -68,6 +71,7 @@ class UserAdminService
     {
         // 套餐联动：自动填充流量和到期时间
         $trafficLimit = (int) ($data['traffic_limit'] ?? 0);
+        $monthlyTrafficLimit = (int) ($data['monthly_traffic_limit'] ?? 0);
         $expiredAt = $data['expired_at'] ?? null;
 
         if (!empty($data['plan_id'])) {
@@ -75,9 +79,11 @@ class UserAdminService
             if ($plan) {
                 if ($plan->isPeriod()) {
                     $trafficLimit = $plan->period_traffic ?? 0;
+                    $monthlyTrafficLimit = $plan->monthly_traffic ?? 0;
                     $expiredAt = Carbon::now()->addMonths($plan->months)->toDateString();
                 } else {
                     $trafficLimit = $plan->total_traffic ?? 0;
+                    $monthlyTrafficLimit = 0;
                     $expiredAt = null;
                 }
             }
@@ -92,6 +98,7 @@ class UserAdminService
             'traffic_limit' => $trafficLimit,
             'traffic_used' => 0,
             'monthly_traffic_used' => 0,
+            'monthly_traffic_limit' => $monthlyTrafficLimit,
             'expired_at' => $expiredAt,
             'enabled' => (bool) ($data['enabled'] ?? true),
         ]);

@@ -25,6 +25,7 @@ use Illuminate\Notifications\Notifiable;
     'traffic_limit',
     'traffic_used',
     'monthly_traffic_used',
+    'monthly_traffic_limit',
     'expired_at',
     'enabled',
 ])]
@@ -42,6 +43,7 @@ class User extends Authenticatable
             'traffic_limit' => 'integer',
             'traffic_used' => 'integer',
             'monthly_traffic_used' => 'integer',
+            'monthly_traffic_limit' => 'integer',
             'plan_id' => 'integer',
         ];
     }
