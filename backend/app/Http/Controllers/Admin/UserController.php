@@ -51,11 +51,6 @@ class UserController extends Controller
 
         $user = $this->service->create($data);
 
-        // 无套餐用户直接禁用
-        if (!$user->plan_id) {
-            $this->banService->ban($user);
-        }
-
         return $this->success($this->present($user->load('plan'), true), '创建成功');
     }
 
@@ -77,15 +72,11 @@ class UserController extends Controller
             'enabled' => isset($data['enabled']) ? (bool) $data['enabled'] : $user->enabled,
         ])->save();
 
-        // 切换套餐时：重新计算流量/到期 + 自动封禁/解封
+        // 切换套餐时：重新计算流量/到期 + 同步 3x-ui client
         if ($newPlanId !== $oldPlanId) {
             $user->load('plan');
             $this->service->applyPlan($user);
-
-            // 如果用户之前没有套餐（新注册），需要在节点上创建 client
-            if (!$oldPlanId && $newPlanId) {
-                $this->service->provisionClient($user);
-            }
+            $this->service->provisionClient($user);
 
             $reason = $this->banService->banReason($user);
             if ($reason !== false) {

@@ -194,10 +194,11 @@ class PaymentService
             $userAdminService->applyPlan($user);
             $userAdminService->provisionClient($user);
 
+            // 续费后总是启用 3x-ui client
             if (!$user->enabled) {
                 $user->forceFill(['enabled' => true])->save();
-                app(\App\Services\BanService::class)->unban($user);
             }
+            app(\App\Services\BanService::class)->unban($user);
         }
     }
 

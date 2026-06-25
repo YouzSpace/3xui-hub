@@ -24,6 +24,7 @@ class UserAdminService
     /**
      * 切换套餐时重新计算用户的流量限额和到期时间。
      * 无套餐 → 清零限额、永不过期。
+     * 切换套餐 → 重置已用流量，直接使用新套餐额度。
      */
     public function applyPlan(User $user): void
     {
@@ -42,16 +43,21 @@ class UserAdminService
         if ($plan->isPeriod()) {
             $user->forceFill([
                 'traffic_limit' => $plan->period_traffic ?? 0,
+                'traffic_used' => 0,
                 'monthly_traffic_used' => 0,
                 'expired_at' => Carbon::now()->addMonths($plan->months)->toDateString(),
             ])->save();
         } else {
             $user->forceFill([
                 'traffic_limit' => $plan->total_traffic ?? 0,
+                'traffic_used' => 0,
                 'monthly_traffic_used' => 0,
                 'expired_at' => null,
             ])->save();
         }
+
+        // 重置 3x-ui 流量统计
+        $this->resetClientOnNodes($user);
     }
 
     /**
@@ -96,14 +102,15 @@ class UserAdminService
     }
 
     /**
-     * 在各 enabled 节点上创建 3x-ui client（ch_user_{id}），并回读 uuid 存库。
+     * 在各 enabled 节点上同步 3x-ui client（ch_user_{id}）。
+     * client 存在则更新配置，不存在则创建。
      */
     public function provisionClient(User $user): void
     {
         $email = $user->clientEmail();
-        $client = [
+        $clientData = [
             'email' => $email,
-            'enable' => (bool) $user->enabled,
+            'enable' => $user->plan_id ? (bool) $user->enabled : false,  // 无套餐禁用
             'totalGB' => $user->traffic_limit > 0 ? (int) $user->traffic_limit : 0,
             'expiryTime' => $user->expired_at ? (int) ($user->expired_at->timestamp * 1000) : 0,
             'limitIp' => 0,
@@ -115,10 +122,26 @@ class UserAdminService
                 continue;
             }
 
+            $client = $this->clientFactory->forNode($node);
             try {
-                $created = $this->clientFactory->forNode($node)->addClient($client, $inboundIds);
-                if (!empty($created['uuid']) && !$user->uuid) {
-                    $user->forceFill(['uuid' => $created['uuid']])->save();
+                // 先检查 client 是否存在
+                $existing = $client->getClient($email);
+                if ($existing) {
+                    // 已存在：更新配置
+                    $clientData['id'] = $existing['id'] ?? null;
+                    foreach ($inboundIds as $inboundId) {
+                        try {
+                            $client->updateClient($email, $clientData, $inboundId);
+                        } catch (\Throwable $e) {
+                            report($e);
+                        }
+                    }
+                } else {
+                    // 不存在：创建新 client
+                    $created = $client->addClient($clientData, $inboundIds);
+                    if (!empty($created['uuid']) && !$user->uuid) {
+                        $user->forceFill(['uuid' => $created['uuid']])->save();
+                    }
                 }
             } catch (\Throwable $e) {
                 report($e);

@@ -8,17 +8,8 @@ use App\Models\User;
 /**
  * 封禁服务（M8 + 套餐适配）。
  *
- * 周期套餐：
- *   当月流量 monthly_traffic_used >= plan.monthly_traffic → 禁用（管理员可重置）
- *   总流量 traffic_used >= plan.period_traffic → 封禁（永久）
- *   到期 → 封禁
- *
- * 总量套餐：
- *   总流量 traffic_used >= plan.total_traffic → 封禁（永久，不可重置）
- *   永不过期
- *
- * 无套餐：
- *   直接封禁（没有流量 = 不可用）
+ * 到期/超限/无套餐：不封禁用户，允许登录续费。
+ * 仅管理员手动封禁才生效。
  */
 class BanService
 {
@@ -32,7 +23,7 @@ class BanService
      */
     public function banReason(User $user): string|false
     {
-        // 到期检查（周期套餐和无套餐）
+        // 到期检查
         if ($user->expired_at !== null && $user->expired_at->isPast()) {
             return 'ban';
         }
@@ -40,22 +31,22 @@ class BanService
         $plan = $user->plan;
 
         if ($plan && $plan->isPeriod()) {
-            // 周期套餐：当月流量超限 → 临时禁用
+            // 周期套餐：当月流量超限
             if ($plan->monthly_traffic > 0 && $user->monthly_traffic_used >= $plan->monthly_traffic) {
                 return 'disable';
             }
-            // 周期套餐：总流量超限 → 永久封禁
+            // 周期套餐：总流量超限
             if ($plan->period_traffic > 0 && $user->traffic_used >= $plan->period_traffic) {
                 return 'ban';
             }
         } elseif ($plan && $plan->isTotal()) {
-            // 总量套餐：总流量超限 → 永久封禁
+            // 总量套餐：总流量超限
             if ($plan->total_traffic > 0 && $user->traffic_used >= $plan->total_traffic) {
                 return 'ban';
             }
         } else {
-            // 无套餐：没有流量，直接封禁
-            return 'ban';
+            // 无套餐：不封禁
+            return false;
         }
 
         return false;
@@ -80,7 +71,8 @@ class BanService
     }
 
     /**
-     * 流量同步后内联检查（M8.4）：满足禁用条件则 ban/disable。
+     * 流量同步后内联检查（M8.4）：满足禁用条件则禁用 3x-ui client。
+     * 注意：不禁用 ControlHub 用户，用户仍能登录续费。
      */
     public function checkAfterSync(User $user): void
     {
@@ -88,7 +80,8 @@ class BanService
 
         $reason = $this->banReason($user);
         if ($reason !== false) {
-            $this->ban($user);
+            // 只禁用 3x-ui client，不禁用 ControlHub 用户
+            $this->toggleClient($user, false);
         }
     }
 
