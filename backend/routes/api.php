@@ -19,6 +19,13 @@ Route::get('/ping', function (): \Illuminate\Http\JsonResponse {
     return response()->json(['code' => 0, 'msg' => 'ok', 'data' => ['pong' => true]]);
 });
 
+// 公开：站点配置（无需鉴权）
+Route::get('/site-config', function (): \Illuminate\Http\JsonResponse {
+    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon'];
+    $data = \App\Models\SiteConfig::getMany($keys);
+    return response()->json(['code' => 0, 'msg' => 'ok', 'data' => $data]);
+});
+
 // 认证（Token 登录，无状态）
 Route::post('/login', [AuthController::class, 'login']);
 

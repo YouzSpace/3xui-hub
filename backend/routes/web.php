@@ -8,6 +8,7 @@ use App\Http\Controllers\Admin\PaymentController as AdminPaymentController;
 use App\Http\Controllers\Admin\PlanController as AdminPlanController;
 use App\Http\Controllers\Admin\SyncTrafficController as AdminSyncTrafficController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
+use App\Http\Controllers\Admin\SiteSettingController as AdminSiteSettingController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -72,4 +73,8 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/payments/{payment}', [AdminPaymentController::class, 'show']);
     Route::put('/payments/{payment}', [AdminPaymentController::class, 'update']);
     Route::delete('/payments/{payment}', [AdminPaymentController::class, 'destroy']);
+
+    // 站点信息配置
+    Route::get('/site-settings', [AdminSiteSettingController::class, 'index']);
+    Route::put('/site-settings', [AdminSiteSettingController::class, 'update']);
 });
