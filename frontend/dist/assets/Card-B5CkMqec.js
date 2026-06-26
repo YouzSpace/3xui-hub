@@ -1,0 +1,1 @@
+import{O as e,gt as t,j as n,n as r,p as i}from"./client-xbeK6QqN.js";var a=r({__name:`Card`,props:{padding:{type:Boolean,default:!0}},setup(r){return(a,o)=>(e(),i(`div`,{class:t([`ch-card`,{"ch-card--flush":!r.padding}])},[n(a.$slots,`default`,{},void 0,!0)],2))}},[[`__scopeId`,`data-v-9bca7751`]]);export{a as t};
