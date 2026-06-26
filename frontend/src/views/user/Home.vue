@@ -59,7 +59,9 @@ onMounted(async () => {
 
     // === Hero 入场 ===
     gsap.fromTo('.lp-hero-title', { y: 80, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 1.2, ease: 'power3.out', delay: 0.2 })
-    gsap.fromTo('.lp-hero-sub', { y: 40, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.8, ease: 'power3.out', delay: 0.5 })
+    if (document.querySelector('.lp-hero-sub')) {
+      gsap.fromTo('.lp-hero-sub', { y: 40, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.8, ease: 'power3.out', delay: 0.5 })
+    }
     gsap.fromTo('.lp-hero-actions', { y: 40, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.8, ease: 'power3.out', delay: 0.7 })
     gsap.fromTo('.lp-map-wrap', { scale: 0.9, autoAlpha: 0 }, { scale: 1, autoAlpha: 1, duration: 1.2, ease: 'power3.out', delay: 0.4 })
 
@@ -130,7 +132,9 @@ onMounted(async () => {
     })
 
     // === 套餐 Tab ===
-    gsap.fromTo('.lp-plan-tabs', { y: 20, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.6, ease: 'power3.out', scrollTrigger: { trigger: '.lp-plan-tabs', start: 'top 88%', once: true } })
+    if (document.querySelector('.lp-plan-tabs')) {
+      gsap.fromTo('.lp-plan-tabs', { y: 20, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.6, ease: 'power3.out', scrollTrigger: { trigger: '.lp-plan-tabs', start: 'top 88%', once: true } })
+    }
 
     // === 套餐卡片 ===
     if (plans.value.length) {
@@ -392,7 +396,7 @@ onUnmounted(() => ctx?.revert())
 .lp-nav-logo { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-muted); color: var(--accent); }
 .lp-nav-logo-img { width: 28px; height: 28px; object-fit: contain; border-radius: 8px; }
 .lp-nav-logo:has(img) { background: transparent; }
-.lp-nav-name { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+.lp-nav-name { font-family: 'Playfair Display', Georgia, 'Times New Roman', serif; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
 .lp-nav-links { display: flex; gap: 24px; flex: 1; }
 .lp-nav-links a { color: var(--text-secondary); text-decoration: none; font-size: 13px; font-weight: 500; transition: color 0.3s; }
 .lp-nav-links a:hover { color: var(--text-primary); }
@@ -411,7 +415,7 @@ onUnmounted(() => ctx?.revert())
 
 /* Hero */
 .lp-hero { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; max-width: 1200px; margin: 0 auto; padding: 140px 48px 100px; min-height: 100vh; }
-.lp-hero-title { font-size: clamp(3rem, 6vw, 4.5rem); font-weight: 800; letter-spacing: -0.04em; line-height: 1.05; margin: 0 0 20px; }
+.lp-hero-title { font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif; font-size: clamp(3rem, 6vw, 4.5rem); font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; margin: 0 0 20px; }
 .lp-hero-dot { color: var(--accent); }
 .lp-hero-sub { font-size: 20px; color: var(--text-secondary); margin: 0 0 36px; font-weight: 500; line-height: 1.4; }
 .lp-hero-actions { display: flex; gap: 12px; margin-bottom: 48px; }
@@ -520,7 +524,7 @@ onUnmounted(() => ctx?.revert())
   .lp-nav { padding: 12px 16px; }
   .lp-nav-inner { gap: 16px; padding: 6px 6px 6px 16px; justify-content: space-between; }
   .lp-nav-links { display: none; }
-  .lp-theme-fixed { top: 14px; right: 60px; }
+  .lp-theme-fixed { display: none; }
   .lp-hero { grid-template-columns: 1fr; gap: 40px; padding: 120px 24px 60px; text-align: center; min-height: auto; }
   .lp-hero-title { font-size: 2.5rem; }
   .lp-hero-actions { justify-content: center; }
