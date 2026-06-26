@@ -76,8 +76,8 @@ class UserController extends Controller
         // 切换套餐时：重新计算流量/到期 + 同步 3x-ui client
         if ($newPlanId !== $oldPlanId) {
             $user->load('plan');
-            $this->service->provisionClient($user);
             $this->service->applyPlan($user);
+            $this->service->provisionClient($user);
         }
 
         // 手动改 enabled 时：同步到 3x-ui 节点

@@ -14,6 +14,11 @@ use Illuminate\Support\Facades\Log;
  */
 class PaymentService
 {
+    public function __construct(
+        private UserAdminService $userAdminService,
+        private BanService $banService,
+    ) {}
+
     /**
      * 创建订单并返回支付链接。
      */
@@ -192,16 +197,16 @@ class PaymentService
 
         if ($user && $plan) {
             $user->forceFill(['plan_id' => $plan->id])->save();
+            $user->load('plan'); // 刷新关系，确保 applyPlan 读到新套餐
 
-            $userAdminService = app(\App\Services\UserAdminService::class);
-            $userAdminService->provisionClient($user);
-            $userAdminService->applyPlan($user);
+            $this->userAdminService->applyPlan($user);
+            $this->userAdminService->provisionClient($user);
 
             // 续费后总是启用 3x-ui client
             if (!$user->enabled) {
                 $user->forceFill(['enabled' => true])->save();
             }
-            app(\App\Services\BanService::class)->unban($user);
+            $this->banService->unban($user);
         }
     }
 
