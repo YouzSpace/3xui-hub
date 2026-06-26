@@ -42,6 +42,7 @@ Route::post('/payment/notify', [ApiPaymentController::class, 'notify']);
 // 受 api.auth 保护的端点
 Route::middleware('api.auth')->group(function () {
     Route::get('/me', [ApiUserController::class, 'me']);
+    Route::post('/sync-traffic', [ApiUserController::class, 'syncTraffic']);
     Route::get('/nodes', [ApiNodeController::class, 'index']);
     Route::post('/protocol', [ProtocolController::class, 'switch']);
 

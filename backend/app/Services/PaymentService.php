@@ -75,7 +75,10 @@ class PaymentService
      */
     public function buildPayUrl(PaymentConfig $payment, Order $order): string
     {
-        $notifyUrl = $payment->notify_url ?: url('/api/payment/notify');
+        // notify_url 必须是完整的回调 URL，如果不是则用默认值
+        $notifyUrl = ($payment->notify_url && str_starts_with($payment->notify_url, 'http'))
+            ? $payment->notify_url
+            : url('/api/payment/notify');
         $callbackUrl = url('/');
 
         $params = [
@@ -149,7 +152,7 @@ class PaymentService
             'returncode' => $returnCode,
         ];
         $expectedSign = $this->generateSign($verifyData, $payment->api_key);
-        if ($sign !== $expectedSign) {
+        if (strcasecmp($sign, $expectedSign) !== 0) {
             Log::error('支付回调: 签名验证失败', ['order_no' => $orderId, 'expected' => $expectedSign, 'got' => $sign]);
             return false;
         }
@@ -159,7 +162,7 @@ class PaymentService
             return false;
         }
 
-        if (bccomp($amount, $order->amount, 2) !== 0) {
+        if (abs((float)$amount - (float)$order->amount) > 0.01) {
             Log::error('支付回调: 金额不匹配', ['expected' => $order->amount, 'actual' => $amount]);
             return false;
         }
@@ -191,8 +194,8 @@ class PaymentService
             $user->forceFill(['plan_id' => $plan->id])->save();
 
             $userAdminService = app(\App\Services\UserAdminService::class);
-            $userAdminService->applyPlan($user);
             $userAdminService->provisionClient($user);
+            $userAdminService->applyPlan($user);
 
             // 续费后总是启用 3x-ui client
             if (!$user->enabled) {
