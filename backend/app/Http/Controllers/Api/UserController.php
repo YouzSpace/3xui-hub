@@ -55,11 +55,13 @@ class UserController extends Controller
     }
 
     /**
-     * 获取当前用户流量数据（不再实时同步，由定时任务处理）。
+     * 手动同步当前用户在所有节点上的流量。
      */
     public function syncTraffic(Request $request): \Illuminate\Http\JsonResponse
     {
         $user = $request->user();
+        $this->syncUserTraffic($user);
+        $user->refresh();
         $user->load('plan');
 
         return $this->success([
