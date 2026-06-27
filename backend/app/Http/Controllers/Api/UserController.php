@@ -32,11 +32,7 @@ class UserController extends Controller
             return $this->error('未认证', 401);
         }
 
-        // 自动同步该用户的流量
-        $this->syncUserTraffic($user);
-
-        // 重新加载用户数据
-        $user->refresh();
+        // 加载用户数据（流量由定时任务同步，不在每次请求时同步）
         $user->load('plan');
 
         return $this->success([
@@ -59,13 +55,11 @@ class UserController extends Controller
     }
 
     /**
-     * 同步当前用户在所有节点上的流量。
+     * 获取当前用户流量数据（不再实时同步，由定时任务处理）。
      */
     public function syncTraffic(Request $request): \Illuminate\Http\JsonResponse
     {
         $user = $request->user();
-        $this->syncUserTraffic($user);
-        $user->refresh();
         $user->load('plan');
 
         return $this->success([

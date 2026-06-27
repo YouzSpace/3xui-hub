@@ -89,6 +89,15 @@ class BackupController extends Controller
     }
 
     /**
+     * 获取 stderr 重定向到空设备的命令片段。
+     * Windows: 2>nul  |  Linux: 2>/dev/null
+     */
+    private function stderrNull(): string
+    {
+        return PHP_OS_FAMILY === 'Windows' ? '2>nul' : '2>/dev/null';
+    }
+
+    /**
      * 导出数据库（zip包：dump.sql + .env）。
      */
     public function export()
@@ -101,10 +110,10 @@ class BackupController extends Controller
         // mysqldump 导出（直接重定向到文件，避免 exec 捕获时编码损坏）
         $mysqldump = $this->findMysqlTool('mysqldump');
         // --set-gtid-purged=OFF 是 MySQL 专用，MariaDB 不支持
-        $isMariaDb = stripos(shell_exec('mysql --version 2>/dev/null') ?? '', 'mariadb') !== false;
+        $isMariaDb = stripos(shell_exec('mysql --version ' . $this->stderrNull()) ?? '', 'mariadb') !== false;
         $gtidOpt = $isMariaDb ? '' : ' --set-gtid-purged=OFF';
         $cmd = sprintf(
-            '%s --host=%s --port=%s --user=%s --password=%s --single-transaction --routines --triggers%s %s > %s 2>/dev/null',
+            '%s --host=%s --port=%s --user=%s --password=%s --single-transaction --routines --triggers%s %s > %s ' . $this->stderrNull(),
             escapeshellarg($mysqldump),
             escapeshellarg($cfg['host']),
             escapeshellarg($cfg['port']),
@@ -458,7 +467,7 @@ class BackupController extends Controller
         $mysql = $this->findMysqlTool('mysql');
 
         $cmd = sprintf(
-            '%s --host=%s --port=%s --user=%s --password=%s %s < %s 2>/dev/null',
+            '%s --host=%s --port=%s --user=%s --password=%s %s < %s ' . $this->stderrNull(),
             escapeshellarg($mysql),
             escapeshellarg($cfg['host']),
             escapeshellarg($cfg['port']),
@@ -493,7 +502,7 @@ class BackupController extends Controller
         try {
             // 导入 SQL 到临时库
             $cmd = sprintf(
-                '%s --host=%s --port=%s --user=%s --password=%s %s < %s 2>/dev/null',
+                '%s --host=%s --port=%s --user=%s --password=%s %s < %s ' . $this->stderrNull(),
                 escapeshellarg($mysql),
                 escapeshellarg($cfg['host']),
                 escapeshellarg($cfg['port']),

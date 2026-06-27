@@ -34,11 +34,7 @@ class SubscriptionController extends Controller
             return $this->text('[404] 用户不存在', 404, '用户不存在');
         }
 
-        // 同步流量
-        $this->syncUserTraffic($user);
-
-        // 重新加载用户数据
-        $user->refresh();
+        // 加载用户数据（流量由定时任务同步，不在每次请求时同步）
         $user->load('plan');
 
         // 检查封禁状态
