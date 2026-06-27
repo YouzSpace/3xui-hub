@@ -484,38 +484,51 @@ cmd_restart() {
     echo -e "${GREEN}服务重启完成${NC}"
 }
 
+# 执行命令
+run_cmd() {
+    local CMD="$1"
+    if [[ "$CMD" =~ ^[0-9]+$ ]]; then
+        local IDX=$((CMD - 1))
+        if [ "$IDX" -ge 0 ] && [ "$IDX" -lt "${#CMDS[@]}" ]; then
+            CMD="${CMDS[$IDX]}"
+        else
+            echo -e "${RED}无效编号: $CMD（1-${#CMDS[@]}）${NC}"
+            return 1
+        fi
+    fi
+
+    case "$CMD" in
+        status)       cmd_status ;;
+        check-update) cmd_check_update ;;
+        update)       cmd_update ;;
+        admin-user)   cmd_admin_user ;;
+        admin-pass)   cmd_admin_pass ;;
+        sync)         cmd_sync ;;
+        sync-status)  cmd_sync_status ;;
+        backup)       cmd_backup ;;
+        log)          cmd_log ;;
+        restart)      cmd_restart ;;
+        ssl)          cmd_ssl ;;
+        help|--help|-h) show_help ;;
+        *)
+            echo -e "${RED}未知命令: $CMD${NC}"
+            echo ""
+            show_help
+            return 1
+            ;;
+    esac
+}
+
 # 主逻辑
-# 支持编号快捷方式
-CMD="${1:-help}"
-if [[ "$CMD" =~ ^[0-9]+$ ]]; then
-    IDX=$((CMD - 1))
-    if [ "$IDX" -ge 0 ] && [ "$IDX" -lt "${#CMDS[@]}" ]; then
-        CMD="${CMDS[$IDX]}"
-    else
-        echo -e "${RED}无效编号: $1（1-${#CMDS[@]}）${NC}"
-        echo ""
-        show_help
-        exit 1
+if [ -n "$1" ]; then
+    # 有参数：直接执行
+    run_cmd "$1"
+else
+    # 无参数：交互式菜单
+    show_help
+    echo ""
+    read -p "请输入编号或命令: " INPUT
+    if [ -n "$INPUT" ]; then
+        run_cmd "$INPUT"
     fi
 fi
-
-case "$CMD" in
-    status)       cmd_status ;;
-    check-update) cmd_check_update ;;
-    update)       cmd_update ;;
-    admin-user)   cmd_admin_user ;;
-    admin-pass)   cmd_admin_pass ;;
-    sync)         cmd_sync ;;
-    sync-status)  cmd_sync_status ;;
-    backup)       cmd_backup ;;
-    log)          cmd_log ;;
-    restart)      cmd_restart ;;
-    ssl)          cmd_ssl ;;
-    help|--help|-h) show_help ;;
-    *)
-        echo -e "${RED}未知命令: $CMD${NC}"
-        echo ""
-        show_help
-        exit 1
-        ;;
-esac
