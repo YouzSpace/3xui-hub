@@ -73,13 +73,28 @@ class UserController extends Controller
 
     /**
      * 同步用户在所有节点上的流量。
+     * 使用 getClientStatsGroupedByInbound 合并所有 inbound 的流量，
+     * 与定时任务保持一致。
      */
     private function syncUserTraffic(User $user): void
     {
-        Node::where('enabled', true)->each(function (Node $node) use ($user) {
+        $email = $user->clientEmail();
+
+        Node::where('enabled', true)->each(function (Node $node) use ($user, $email) {
             try {
                 $client = $this->factory->forNode($node);
-                $traffic = $client->getClientTraffic($user->clientEmail());
+                $statsByInbound = $client->getClientStatsGroupedByInbound();
+
+                // 合并所有 inbound 的流量
+                $merged = ['up' => 0, 'down' => 0];
+                foreach ($statsByInbound as $emailStats) {
+                    if (isset($emailStats[$email])) {
+                        $merged['up'] += $emailStats[$email]['up'];
+                        $merged['down'] += $emailStats[$email]['down'];
+                    }
+                }
+
+                $traffic = ($merged['up'] > 0 || $merged['down'] > 0) ? $merged : null;
                 $this->syncService->syncUserNode($user, $node, $traffic);
             } catch (\Throwable $e) {
                 // 节点离线或异常，跳过
