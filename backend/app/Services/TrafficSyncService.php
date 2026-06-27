@@ -221,7 +221,7 @@ class TrafficSyncService
             \DB::update($sql, array_merge($params, $ids));
 
             // 周期套餐用户同时更新 monthly_traffic_used
-            $periodChunk = array_filter($chunk, fn($uid) => isset($periodUserIds[$uid]));
+            $periodChunk = array_filter($chunk, fn($uid) => isset($periodUserIds[$uid]), ARRAY_FILTER_USE_KEY);
             if (!empty($periodChunk)) {
                 $caseParts2 = [];
                 $params2 = [];
