@@ -523,6 +523,7 @@ run_cmd() {
 if [ -n "$1" ]; then
     # 有参数：直接执行
     run_cmd "$1"
+    exit $?
 else
     # 无参数：交互式菜单
     show_help
@@ -530,5 +531,6 @@ else
     read -p "请输入编号或命令: " INPUT
     if [ -n "$INPUT" ]; then
         run_cmd "$INPUT"
+        exit $?
     fi
 fi
