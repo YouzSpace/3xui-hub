@@ -177,8 +177,8 @@ cmd_update() {
     systemctl reload php8.4-fpm 2>/dev/null || pkill -USR2 php-fpm 2>/dev/null || true
 
     # 更新 3hub 命令本身
-    cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub 2>/dev/null || true
-    chmod +x /usr/local/bin/3hub 2>/dev/null || true
+    cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
+    chmod +x /usr/local/bin/3hub
 
     echo -e "${GREEN}更新完成！${NC}"
 }
