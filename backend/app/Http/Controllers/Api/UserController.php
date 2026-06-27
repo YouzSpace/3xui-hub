@@ -60,6 +60,7 @@ class UserController extends Controller
     public function syncTraffic(Request $request): \Illuminate\Http\JsonResponse
     {
         $user = $request->user();
+        $user->load('plan');
         $this->syncUserTraffic($user);
         $user->refresh();
         $user->load('plan');
