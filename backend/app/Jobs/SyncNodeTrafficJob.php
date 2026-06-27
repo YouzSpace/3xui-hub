@@ -14,9 +14,8 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * 单节点流量同步（M7.3~M7.5）。
- * 遍历本地 enabled 用户，getClientTraffic(ch_user_{id}) → 增量累加 → 写 snapshot。
- * 同步后内联封禁检查（M8.4）：超量/到期 → BanService::ban。
+ * 单节点流量同步（批量优化版）。
+ * 一次 listInbounds() 拉取全节点 client 流量，内存匹配后批量写入。
  */
 class SyncNodeTrafficJob implements ShouldQueue
 {
@@ -39,20 +38,43 @@ class SyncNodeTrafficJob implements ShouldQueue
 
         $client = $factory->forNode($node);
 
-        User::where('enabled', true)->with('plan')->each(function (User $user) use ($client, $sync, $node, $banService) {
-            try {
-                $traffic = $client->getClientTraffic($user->clientEmail());
-            } catch (\Throwable $e) {
-                report($e);
-                return;
+        // 1. 一次HTTP拉取全节点所有 inbound 的 client 流量
+        try {
+            $statsByInbound = $client->getClientStatsGroupedByInbound();
+        } catch (\Throwable $e) {
+            report($e);
+            return;
+        }
+
+        // 2. 合并所有 inbound 的流量（同用户跨 inbound 累加）
+        $mergedStats = [];
+        foreach ($statsByInbound as $inboundId => $emailStats) {
+            foreach ($emailStats as $email => $stat) {
+                if (!isset($mergedStats[$email])) {
+                    $mergedStats[$email] = ['up' => 0, 'down' => 0];
+                }
+                $mergedStats[$email]['up'] += $stat['up'];
+                $mergedStats[$email]['down'] += $stat['down'];
             }
+        }
 
-            $sync->syncUserNode($user, $node, $traffic);
+        // 3. 批量同步（增量计算）
+        $result = $sync->syncNodeBatch($node, $mergedStats);
 
-            // 内联封禁检查（fresh 重新加载 + 加载 plan 关联）
-            $fresh = $user->fresh();
-            $fresh->load('plan');
-            $banService->checkAfterSync($fresh);
-        });
+        // 4. 批量写入快照
+        $sync->upsertSnapshots($result['snapshotData']);
+
+        // 5. 批量更新用户流量
+        $sync->applyDeltas($result['deltaMap']);
+
+        // 6. Ban检查（仅检查有流量变化的用户）
+        if (!empty($result['deltaMap'])) {
+            $users = User::whereIn('id', array_keys($result['deltaMap']))->with('plan')->get();
+            foreach ($users as $user) {
+                $fresh = $user->fresh();
+                $fresh->load('plan');
+                $banService->checkAfterSync($fresh);
+            }
+        }
     }
 }

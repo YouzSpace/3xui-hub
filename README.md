@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.0.0**
+**版本：1.1.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -96,6 +96,12 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 
 ## 版本记录
 
+### v1.1.0 (2026-06-27)
+
+- 流量同步性能优化：批量拉取 + 并行请求 + upsert 快照
+- 支持万级用户 + 千级节点
+- 快照表改为 upsert 模式（每 user+node 只保留1条）
+
 ### v1.0.0 (2026-06-24)
 
 - 初始发布
@@ -122,7 +128,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.0.0**
+**Version: 1.1.0**
 
 ## Quick Install
 

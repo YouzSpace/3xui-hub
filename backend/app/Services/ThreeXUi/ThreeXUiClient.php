@@ -252,6 +252,36 @@ class ThreeXUiClient
         return is_array($obj) ? $obj : [];
     }
 
+    /**
+     * 一次拉取所有 inbound 的 client 流量统计。
+     * 返回 [inboundId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
+     *
+     * 用于批量流量同步，每个节点只需1次HTTP请求。
+     */
+    public function getClientStatsGroupedByInbound(): array
+    {
+        $inbounds = $this->listInbounds();
+        $result = [];
+
+        foreach ($inbounds as $inbound) {
+            $inboundId = $inbound['id'] ?? null;
+            if ($inboundId === null) continue;
+
+            $stats = [];
+            foreach ($inbound['clientStats'] ?? [] as $stat) {
+                $email = $stat['email'] ?? '';
+                if ($email === '') continue;
+                $stats[$email] = [
+                    'up' => (int) ($stat['up'] ?? 0),
+                    'down' => (int) ($stat['down'] ?? 0),
+                ];
+            }
+            $result[$inboundId] = $stats;
+        }
+
+        return $result;
+    }
+
     /** GET /panel/api/inbounds/options → 轻量 picker [{id,protocol,port,tag,remark,tlsFlowCapable}]。 */
     public function inboundOptions(): array
     {
