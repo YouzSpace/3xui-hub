@@ -55,6 +55,7 @@ Route::middleware('api.auth')->group(function () {
 
     // 支付相关
     Route::post('/payment/create', [ApiPaymentController::class, 'create']);
+    Route::post('/payment/create-reset', [ApiPaymentController::class, 'createReset']);
     Route::get('/payment/status', [ApiPaymentController::class, 'status']);
     Route::get('/payment/orders', [ApiPaymentController::class, 'orders']);
     Route::post('/payment/retry', [ApiPaymentController::class, 'retry']);

@@ -22,7 +22,7 @@ class PaymentService
     /**
      * 创建订单并返回支付链接。
      */
-    public function createOrder(User $user, int $planId, int $paymentConfigId = null): array
+    public function createOrder(User $user, int $planId, ?int $paymentConfigId = null): array
     {
         $plan = Plan::find($planId);
         if (!$plan) {
@@ -178,10 +178,16 @@ class PaymentService
     }
 
     /**
-     * 完成订单。
+     * 处理支付回调（区分普通订单和重置订单）。
      */
     public function completeOrder(Order $order, ?string $tradeNo = null): void
     {
+        // 重置流量订单走专用逻辑
+        if (str_starts_with($order->order_no, 'RST')) {
+            $this->completeResetOrder($order, $tradeNo);
+            return;
+        }
+
         if ($order->status === 'paid') {
             return;
         }
@@ -261,5 +267,90 @@ class PaymentService
         ksort($filtered);
         $stringSignTemp = http_build_query($filtered) . '&key=' . $apiKey;
         return strtoupper(md5($stringSignTemp));
+    }
+
+    /**
+     * 创建重置流量订单。
+     * 价格 = 套餐价格，重置量 = 套餐月流量。
+     */
+    public function createResetOrder(User $user, ?int $paymentConfigId = null): array
+    {
+        $plan = $user->plan;
+        if (!$plan || $plan->type !== 'period') {
+            throw new \InvalidArgumentException('仅周期套餐可购买重置流量');
+        }
+
+        if ($paymentConfigId) {
+            $payment = PaymentConfig::where('id', $paymentConfigId)->where('enabled', true)->first();
+        } else {
+            $payment = PaymentConfig::where('enabled', true)->first();
+        }
+
+        if (!$payment) {
+            throw new \InvalidArgumentException('暂无可用支付方式');
+        }
+
+        $resetPrice = (float) ($plan->reset_price ?? 0);
+
+        $order = Order::create([
+            'order_no' => 'RST' . Order::generateOrderNo(),
+            'user_id' => $user->id,
+            'plan_id' => $plan->id,
+            'amount' => $resetPrice,
+            'status' => 'pending',
+            'payment_config_id' => $payment->id,
+            'pay_ip' => request()->ip(),
+        ]);
+
+        // 免费直接完成
+        if ($resetPrice <= 0) {
+            $this->completeResetOrder($order);
+            return [
+                'order_no' => $order->order_no,
+                'status' => 'paid',
+            ];
+        }
+
+        $payUrl = $this->buildPayUrl($payment, $order);
+
+        return [
+            'order_no' => $order->order_no,
+            'pay_url' => $payUrl,
+            'status' => 'pending',
+        ];
+    }
+
+    /**
+     * 完成重置流量订单：加总流量 + 清零月流量 + 打开 3x-ui。
+     */
+    public function completeResetOrder(Order $order, ?string $tradeNo = null): void
+    {
+        if ($order->status === 'paid') {
+            return;
+        }
+
+        $order->forceFill([
+            'status' => 'paid',
+            'trade_no' => $tradeNo,
+            'paid_at' => now(),
+        ])->save();
+
+        $user = $order->user;
+        $plan = $order->plan;
+
+        if (!$user || !$plan) return;
+
+        // 加总流量（3x-ui 总流量 + 月流量额度）
+        $addTraffic = $plan->monthly_traffic ?? 0;
+        $user->forceFill([
+            'traffic_limit' => ($user->traffic_limit ?? 0) + $addTraffic,
+            'monthly_traffic_used' => 0,
+        ])->save();
+
+        // 同步新的流量限制到 3x-ui + 重置流量计数 + 打开连接
+        $user->refresh();
+        $this->userAdminService->provisionClient($user);
+        $this->userAdminService->resetClientOnNodes($user);
+        $this->banService->toggleClient($user, true);
     }
 }

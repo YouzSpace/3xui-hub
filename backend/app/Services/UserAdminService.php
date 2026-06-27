@@ -199,20 +199,28 @@ class UserAdminService
     }
 
     /**
-     * 重置用户当月流量：清零 monthly_traffic_used + 3x-ui 各 enabled 节点 resetClientTraffic。
+     * 重置用户当月流量：清零 monthly_traffic_used + 总流量加月流量额度 + 同步 3x-ui + 打开连接。
      */
     public function resetTraffic(User $user): void
     {
         if ($user->isPeriodPlan()) {
-            $user->forceFill(['monthly_traffic_used' => 0])->save();
+            $addTraffic = $user->monthly_traffic_limit ?? 0;
+            $user->forceFill([
+                'monthly_traffic_used' => 0,
+                'traffic_limit' => ($user->traffic_limit ?? 0) + $addTraffic,
+            ])->save();
         } else {
             $user->forceFill(['traffic_used' => 0])->save();
         }
 
+        // 同步新的流量限制到 3x-ui + 重置流量计数 + 打开连接
+        $user->refresh();
+        $this->provisionClient($user);
         $this->resetClientOnNodes($user);
+        app(BanService::class)->toggleClient($user, true);
     }
 
-    private function resetClientOnNodes(User $user): void
+    public function resetClientOnNodes(User $user): void
     {
         $email = $user->clientEmail();
         foreach (Node::where('enabled', true)->get() as $node) {

@@ -42,12 +42,12 @@ class SyncTrafficController extends Controller
                 }
             }
 
-            // 检查封禁
+            // 检查是否需要关闭流量
             $fresh = $user->fresh();
             $fresh->load('plan');
             $reason = $this->banService->banReason($fresh);
             if ($reason !== false && $fresh->enabled) {
-                $this->banService->ban($fresh);
+                $this->banService->toggleClient($fresh, false);
                 $banned++;
             }
 

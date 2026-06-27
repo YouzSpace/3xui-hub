@@ -62,6 +62,7 @@ class PlanController extends Controller
         $data = $request->validate([
             'name' => ['required', 'string', 'max:64'],
             'price' => ['sometimes', 'numeric', 'min:0'],
+            'reset_price' => ['sometimes', 'numeric', 'min:0'],
             'type' => ['required', 'in:period,total'],
             'months' => ['nullable', 'integer', 'min:1'],
             'monthly_traffic' => ['nullable', 'integer', 'min:0'],
@@ -75,6 +76,8 @@ class PlanController extends Controller
             if (empty($data['months'])) {
                 $data['months'] = 1;
             }
+            // 周期总流量自动计算 = 每月流量 × 月数
+            $data['period_traffic'] = ($data['monthly_traffic'] ?? 0) * $data['months'];
         } else {
             $data['months'] = null;
             $data['monthly_traffic'] = null;
@@ -90,6 +93,7 @@ class PlanController extends Controller
             'id' => $p->id,
             'name' => $p->name,
             'price' => (float) $p->price,
+            'reset_price' => (float) ($p->reset_price ?? 0),
             'type' => $p->type,
             'months' => $p->months,
             'monthly_traffic' => $p->monthly_traffic,

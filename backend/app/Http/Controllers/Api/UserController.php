@@ -47,6 +47,8 @@ class UserController extends Controller
             'plan_id' => $user->plan_id,
             'plan_type' => $user->plan?->type,
             'plan_name' => $user->plan?->name,
+            'plan_price' => (float) ($user->plan?->price ?? 0),
+            'plan_reset_price' => (float) ($user->plan?->reset_price ?? 0),
             'traffic_limit' => (int) $user->traffic_limit,
             'traffic_used' => (int) $user->traffic_used,
             'monthly_traffic_used' => (int) $user->monthly_traffic_used,

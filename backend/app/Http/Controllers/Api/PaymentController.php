@@ -198,4 +198,27 @@ class PaymentController extends Controller
             'pay_url' => $payUrl,
         ]);
     }
+
+    /**
+     * 创建重置流量订单。
+     */
+    public function createReset(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $user = $request->user();
+
+        $data = $request->validate([
+            'payment_config_id' => ['sometimes', 'nullable', 'integer'],
+        ]);
+
+        try {
+            $result = $this->paymentService->createResetOrder($user, $data['payment_config_id'] ?? null);
+        } catch (\InvalidArgumentException $e) {
+            return $this->error($e->getMessage(), 400);
+        } catch (\Throwable $e) {
+            report($e);
+            return $this->error('创建订单失败', 500);
+        }
+
+        return $this->success($result);
+    }
 }

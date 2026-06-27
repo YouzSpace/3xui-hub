@@ -15,6 +15,7 @@ class Plan extends Model
     protected $fillable = [
         'name',
         'price',
+        'reset_price',
         'type',
         'months',
         'monthly_traffic',

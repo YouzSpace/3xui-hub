@@ -8,8 +8,8 @@ use App\Models\User;
 /**
  * 封禁服务（M8 + 套餐适配）。
  *
- * 到期/超限/无套餐：不封禁用户，允许登录续费。
- * 仅管理员手动封禁才生效。
+ * 到期/超限/无套餐：不禁用用户，只关闭 3x-ui 流量。
+ * 仅管理员手动封禁才设置 enabled=false。
  */
 class BanService
 {
@@ -18,24 +18,25 @@ class BanService
     }
 
     /**
-     * 判断用户是否应被禁用/封禁。
-     * 返回 'ban'（永久封禁）、'disable'（临时禁用，可重置）、false（正常）。
+     * 判断用户是否应被关闭流量。
+     * 返回 'disable'（需要关闭 3x-ui 流量）、false（正常）。
+     * 永不返回 'ban'，只有管理员才能封禁用户。
      */
     public function banReason(User $user): string|false
     {
-        // 到期检查
+        // 到期检查 → 关闭流量
         if ($user->expired_at !== null && $user->expired_at->isPast()) {
-            return 'ban';
+            return 'disable';
         }
 
-        // 周期套餐：当月流量超限
+        // 周期套餐：当月流量超限 → 关闭流量
         if ($user->plan_id && $user->monthly_traffic_limit > 0 && $user->monthly_traffic_used >= $user->monthly_traffic_limit) {
             return 'disable';
         }
 
-        // 周期/总量套餐：总流量超限
+        // 周期/总量套餐：总流量超限 → 关闭流量
         if ($user->plan_id && $user->traffic_limit > 0 && $user->traffic_used >= $user->traffic_limit) {
-            return 'ban';
+            return 'disable';
         }
 
         return false;
@@ -47,6 +48,10 @@ class BanService
         return $this->banReason($user) !== false;
     }
 
+    /**
+     * 封禁用户（仅管理员手动操作）。
+     * 设置 enabled=false + 关闭 3x-ui 流量。
+     */
     public function ban(User $user): void
     {
         $user->forceFill(['enabled' => false])->save();
@@ -60,8 +65,8 @@ class BanService
     }
 
     /**
-     * 流量同步后内联检查（M8.4）：满足禁用条件则禁用 3x-ui client。
-     * 注意：不禁用 ControlHub 用户，用户仍能登录续费。
+     * 流量同步后内联检查（M8.4）：满足条件则关闭 3x-ui 流量。
+     * 不禁用用户，用户仍能登录续费。
      */
     public function checkAfterSync(User $user): void
     {
@@ -69,7 +74,6 @@ class BanService
 
         $reason = $this->banReason($user);
         if ($reason !== false) {
-            // 只禁用 3x-ui client，不禁用 ControlHub 用户
             $this->toggleClient($user, false);
         }
     }

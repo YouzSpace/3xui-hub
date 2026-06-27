@@ -42,14 +42,14 @@ class SyncTrafficCommand extends Command
                 }
             }
 
-            // 检查封禁
+            // 检查是否需要关闭流量
             $fresh = $user->fresh();
             $fresh->load('plan');
             $reason = $banService->banReason($fresh);
             if ($reason !== false && $fresh->enabled) {
-                $banService->ban($fresh);
+                $banService->toggleClient($fresh, false);
                 $banned++;
-                $this->line("  封禁用户 #{$fresh->id} ({$fresh->email}): {$reason}");
+                $this->line("  关闭流量 #{$fresh->id} ({$fresh->email}): {$reason}");
             }
 
             $synced++;

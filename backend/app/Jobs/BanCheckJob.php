@@ -11,8 +11,8 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * 封禁检查 Job（M8.3）：遍历启用中的用户，满足超量/到期 → ban。
- * 也可由 SyncNodeTrafficJob 内联触发（M8.4）。
+ * 流量检查 Job（M8.3）：遍历启用中的用户，满足超量/到期 → 关闭 3x-ui 流量。
+ * 不封禁用户，用户仍能登录。
  */
 class BanCheckJob implements ShouldQueue
 {
@@ -25,7 +25,7 @@ class BanCheckJob implements ShouldQueue
             ->each(function (User $user) use ($banService) {
                 $reason = $banService->banReason($user);
                 if ($reason !== false) {
-                    $banService->ban($user);
+                    $banService->toggleClient($user, false);
                 }
             });
     }
