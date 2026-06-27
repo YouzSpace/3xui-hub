@@ -23,29 +23,49 @@ check_install() {
     fi
 }
 
+# 命令列表（编号对应）
+CMDS=(
+    "status"
+    "check-update"
+    "update"
+    "admin-user"
+    "admin-pass"
+    "sync"
+    "sync-status"
+    "backup"
+    "log"
+    "restart"
+    "ssl"
+)
+
+CMD_LABELS=(
+    "查看系统状态"
+    "检测更新"
+    "更新系统"
+    "修改管理员账号"
+    "修改管理员密码"
+    "手动同步流量"
+    "查看自动同步状态"
+    "导出数据库备份"
+    "查看最近错误日志"
+    "重启 PHP-FPM 和 Nginx"
+    "配置域名和 SSL 证书"
+)
+
 # 显示帮助
 show_help() {
     echo -e "${CYAN}3hub${NC} - 3xui-hub 管理命令 v${VERSION}"
     echo ""
-    echo "用法: 3hub [命令]"
+    echo "用法: 3hub [命令|编号]"
     echo ""
     echo "命令:"
-    echo "  status        查看系统状态"
-    echo "  check-update  检测更新"
-    echo "  update        更新系统"
-    echo "  admin-user    修改管理员账号"
-    echo "  admin-pass    修改管理员密码"
-    echo "  sync          手动同步流量"
-    echo "  sync-status   查看自动同步状态"
-    echo "  backup        导出数据库备份"
-    echo "  log           查看最近错误日志"
-    echo "  restart       重启 PHP-FPM 和 Nginx"
-    echo "  ssl           配置域名和 SSL 证书"
-    echo "  help          显示此帮助"
+    for i in "${!CMDS[@]}"; do
+        printf "  ${GREEN}%2d${NC}  %-14s %s\n" $((i+1)) "${CMDS[$i]}" "${CMD_LABELS[$i]}"
+    done
     echo ""
     echo "示例:"
     echo "  3hub status"
-    echo "  3hub update"
+    echo "  3hub 1          # 等同于 3hub status"
 }
 
 # 查看状态
@@ -461,7 +481,21 @@ cmd_restart() {
 }
 
 # 主逻辑
-case "${1:-help}" in
+# 支持编号快捷方式
+CMD="${1:-help}"
+if [[ "$CMD" =~ ^[0-9]+$ ]]; then
+    IDX=$((CMD - 1))
+    if [ "$IDX" -ge 0 ] && [ "$IDX" -lt "${#CMDS[@]}" ]; then
+        CMD="${CMDS[$IDX]}"
+    else
+        echo -e "${RED}无效编号: $1（1-${#CMDS[@]}）${NC}"
+        echo ""
+        show_help
+        exit 1
+    fi
+fi
+
+case "$CMD" in
     status)       cmd_status ;;
     check-update) cmd_check_update ;;
     update)       cmd_update ;;
@@ -475,7 +509,7 @@ case "${1:-help}" in
     ssl)          cmd_ssl ;;
     help|--help|-h) show_help ;;
     *)
-        echo -e "${RED}未知命令: $1${NC}"
+        echo -e "${RED}未知命令: $CMD${NC}"
         echo ""
         show_help
         exit 1
