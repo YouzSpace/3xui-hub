@@ -160,7 +160,7 @@ cmd_update() {
 
     # 更新后端依赖
     cd "$BACKEND_DIR"
-    composer install --no-dev --optimize-autoloader 2>&1
+    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1
 
     # 迁移数据库
     php artisan migrate --force 2>&1

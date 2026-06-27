@@ -392,7 +392,7 @@ setup_env() {
     # 安装 PHP 依赖（使用国内镜像加速）
     info "安装 Composer 依赖..."
     composer config -g repos.packagist composer https://mirrors.aliyun.com/composer/ 2>/dev/null || true
-    composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
+    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
 
     # 生成 .env（始终使用自定义配置，不用 .env.example）
     cat > .env << EOF
