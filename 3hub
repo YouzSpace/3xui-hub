@@ -113,11 +113,17 @@ cmd_check_update() {
     if [ "$LOCAL" = "$REMOTE" ]; then
         echo -e "${GREEN}已是最新版本${NC}"
     else
-        echo -e "${YELLOW}有新版本可用！${NC}"
-        echo ""
-        git log --oneline HEAD..origin/main 2>/dev/null | head -10
-        echo ""
-        echo -e "运行 ${BLUE}3hub update${NC} 更新"
+        # 检查是否落后于远程（而不是领先）
+        BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null)
+        if [ "$BEHIND" -gt 0 ] 2>/dev/null; then
+            echo -e "${YELLOW}有新版本可用！${NC}（落后 ${BEHIND} 个提交）"
+            echo ""
+            git log --oneline HEAD..origin/main 2>/dev/null | head -10
+            echo ""
+            echo -e "运行 ${BLUE}3hub update${NC} 更新"
+        else
+            echo -e "${GREEN}已是最新版本${NC}（本地领先远程）"
+        fi
     fi
 }
 
@@ -128,8 +134,9 @@ cmd_update() {
 
     echo -e "${CYAN}更新中...${NC}"
 
-    # 拉取最新代码
-    git pull origin main 2>&1
+    # 重置到远程最新版本（清理本地 merge 提交）
+    git fetch origin 2>/dev/null
+    git reset --hard origin/main 2>&1
 
     # 更新后端依赖
     cd "$BACKEND_DIR"
