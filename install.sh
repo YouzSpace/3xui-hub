@@ -389,8 +389,9 @@ setup_env() {
     info "配置环境..."
 
     cd "$INSTALL_DIR/backend"
-    # 安装 PHP 依赖
+    # 安装 PHP 依赖（使用国内镜像加速）
     info "安装 Composer 依赖..."
+    composer config -g repos.packagist composer https://mirrors.aliyun.com/composer/ 2>/dev/null || true
     composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
 
     # 生成 .env（始终使用自定义配置，不用 .env.example）
@@ -573,9 +574,15 @@ NGINX
     # 复制前端文件到 public
     cp -r "$INSTALL_DIR/frontend/dist/"* "$INSTALL_DIR/backend/public/" 2>/dev/null || true
 
+    # 删除默认站点（避免冲突）
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+
     # 测试并重载 Nginx
     nginx -t 2>&1 | tee -a "$LOG_FILE" || error_exit "Nginx 配置错误"
     systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
+
+    # 确保 PHP-FPM 运行
+    systemctl restart php8.4-fpm 2>/dev/null || systemctl restart php-fpm 2>/dev/null || true
 
     success "Nginx 配置完成"
 }
