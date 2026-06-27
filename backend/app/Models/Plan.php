@@ -37,6 +37,11 @@ class Plan extends Model
         return $this->hasMany(User::class);
     }
 
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
     /** 是否周期套餐 */
     public function isPeriod(): bool
     {

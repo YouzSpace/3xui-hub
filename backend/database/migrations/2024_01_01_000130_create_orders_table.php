@@ -12,7 +12,7 @@ return new class extends Migration
             $table->id();
             $table->string('order_no', 32)->unique()->comment('订单号');
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('plan_id')->constrained();
+            $table->foreignId('plan_id')->constrained()->cascadeOnDelete();
             $table->decimal('amount', 10, 2)->comment('订单金额(元)');
             $table->string('status', 16)->default('pending')->comment('pending/paid/failed/expired');
             $table->foreignId('payment_config_id')->nullable()->constrained('payment_configs')->nullOnDelete();

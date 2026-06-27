@@ -47,6 +47,11 @@ class PlanController extends Controller
 
     public function destroy(Plan $plan): \Illuminate\Http\JsonResponse
     {
+        // 有关联用户时不允许删除（订单会级联删除）
+        if ($plan->users()->exists()) {
+            return $this->error('该套餐下还有用户，请先迁移用户到其他套餐');
+        }
+
         $plan->delete();
 
         return $this->success(null, '已删除');
