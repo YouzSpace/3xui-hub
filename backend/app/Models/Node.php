@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Crypt;
     'name', 'host', 'port', 'scheme', 'web_base_path',
     'username', 'password', 'api_key',
     'enabled', 'verify_ssl', 'status', 'latency', 'last_check_at',
+    'driver_type', 'driver_version', 'driver_config',
 ])]
 #[Hidden(['password', 'api_key'])]
 class Node extends Model
