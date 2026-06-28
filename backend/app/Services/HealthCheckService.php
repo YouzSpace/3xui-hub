@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 
 /**
@@ -11,7 +12,7 @@ use App\Models\Node;
  */
 class HealthCheckService
 {
-    public function __construct(private ThreeXUiClientFactory $clientFactory)
+    public function __construct(private NodeDriverFactory $driverFactory)
     {
     }
 
@@ -22,8 +23,8 @@ class HealthCheckService
         }
 
         try {
-            $client = $this->clientFactory->forNode($node);
-            $health = $client->healthCheck();
+            $driver = $this->driverFactory->make($node);
+            $health = $driver->healthCheck();
         } catch (\Throwable $e) {
             $this->apply($node, 'offline', 0);
             return ['ok' => false, 'status' => 'offline', 'latency' => 0, 'error' => $e->getMessage()];

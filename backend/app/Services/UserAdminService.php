@@ -2,10 +2,10 @@
 
 namespace App\Services;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\Plan;
 use App\Models\User;
-use App\Services\ThreeXUi\ThreeXUiClient;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
@@ -17,7 +17,7 @@ use Illuminate\Support\Str;
  */
 class UserAdminService
 {
-    public function __construct(private ThreeXUiClientFactory $clientFactory)
+    public function __construct(private NodeDriverFactory $driverFactory)
     {
     }
 
@@ -129,7 +129,7 @@ class UserAdminService
                 continue;
             }
 
-            $client = $this->clientFactory->forNode($node);
+            $client = $this->driverFactory->make($node);
             try {
                 // 先检查 client 是否存在
                 $existing = $client->getClient($email);
@@ -171,7 +171,7 @@ class UserAdminService
             }
 
             try {
-                $this->clientFactory->forNode($node)->addClient([
+                $this->driverFactory->make($node)->createClient([
                     'email' => $user->clientEmail(),
                     'enable' => (bool) $user->enabled,
                     'totalGB' => $user->traffic_limit > 0 ? (int) $user->traffic_limit : 0,
@@ -225,7 +225,7 @@ class UserAdminService
         $email = $user->clientEmail();
         foreach (Node::where('enabled', true)->get() as $node) {
             try {
-                $this->clientFactory->forNode($node)->resetClientTraffic($email);
+                $this->driverFactory->make($node)->resetClientTraffic($email);
             } catch (\Throwable $e) {
                 report($e);
             }

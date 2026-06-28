@@ -2,10 +2,10 @@
 
 namespace App\Jobs;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\User;
 use App\Services\BanService;
-use App\Services\ThreeXUiClientFactory;
 use App\Services\TrafficSyncService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -26,7 +26,7 @@ class SyncNodeTrafficJob implements ShouldQueue
     }
 
     public function handle(
-        ThreeXUiClientFactory $factory,
+        NodeDriverFactory $driverFactory,
         TrafficSyncService $sync,
         BanService $banService,
     ): void {
@@ -36,11 +36,11 @@ class SyncNodeTrafficJob implements ShouldQueue
             return;
         }
 
-        $client = $factory->forNode($node);
+        $driver = $driverFactory->make($node);
 
         // 1. 一次HTTP拉取全节点所有 inbound 的 client 流量
         try {
-            $statsByInbound = $client->getClientStatsGroupedByInbound();
+            $statsByInbound = $driver->getClientStatsGroupedByInbound();
         } catch (\Throwable $e) {
             report($e);
             return;

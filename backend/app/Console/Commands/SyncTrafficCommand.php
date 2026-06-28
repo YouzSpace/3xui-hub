@@ -2,12 +2,11 @@
 
 namespace App\Console\Commands;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\User;
 use App\Services\BanService;
-use App\Services\ThreeXUiClientFactory;
 use App\Services\TrafficSyncService;
-use GuzzleHttp\Promise\Utils;
 use Illuminate\Console\Command;
 
 /**
@@ -26,7 +25,7 @@ class SyncTrafficCommand extends Command
     private const BATCH_SIZE = 50;
 
     public function handle(
-        ThreeXUiClientFactory $factory,
+        NodeDriverFactory $driverFactory,
         TrafficSyncService $syncService,
         BanService $banService,
     ): int {
@@ -39,7 +38,7 @@ class SyncTrafficCommand extends Command
         }
 
         // 1. 并行拉取所有节点流量
-        $allStats = $this->fetchNodesParallel($factory, $nodes);
+        $allStats = $this->fetchNodesParallel($driverFactory, $nodes);
 
         // 2. 按节点批量同步
         $totalSynced = 0;
@@ -85,7 +84,7 @@ class SyncTrafficCommand extends Command
      *
      * @return array [nodeId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
      */
-    private function fetchNodesParallel(ThreeXUiClientFactory $factory, $nodes): array
+    private function fetchNodesParallel(NodeDriverFactory $driverFactory, $nodes): array
     {
         $allStats = [];
 
@@ -94,22 +93,22 @@ class SyncTrafficCommand extends Command
         foreach ($chunks as $chunk) {
             $promises = [];
             foreach ($chunk as $node) {
-                $client = $factory->forNode($node);
-                $promises[$node->id] = function () use ($client) {
-                    return $client->getClientStatsGroupedByInbound();
+                $driver = $driverFactory->make($node);
+                $promises[$node->id] = function () use ($driver) {
+                    return $driver->getClientStatsGroupedByInbound();
                 };
             }
 
             // 并行执行这批请求
             try {
-                $results = Utils::unwrap($promises);
+                $results = \GuzzleHttp\Promise\Utils::unwrap($promises);
             } catch (\Throwable $e) {
                 // 并行失败时降级为串行
                 $results = [];
                 foreach ($chunk as $node) {
                     try {
-                        $client = $factory->forNode($node);
-                        $results[$node->id] = $client->getClientStatsGroupedByInbound();
+                        $driver = $driverFactory->make($node);
+                        $results[$node->id] = $driver->getClientStatsGroupedByInbound();
                     } catch (\Throwable) {
                         $results[$node->id] = [];
                     }

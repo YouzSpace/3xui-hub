@@ -2,11 +2,11 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\User;
 use App\Services\BanService;
-use App\Services\ThreeXUiClientFactory;
 use App\Services\TrafficSyncService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -19,7 +19,7 @@ class UserController extends Controller
     use ApiResponse;
 
     public function __construct(
-        private ThreeXUiClientFactory $factory,
+        private NodeDriverFactory $driverFactory,
         private TrafficSyncService $syncService,
         private BanService $banService,
     ) {}
@@ -32,7 +32,6 @@ class UserController extends Controller
             return $this->error('未认证', 401);
         }
 
-        // 加载用户数据（流量由定时任务同步，不在每次请求时同步）
         $user->load('plan');
 
         return $this->success([
@@ -73,8 +72,6 @@ class UserController extends Controller
 
     /**
      * 同步用户在所有节点上的流量。
-     * 使用 getClientStatsGroupedByInbound 合并所有 inbound 的流量，
-     * 与定时任务保持一致。
      */
     private function syncUserTraffic(User $user): void
     {
@@ -82,10 +79,9 @@ class UserController extends Controller
 
         Node::where('enabled', true)->each(function (Node $node) use ($user, $email) {
             try {
-                $client = $this->factory->forNode($node);
-                $statsByInbound = $client->getClientStatsGroupedByInbound();
+                $driver = $this->driverFactory->make($node);
+                $statsByInbound = $driver->getClientStatsGroupedByInbound();
 
-                // 合并所有 inbound 的流量
                 $merged = ['up' => 0, 'down' => 0];
                 foreach ($statsByInbound as $emailStats) {
                     if (isset($emailStats[$email])) {
@@ -101,7 +97,6 @@ class UserController extends Controller
             }
         });
 
-        // 检查是否需要封禁
         $fresh = $user->fresh();
         $fresh->load('plan');
         $this->banService->checkAfterSync($fresh);

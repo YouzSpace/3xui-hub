@@ -2,11 +2,11 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\User;
 use App\Services\BanService;
-use App\Services\ThreeXUiClientFactory;
 use App\Services\TrafficSyncService;
 use App\Traits\ApiResponse;
 use GuzzleHttp\Promise\Utils;
@@ -23,7 +23,7 @@ class SyncTrafficController extends Controller
     private const BATCH_SIZE = 50;
 
     public function __construct(
-        private ThreeXUiClientFactory $factory,
+        private NodeDriverFactory $driverFactory,
         private TrafficSyncService $syncService,
         private BanService $banService,
     ) {}
@@ -77,42 +77,35 @@ class SyncTrafficController extends Controller
 
     /**
      * 并行拉取所有节点流量数据。
-     * 每节点调1次 getClientStatsGroupedByInbound()，分批并行。
-     *
-     * @return array [nodeId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
      */
     private function fetchNodesParallel($nodes): array
     {
         $allStats = [];
 
-        // 分批并行
         $chunks = $nodes->chunk(self::BATCH_SIZE);
         foreach ($chunks as $chunk) {
             $promises = [];
             foreach ($chunk as $node) {
-                $client = $this->factory->forNode($node);
-                $promises[$node->id] = function () use ($client) {
-                    return $client->getClientStatsGroupedByInbound();
+                $driver = $this->driverFactory->make($node);
+                $promises[$node->id] = function () use ($driver) {
+                    return $driver->getClientStatsGroupedByInbound();
                 };
             }
 
-            // 并行执行这批请求
             try {
                 $results = Utils::unwrap($promises);
             } catch (\Throwable $e) {
-                // 并行失败时降级为串行
                 $results = [];
                 foreach ($chunk as $node) {
                     try {
-                        $client = $this->factory->forNode($node);
-                        $results[$node->id] = $client->getClientStatsGroupedByInbound();
+                        $driver = $this->driverFactory->make($node);
+                        $results[$node->id] = $driver->getClientStatsGroupedByInbound();
                     } catch (\Throwable) {
                         $results[$node->id] = [];
                     }
                 }
             }
 
-            // 合并每个节点的 inbound 流量
             foreach ($results as $nodeId => $statsByInbound) {
                 $merged = [];
                 foreach ($statsByInbound ?? [] as $emailStats) {

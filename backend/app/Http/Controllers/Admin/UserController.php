@@ -2,13 +2,13 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\BanService;
 use App\Services\ProtocolSwitchService;
-use App\Services\ThreeXUi\ThreeXUiClient;
 use App\Services\UserAdminService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -28,6 +28,7 @@ class UserController extends Controller
         private UserAdminService $service,
         private ProtocolSwitchService $protocolService,
         private BanService $banService,
+        private NodeDriverFactory $driverFactory,
     ) {
     }
 
@@ -94,18 +95,18 @@ class UserController extends Controller
         $email = $user->clientEmail();
         Node::each(function (Node $node) use ($email, $user) {
             try {
-                $client = ThreeXUiClient::fromNode($node);
+                $driver = $this->driverFactory->make($node);
                 $inboundIds = $node->inboundIdsFor($user->protocol);
                 foreach ($inboundIds as $inboundId) {
                     try {
-                        $client->deleteClient($email, false, $inboundId);
+                        $driver->deleteClient($email, false, $inboundId);
                     } catch (\Throwable) {
                         // 已删除或不存在，忽略
                     }
                 }
                 // 兜底：不带 inboundId 再删一次
                 try {
-                    $client->deleteClient($email);
+                    $driver->deleteClient($email);
                 } catch (\Throwable) {}
             } catch (\Throwable) {
                 // 节点离线，忽略

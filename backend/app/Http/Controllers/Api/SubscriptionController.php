@@ -2,13 +2,13 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\User;
 use App\Services\BanService;
 use App\Services\SubscriptionException;
 use App\Services\SubscriptionService;
-use App\Services\ThreeXUiClientFactory;
 use App\Services\TrafficSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -21,7 +21,7 @@ class SubscriptionController extends Controller
 {
     public function __construct(
         private SubscriptionService $service,
-        private ThreeXUiClientFactory $factory,
+        private NodeDriverFactory $driverFactory,
         private TrafficSyncService $syncService,
         private BanService $banService,
     ) {}
@@ -65,8 +65,8 @@ class SubscriptionController extends Controller
     {
         Node::where('enabled', true)->each(function (Node $node) use ($user) {
             try {
-                $client = $this->factory->forNode($node);
-                $traffic = $client->getClientTraffic($user->clientEmail());
+                $driver = $this->driverFactory->make($node);
+                $traffic = $driver->getClientTraffic($user->clientEmail());
                 $this->syncService->syncUserNode($user, $node, $traffic);
             } catch (\Throwable $e) {
                 // 节点离线，跳过

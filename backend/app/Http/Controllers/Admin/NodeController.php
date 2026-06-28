@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\NodeInbound;
 use App\Models\User;
 use App\Services\ThreeXUi\ThreeXUiClient;
-use App\Services\ThreeXUiClientFactory;
 use App\Services\UserAdminService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -23,7 +23,7 @@ class NodeController extends Controller
     use ApiResponse;
 
     public function __construct(
-        private ThreeXUiClientFactory $clientFactory,
+        private NodeDriverFactory $driverFactory,
         private UserAdminService $userService,
     ) {
     }
@@ -99,18 +99,18 @@ class NodeController extends Controller
     public function destroy(Node $node): \Illuminate\Http\JsonResponse
     {
         // 同步删除 3x-ui 上该节点各入站的所有 client
-        $client = ThreeXUiClient::fromNode($node);
+        $driver = $this->driverFactory->make($node);
         $inboundIds = $node->inbounds()->pluck('inbound_id')->toArray();
-        User::whereNotNull('email')->each(function (User $user) use ($client, $inboundIds) {
+        User::whereNotNull('email')->each(function (User $user) use ($driver, $inboundIds) {
             $email = $user->clientEmail();
             foreach ($inboundIds as $inboundId) {
                 try {
-                    $client->deleteClient($email, false, $inboundId);
+                    $driver->deleteClient($email, false, $inboundId);
                 } catch (\Throwable) {
                     // 不存在，忽略
                 }
             }
-            try { $client->deleteClient($email); } catch (\Throwable) {}
+            try { $driver->deleteClient($email); } catch (\Throwable) {}
         });
 
         $node->delete();
@@ -122,8 +122,8 @@ class NodeController extends Controller
     public function test(Node $node): \Illuminate\Http\JsonResponse
     {
         try {
-            $client = $this->clientFactory->forNode($node);
-            $health = $client->healthCheck();
+            $driver = $this->driverFactory->make($node);
+            $health = $driver->healthCheck();
         } catch (\Throwable $e) {
             $node->forceFill(['status' => 'offline', 'latency' => 0, 'last_check_at' => now()])->save();
 
@@ -263,13 +263,13 @@ class NodeController extends Controller
     private function syncUsersToInbounds(Node $node, string $proto, array $inboundIds): void
     {
         $users = \App\Models\User::where('protocol', $proto)->whereNotNull('plan_id')->get();
-        $client = $this->clientFactory->forNode($node);
+        $driver = $this->driverFactory->make($node);
 
         foreach ($users as $user) {
             try {
-                $existing = $client->getClient($user->clientEmail());
+                $existing = $driver->getClient($user->clientEmail());
                 if ($existing) {
-                    $client->attachClient($user->clientEmail(), $inboundIds);
+                    $driver->attachClient($user->clientEmail(), $inboundIds);
                 }
             } catch (\Throwable $e) {
                 report($e);

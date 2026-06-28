@@ -2,19 +2,19 @@
 
 namespace App\Services;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\User;
-use App\Services\ThreeXUi\ThreeXUiClient;
 use Illuminate\Support\Str;
 
 /**
  * 订阅生成服务（M6）。
  * 流程：校验用户 → 取在线节点 → 各节点 getClientLinks(ch_user_{id}) → 合并 → Base64。
- * links 由 3x-ui 直接生成完整 vless://... 链接，ControlHub 只聚合 + Base64。
+ * links 由面板驱动直接生成完整链接，ControlHub 只聚合 + Base64。
  */
 class SubscriptionService
 {
-    public function __construct(private ThreeXUiClientFactory $clientFactory)
+    public function __construct(private NodeDriverFactory $driverFactory)
     {
     }
 
@@ -46,18 +46,18 @@ class SubscriptionService
             }
 
             try {
-                $client = $this->clientFactory->forNode($node);
+                $driver = $this->driverFactory->make($node);
 
                 // 取各配置入站的端口，用于过滤
                 $configuredPorts = [];
                 foreach ($inboundIds as $inboundId) {
-                    $inbound = $client->getInbound($inboundId);
+                    $inbound = $driver->getInbound($inboundId);
                     if (is_array($inbound) && isset($inbound['port'])) {
                         $configuredPorts[] = (int) $inbound['port'];
                     }
                 }
 
-                foreach ($client->getClientLinks($email) as $link) {
+                foreach ($driver->getClientLinks($email) as $link) {
                     if (!is_string($link) || $link === '') {
                         continue;
                     }
@@ -77,10 +77,6 @@ class SubscriptionService
         return base64_encode(implode("\n", $links));
     }
 
-    /**
-     * 判断 vless://.../trojan://... 链接的端口是否匹配。
-     * 链接格式：scheme://uuid@host:port?...，取 @ 后 host:port 的端口。
-     */
     private function linkMatchesPort(string $link, int $port): bool
     {
         if (preg_match('#@[^/:@\]]+:(\d+)#', $link, $m)) {

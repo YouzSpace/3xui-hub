@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,7 @@ use Illuminate\Support\Facades\DB;
  */
 class ProtocolSwitchService
 {
-    public function __construct(private ThreeXUiClientFactory $clientFactory)
+    public function __construct(private NodeDriverFactory $driverFactory)
     {
     }
 
@@ -43,16 +44,16 @@ class ProtocolSwitchService
                         continue; // 该节点无新协议 inbound，跳过
                     }
 
-                    $client = $this->clientFactory->forNode($node);
+                    $driver = $this->driverFactory->make($node);
 
                     // attach 所有新协议 inbound
-                    $client->attachClient($email, $newInbounds);
+                    $driver->attachClient($email, $newInbounds);
                     $attached[$node->id] = $newInbounds;
 
                     // detach 所有旧协议 inbound（排除和新协议相同的）
                     $toDetach = array_diff($oldInbounds, $newInbounds);
                     if (!empty($toDetach)) {
-                        $client->detachClient($email, array_values($toDetach));
+                        $driver->detachClient($email, array_values($toDetach));
                     }
                 }
 
@@ -66,10 +67,11 @@ class ProtocolSwitchService
                     continue;
                 }
                 try {
-                    $this->clientFactory->forNode($node)->detachClient($email, $newInbounds);
+                    $driver = $this->driverFactory->make($node);
+                    $driver->detachClient($email, $newInbounds);
                     $oldInbounds = $node->inboundIdsFor($oldProtocol);
                     if (!empty($oldInbounds)) {
-                        $this->clientFactory->forNode($node)->attachClient($email, $oldInbounds);
+                        $driver->attachClient($email, $oldInbounds);
                     }
                 } catch (\Throwable $rollbackErr) {
                     report($rollbackErr);

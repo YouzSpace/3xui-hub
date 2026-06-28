@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\User;
 
@@ -13,7 +14,7 @@ use App\Models\User;
  */
 class BanService
 {
-    public function __construct(private ThreeXUiClientFactory $clientFactory)
+    public function __construct(private NodeDriverFactory $driverFactory)
     {
     }
 
@@ -84,33 +85,33 @@ class BanService
 
         foreach (Node::where('enabled', true)->get() as $node) {
             try {
-                $client = $this->clientFactory->forNode($node);
+                $driver = $this->driverFactory->make($node);
                 // 逐个入站更新 enable 状态
                 $inboundIds = $node->inboundIdsFor($user->protocol);
                 foreach ($inboundIds as $inboundId) {
                     try {
-                        $resp = $client->getClient($email);
+                        $resp = $driver->getClient($email);
                         if ($resp === null) continue;
                         $clientData = $resp['client'] ?? $resp;
                         $clientData['enable'] = $enable;
                         if (isset($clientData['id'])) {
                             $clientData['id'] = (string) $clientData['id'];
                         }
-                        $client->updateClient($email, $clientData, $inboundId);
+                        $driver->updateClient($email, $clientData, $inboundId);
                     } catch (\Throwable) {
                         // 入站不存在或 client 不存在，忽略
                     }
                 }
                 // 兜底不带 inboundId 再更新一次
                 try {
-                    $resp = $client->getClient($email);
+                    $resp = $driver->getClient($email);
                     if ($resp !== null) {
                         $clientData = $resp['client'] ?? $resp;
                         $clientData['enable'] = $enable;
                         if (isset($clientData['id'])) {
                             $clientData['id'] = (string) $clientData['id'];
                         }
-                        $client->updateClient($email, $clientData);
+                        $driver->updateClient($email, $clientData);
                     }
                 } catch (\Throwable) {}
             } catch (\Throwable $e) {
