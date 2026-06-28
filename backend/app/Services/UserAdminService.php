@@ -145,7 +145,7 @@ class UserAdminService
                     }
                 } else {
                     // 不存在：创建新 client
-                    $created = $client->addClient($clientData, $inboundIds);
+                    $created = $client->createClient($clientData, $inboundIds);
                     if (!empty($created['uuid']) && !$user->uuid) {
                         $user->forceFill(['uuid' => $created['uuid']])->save();
                     }
