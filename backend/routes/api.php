@@ -21,7 +21,7 @@ Route::get('/ping', function (): \Illuminate\Http\JsonResponse {
 
 // 公开：站点配置（无需鉴权）
 Route::get('/site-config', function (): \Illuminate\Http\JsonResponse {
-    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon', 'register_email_verify'];
+    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon', 'register_email_verify', 'announcement', 'feedback_link'];
     $data = \App\Models\SiteConfig::getMany($keys);
     return response()->json(['code' => 0, 'msg' => 'ok', 'data' => $data]);
 });

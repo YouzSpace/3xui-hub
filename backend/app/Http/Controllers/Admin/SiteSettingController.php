@@ -22,6 +22,8 @@ class SiteSettingController extends Controller
         'site_keywords',
         'site_logo',
         'site_favicon',
+        'announcement',
+        'feedback_link',
     ];
 
     /**
