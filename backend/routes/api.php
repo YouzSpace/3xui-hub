@@ -21,7 +21,7 @@ Route::get('/ping', function (): \Illuminate\Http\JsonResponse {
 
 // 公开：站点配置（无需鉴权）
 Route::get('/site-config', function (): \Illuminate\Http\JsonResponse {
-    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon'];
+    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon', 'register_email_verify'];
     $data = \App\Models\SiteConfig::getMany($keys);
     return response()->json(['code' => 0, 'msg' => 'ok', 'data' => $data]);
 });
@@ -34,6 +34,8 @@ Route::middleware('web')->group(function () {
     Route::get('/captcha', [AuthController::class, 'captcha']);
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/login-email', [AuthController::class, 'loginEmail']);
+    Route::post('/email-verify/send', [\App\Http\Controllers\Api\EmailVerifyController::class, 'sendCode']);
+    Route::post('/email-verify/check', [\App\Http\Controllers\Api\EmailVerifyController::class, 'verifyCode']);
 });
 
 // 订阅：仅凭 token，无需 Bearer

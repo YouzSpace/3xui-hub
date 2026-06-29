@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Admin\BackupController as AdminBackupController;
+use App\Http\Controllers\Admin\EmailController as AdminEmailController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Admin\PaymentController as AdminPaymentController;
@@ -66,6 +67,11 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/backup/export', [AdminBackupController::class, 'export']);
     Route::post('/backup/preview', [AdminBackupController::class, 'preview']);
     Route::post('/backup/import', [AdminBackupController::class, 'import']);
+
+    // 邮箱配置
+    Route::get('/email', [AdminEmailController::class, 'show']);
+    Route::put('/email', [AdminEmailController::class, 'save']);
+    Route::post('/email/test', [AdminEmailController::class, 'test']);
 
     // 支付配置管理
     Route::get('/payments', [AdminPaymentController::class, 'index']);

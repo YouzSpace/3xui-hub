@@ -9,6 +9,7 @@ use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use App\Services\UserAdminService;
 
 /**
  * 用户端认证。
@@ -71,6 +72,7 @@ class AuthController extends Controller
         $email = $data['email'] ?? '';
         $password = $data['password'] ?? '';
         $captcha = $data['captcha'] ?? '';
+        $emailCode = $data['email_code'] ?? '';
 
         if (!$email || !$password) {
             return $this->error('邮箱和密码必填', 400);
@@ -84,12 +86,30 @@ class AuthController extends Controller
             return $this->error('密码至少 6 位', 400);
         }
 
-        // 验证码校验
-        $sessionCaptcha = session('captcha');
-        if (!$sessionCaptcha || strtolower($captcha) !== strtolower($sessionCaptcha)) {
-            return $this->error('验证码错误', 400);
+        // 检查是否启用邮箱验证注册
+        $useEmailVerify = \App\Models\SiteConfig::getValue('register_email_verify');
+
+        if ($useEmailVerify) {
+            // 邮箱验证码校验
+            if (!$emailCode) {
+                return $this->error('邮箱验证码必填', 400);
+            }
+
+            $cachedCode = \Illuminate\Support\Facades\Cache::get('email_verify_' . $email);
+            if (!$cachedCode || $cachedCode !== $emailCode) {
+                return $this->error('邮箱验证码错误', 400);
+            }
+
+            // 验证成功后删除验证码
+            \Illuminate\Support\Facades\Cache::forget('email_verify_' . $email);
+        } else {
+            // 图形验证码校验
+            $sessionCaptcha = session('captcha');
+            if (!$sessionCaptcha || strtolower($captcha) !== strtolower($sessionCaptcha)) {
+                return $this->error('验证码错误', 400);
+            }
+            session()->forget('captcha');
         }
-        session()->forget('captcha');
 
         if (User::where('email', $email)->exists()) {
             return $this->error('邮箱已注册', 409);
@@ -103,6 +123,13 @@ class AuthController extends Controller
             'protocol' => 'vless',
             'enabled' => true,
         ]);
+
+        // 同步到各 3x-ui 节点
+        try {
+            app(UserAdminService::class)->provisionClient($user);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('provisionClient failed on register', ['error' => $e->getMessage()]);
+        }
 
         return $this->success([
             'access_token' => $this->createAccessToken($user),
