@@ -43,6 +43,15 @@ Route::get('/sub/{token}', [SubscriptionController::class, 'show']);
 
 // 公开接口
 Route::get('/plans', [ApiPlanController::class, 'index']);
+
+// 教程（公开，只返回已启用的）
+Route::get('/tutorials', function () {
+    return response()->json(['code' => 0, 'data' => \App\Models\Tutorial::where('enabled', true)->orderBy('sort')->orderByDesc('id')->get(['id', 'title', 'category', 'content', 'created_at'])]);
+});
+Route::get('/tutorials/{tutorial}', function (\App\Models\Tutorial $tutorial) {
+    if (!$tutorial->enabled) return response()->json(['code' => 404, 'msg' => 'Not found'], 404);
+    return response()->json(['code' => 0, 'data' => $tutorial->only(['id', 'title', 'content', 'created_at'])]);
+});
 Route::get('/payment/methods', [ApiPaymentController::class, 'methods']);
 
 // 支付回调（无需鉴权，由支付网关调用）

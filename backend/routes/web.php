@@ -10,6 +10,7 @@ use App\Http\Controllers\Admin\PlanController as AdminPlanController;
 use App\Http\Controllers\Admin\SyncTrafficController as AdminSyncTrafficController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Admin\SiteSettingController as AdminSiteSettingController;
+use App\Http\Controllers\Admin\TutorialController as AdminTutorialController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -83,4 +84,10 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // 站点信息配置
     Route::get('/site-settings', [AdminSiteSettingController::class, 'index']);
     Route::put('/site-settings', [AdminSiteSettingController::class, 'update']);
+
+    // 教程管理
+    Route::get('/tutorials', [AdminTutorialController::class, 'index']);
+    Route::post('/tutorials', [AdminTutorialController::class, 'store']);
+    Route::put('/tutorials/{tutorial}', [AdminTutorialController::class, 'update']);
+    Route::delete('/tutorials/{tutorial}', [AdminTutorialController::class, 'destroy']);
 });
