@@ -36,6 +36,7 @@ class UserAdminService
                 'traffic_used' => 0,
                 'monthly_traffic_used' => 0,
                 'monthly_traffic_limit' => 0,
+                'next_traffic_reset_at' => null,
                 'expired_at' => null,
             ])->save();
             return;
@@ -48,6 +49,7 @@ class UserAdminService
                 'monthly_traffic_used' => 0,
                 'monthly_traffic_limit' => $plan->monthly_traffic ?? 0,
                 'expired_at' => Carbon::now()->addMonths($plan->months)->toDateString(),
+                'next_traffic_reset_at' => Carbon::now()->addDays(30),
             ])->save();
         } else {
             $user->forceFill([
@@ -74,6 +76,8 @@ class UserAdminService
         $monthlyTrafficLimit = (int) ($data['monthly_traffic_limit'] ?? 0);
         $expiredAt = $data['expired_at'] ?? null;
 
+        $nextTrafficResetAt = null;
+
         if (!empty($data['plan_id'])) {
             $plan = Plan::find($data['plan_id']);
             if ($plan) {
@@ -81,6 +85,7 @@ class UserAdminService
                     $trafficLimit = $plan->period_traffic ?? 0;
                     $monthlyTrafficLimit = $plan->monthly_traffic ?? 0;
                     $expiredAt = Carbon::now()->addMonths($plan->months)->toDateString();
+                    $nextTrafficResetAt = Carbon::now()->addDays(30);
                 } else {
                     $trafficLimit = $plan->total_traffic ?? 0;
                     $monthlyTrafficLimit = 0;
@@ -99,6 +104,7 @@ class UserAdminService
             'traffic_used' => 0,
             'monthly_traffic_used' => 0,
             'monthly_traffic_limit' => $monthlyTrafficLimit,
+            'next_traffic_reset_at' => $nextTrafficResetAt,
             'expired_at' => $expiredAt,
             'enabled' => (bool) ($data['enabled'] ?? true),
         ]);
@@ -200,6 +206,7 @@ class UserAdminService
 
     /**
      * 重置用户当月流量：清零 monthly_traffic_used + 总流量加月流量额度 + 同步 3x-ui + 打开连接。
+     * 注意：管理员手动重置不更新 next_traffic_reset_at，只清零已用流量。
      */
     public function resetTraffic(User $user): void
     {

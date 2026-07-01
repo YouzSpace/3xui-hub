@@ -12,9 +12,13 @@ class AdminSeeder extends Seeder
 {
     public function run(): void
     {
-        Admin::updateOrCreate(
-            ['username' => 'admin'],
-            ['password' => 'admin123'], // casts hashed → bcrypt
-        );
+        if (Admin::exists()) {
+            return;
+        }
+
+        Admin::create([
+            'username' => 'admin',
+            'password' => 'admin123', // casts hashed → bcrypt
+        ]);
     }
 }
