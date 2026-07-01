@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.1.0**
+**版本：1.2.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -31,8 +31,11 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 - 节点管理：多入站配置、测试连接
 - 套餐管理：周期/总量套餐、价格设置
 - 订单管理：查看支付订单、搜索
+- 公告管理：发布/编辑/删除公告
+- 教程管理：分类分组、Markdown 内容编辑
+- 站点配置：自定义站点名称、Logo、公告等
+- 邮箱配置：SMTP 设置、邮件模板
 - 安全设置：密码修改、谷歌二步验证（2FA）
-- 支付配置：多支付渠道接入
 - 数据库备份：导出/导入、差异预览、增量合并/覆盖
 
 ### 用户端
@@ -42,6 +45,9 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 - 仪表盘：流量统计、订阅地址、节点列表
 - 订购订阅：选择套餐、在线支付
 - 最近订单：查看已支付订单
+- 公告查看：系统公告
+- 教程中心：分类教程、详情阅读
+- 反馈链接：问题反馈入口
 
 ### 自动化
 
@@ -68,8 +74,9 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 
 | 层级 | 技术 |
 |------|------|
-| 后端 | Laravel 13 + PHP 8.4 + SQLite |
-| 前端 | Vue 3 + Vite + Pinia |
+| 后端 | Laravel 13 + PHP 8.3+ + MySQL |
+| 前端 | Vue 3.5 + Vite 8 + Pinia 3 + Tailwind CSS 3 |
+| 动画 | GSAP 3 |
 | 认证 | Session（管理员）+ Bearer Token（用户） |
 | 支付 | MD5 签名对接第三方支付网关 |
 | 2FA | Google Authenticator (TOTP) |
@@ -79,22 +86,47 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 ```
 3xui-hub/
 ├── install.sh          # 一键安装脚本
+├── uninstall.sh        # 卸载脚本
 ├── 3hub                # 管理命令
 ├── README.md
 ├── INSTALL.md
 ├── backend/
 │   ├── app/
+│   │   ├── Console/        # 定时任务
+│   │   ├── Drivers/        # 驱动抽象层
+│   │   ├── Http/           # 控制器
+│   │   ├── Jobs/           # 队列任务
+│   │   ├── Models/         # 数据模型
+│   │   ├── Providers/      # 服务提供者
+│   │   ├── Services/       # 业务服务
+│   │   └── Traits/         # 特性
 │   ├── config/
 │   ├── database/
-│   ├── public/         # 网站根目录（含前端 dist）
+│   │   └── migrations/     # 数据库迁移
+│   ├── public/             # 网站根目录（部署时复制 frontend/dist）
+│   ├── resources/
 │   ├── routes/
-│   ├── storage/
-│   └── vendor/
+│   │   ├── api.php         # API 路由
+│   │   └── web.php         # Web 路由
+│   └── storage/
 └── frontend/
-    └── dist/           # 构建产物
+    └── dist/               # 前端构建产物
+        ├── assets/         # JS/CSS
+        ├── icons.svg
+        ├── images/
+        └── index.html
 ```
 
 ## 版本记录
+
+### v1.2.0 (2026-07-01)
+
+- 教程发布系统：分类分组、Markdown 内容编辑
+- 公告管理：发布/编辑/删除公告
+- 用户后台重构：多页导航 + UI 优化
+- 邮箱验证注册 + 注册同步 3x-ui
+- 站点配置读取修复
+- 反馈链接入口
 
 ### v1.1.0 (2026-06-27)
 
@@ -128,7 +160,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.1.0**
+**Version: 1.2.0**
 
 ## Quick Install
 
@@ -142,14 +174,17 @@ After installation, use `3hub` command to manage the system.
 
 - User management, node management, plan management
 - Payment integration, order management
+- Announcement and tutorial system
+- Site settings, email configuration
 - Auto traffic sync, auto ban on limit
 - Google 2FA, database backup
 - 3hub CLI management tool
 
 ## Tech Stack
 
-- Backend: Laravel 13 + PHP 8.4 + SQLite
-- Frontend: Vue 3 + Vite + Pinia
+- Backend: Laravel 13 + PHP 8.3+ + MySQL
+- Frontend: Vue 3.5 + Vite 8 + Pinia 3 + Tailwind CSS 3
+- Animation: GSAP 3
 - Payment: MD5 signed third-party gateway
 - 2FA: Google Authenticator (TOTP)
 
@@ -158,11 +193,11 @@ After installation, use `3hub` command to manage the system.
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.0.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.2.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
-[php-shield]: https://img.shields.io/badge/PHP-8.4+-777BB4
+[php-shield]: https://img.shields.io/badge/PHP-8.3+-777BB4
 [php-url]: https://php.net
 [vue-shield]: https://img.shields.io/badge/Vue-3-4FC08D
 [vue-url]: https://vuejs.org
