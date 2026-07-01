@@ -22,6 +22,24 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 
 安装完成后使用 `3hub` 命令管理系统。
 
+## Docker 部署
+
+```bash
+git clone https://github.com/YouzSpace/3xui-hub.git
+cd 3xui-hub/docker
+docker-compose up -d
+```
+
+访问 http://localhost:8080
+
+常用命令：
+```bash
+docker-compose logs -f      # 查看日志
+docker-compose down          # 停止
+docker-compose restart       # 重启
+docker-compose up -d --build # 更新并重启
+```
+
 ## 功能特性
 
 ### 管理员端
@@ -90,6 +108,14 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 ├── 3hub                # 管理命令
 ├── README.md
 ├── INSTALL.md
+├── docker/
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── nginx.conf
+│   ├── php.ini
+│   ├── www.conf
+│   ├── supervisord.conf
+│   └── entrypoint.sh
 ├── backend/
 │   ├── app/
 │   │   ├── Console/        # 定时任务
@@ -169,6 +195,24 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 ```
 
 After installation, use `3hub` command to manage the system.
+
+## Docker Deploy
+
+```bash
+git clone https://github.com/YouzSpace/3xui-hub.git
+cd 3xui-hub/docker
+docker-compose up -d
+```
+
+Visit http://localhost:8080
+
+Common commands:
+```bash
+docker-compose logs -f      # View logs
+docker-compose down          # Stop
+docker-compose restart       # Restart
+docker-compose up -d --build # Update and restart
+```
 
 ## Features
 
