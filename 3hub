@@ -358,9 +358,14 @@ cmd_ssl() {
         set +o pipefail
         echo "$ACME_OUTPUT" | tail -5
 
+        # 检查是否证书已存在且有效（acme.sh 返回非 0 但证书实际有效）
         if [ $ACME_EXIT -ne 0 ]; then
-            echo -e "${RED}SSL 申请失败，请确保域名已解析到本机 IP${NC}"
-            return 1
+            if echo "$ACME_OUTPUT" | grep -qi "Domains not changed\|already exists\|Skipping"; then
+                echo -e "${YELLOW}证书已存在且有效，跳过申请${NC}"
+            else
+                echo -e "${RED}SSL 申请失败，请确保域名已解析到本机 IP${NC}"
+                return 1
+            fi
         fi
 
         mkdir -p /etc/nginx/ssl

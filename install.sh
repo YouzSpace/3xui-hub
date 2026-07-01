@@ -486,6 +486,23 @@ detect_fpm_sock() {
 setup_nginx() {
     info "配置 Nginx..."
 
+    # 检查是否已有 Nginx 配置（避免覆盖用户的 SSL 配置）
+    NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"
+    if [ -f "$NGINX_CONF" ]; then
+        # 检查是否已有 SSL 配置
+        if grep -q "listen 443 ssl" "$NGINX_CONF" 2>/dev/null; then
+            info "检测到已有 SSL 配置，跳过 Nginx 配置覆盖"
+            # 只更新 APP_URL（保留域名）
+            DOMAIN=$(grep -oP 'server_name \K[^;]+' "$NGINX_CONF" | head -1)
+            if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "_" ]; then
+                PROTO="https"
+                sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
+                info "APP_URL 已更新为: ${PROTO}://${DOMAIN}"
+            fi
+            return 0
+        fi
+    fi
+
     # 默认使用 IP
     DOMAIN=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
     info "使用 IP: $DOMAIN"
