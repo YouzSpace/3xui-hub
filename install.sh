@@ -16,7 +16,7 @@ NC='\033[0m'
 # 配置
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
-REPO_URL="https://github.com/HTryone/3xui-hub.git"
+REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
 VERSION="1.0.0"
 
 # 日志函数
@@ -353,9 +353,9 @@ deploy_project() {
 
         # 国内镜像列表，按优先级尝试
         MIRRORS=(
-            "https://ghfast.top/https://github.com/HTryone/3xui-hub.git"
-            "https://ghproxy.net/https://github.com/HTryone/3xui-hub.git"
-            "https://github.com/HTryone/3xui-hub.git"
+            "https://ghfast.top/https://github.com/YouzSpace/3xui-hub.git"
+            "https://ghproxy.net/https://github.com/YouzSpace/3xui-hub.git"
+            "https://github.com/YouzSpace/3xui-hub.git"
         )
 
         CLONED=false
@@ -372,9 +372,6 @@ deploy_project() {
         if [ "$CLONED" = false ]; then
             error_exit "所有下载源均失败，请检查网络"
         fi
-
-        # 安装源是复刻仓库，后续更新（git pull / 3hub update / check-update）默认对准原作者仓库
-        git -C "$INSTALL_DIR" remote set-url origin "https://github.com/YouzSpace/3xui-hub.git" 2>/dev/null || true
     fi
 
     cd "$INSTALL_DIR"
