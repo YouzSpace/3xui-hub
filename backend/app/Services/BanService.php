@@ -90,7 +90,12 @@ class BanService
      */
     private function normalizeForUpdate(array $clientData): array
     {
-        if (isset($clientData['id'])) {
+        // 3x-ui v3.7.0 返回的 id 是数据库自增行号，uuid 才是 Xray 用的 client id；
+        // 全量替换时把行号写回 id 会把 client 的 uuid 覆盖成数字，导致用户断连。
+        // 优先用 uuid，旧版 3x-ui（id 即 uuid、无 uuid 键）回退仅做 string 强转。
+        if (!empty($clientData['uuid'])) {
+            $clientData['id'] = $clientData['uuid'];
+        } elseif (isset($clientData['id'])) {
             $clientData['id'] = (string) $clientData['id'];
         }
         foreach (['allowedIPs', 'tunnelAllowedIPs'] as $field) {

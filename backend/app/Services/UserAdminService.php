@@ -141,7 +141,10 @@ class UserAdminService
                 $existing = $client->getClient($email);
                 if ($existing) {
                     // 已存在：更新配置
-                    $clientData['id'] = $existing['id'] ?? null;
+                    // 3x-ui v3.7.0 返回的 id 是 clients 表自增行号，uuid 才是 Xray 用的
+                    // client id。若把行号写回 id，3x-ui 会把该 client 的 uuid 覆盖成数字，
+                    // 导致用户断连。优先取 uuid，旧版 3x-ui（id 即 uuid、无 uuid 键）回退 id。
+                    $clientData['id'] = $existing['uuid'] ?? ($existing['id'] ?? null);
                     foreach ($inboundIds as $inboundId) {
                         try {
                             $client->updateClient($email, $clientData, $inboundId);
