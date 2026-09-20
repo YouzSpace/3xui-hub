@@ -24,6 +24,15 @@ check_install() {
     fi
 }
 
+# artisan 必须以网站运行用户执行：root 跑会往 storage/bootstrap/cache
+# 写 root 属主文件，导致 www-data 的队列 worker 间歇性 Permission denied
+run_artisan() {
+    local NGINX_USER
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+    sudo -u "$NGINX_USER" php artisan "$@"
+}
+
 configure_queue_worker() {
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
@@ -39,7 +48,7 @@ configure_queue_worker() {
         echo 'DB_QUEUE_RETRY_AFTER=180' >> "$BACKEND_DIR/.env"
     fi
 
-    chown root:"$NGINX_USER" "$BACKEND_DIR/.env" 2>/dev/null || true
+    chown "$NGINX_USER":"$NGINX_USER" "$BACKEND_DIR/.env" 2>/dev/null || true
     chmod 640 "$BACKEND_DIR/.env" 2>/dev/null || true
     chown -R "$NGINX_USER":"$NGINX_USER" "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache" 2>/dev/null || true
     chmod -R 775 "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache" 2>/dev/null || true
@@ -140,7 +149,7 @@ cmd_status() {
     # 统计
     echo ""
     echo -e "${CYAN}--- 数据统计 ---${NC}"
-    php artisan tinker --execute="
+    run_artisan tinker --execute="
         echo '用户:      ' . \App\Models\User::count() . PHP_EOL;
         echo '服务器:    ' . \App\Models\Node::count() . PHP_EOL;
         echo '节点:      ' . \App\Models\NodeInbound::count() . PHP_EOL;
@@ -215,16 +224,16 @@ cmd_update() {
     COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1
 
     # 迁移数据库
-    php artisan migrate --force 2>&1
+    run_artisan migrate --force 2>&1
 
     # 配置数据库队列和常驻 Worker
     configure_queue_worker
 
     # 清除缓存
-    php artisan config:clear 2>&1
-    php artisan route:clear 2>&1
-    php artisan view:clear 2>&1
-    php artisan queue:restart 2>&1
+    run_artisan config:clear 2>&1
+    run_artisan route:clear 2>&1
+    run_artisan view:clear 2>&1
+    run_artisan queue:restart 2>&1
     systemctl restart "$QUEUE_SERVICE"
     if ! systemctl is-active --quiet "$QUEUE_SERVICE"; then
         echo -e "${RED}后台任务 Worker 启动失败，请运行: systemctl status $QUEUE_SERVICE${NC}"
@@ -250,7 +259,7 @@ cmd_admin_user() {
     cd "$BACKEND_DIR"
 
     echo -e "${CYAN}当前管理员账号:${NC}"
-    php artisan tinker --execute="echo \App\Models\Admin::first()->username;" 2>/dev/null
+    run_artisan tinker --execute="echo \App\Models\Admin::first()->username;" 2>/dev/null
     echo ""
     echo -e "${BLUE}输入新用户名:${NC}"
     read -r NEW_USER
@@ -265,7 +274,7 @@ cmd_admin_user() {
         return 1
     fi
 
-    php artisan tinker --execute="
+    run_artisan tinker --execute="
         \$admin = \App\Models\Admin::first();
         \$admin->username = '${NEW_USER}';
         \$admin->save();
@@ -289,7 +298,7 @@ cmd_admin_pass() {
         return 1
     fi
 
-    php artisan tinker --execute="
+    run_artisan tinker --execute="
         \$admin = \App\Models\Admin::first();
         \$admin->password = bcrypt('${NEW_PASS}');
         \$admin->save();
@@ -305,7 +314,7 @@ cmd_sync() {
     cd "$BACKEND_DIR"
 
     echo -e "${CYAN}开始同步流量...${NC}"
-    php artisan traffic:sync 2>&1
+    run_artisan traffic:sync 2>&1
 }
 
 # 查看同步状态
@@ -320,7 +329,8 @@ cmd_sync_status() {
         echo -e "Cron 定时任务: ${GREEN}已配置${NC}"
     else
         echo -e "Cron 定时任务: ${RED}未配置${NC}"
-        echo -e "  修复: crontab -e 添加: * * * * * cd ${BACKEND_DIR} && php artisan schedule:run >> /dev/null 2>&1"
+        echo -e "  修复: 重新运行安装脚本，或用 crontab -e 添加:"
+        echo -e "  * * * * * sudo -u www-data bash -c 'cd ${BACKEND_DIR} && php artisan schedule:run >> /dev/null 2>&1'"
     fi
 
     # 检查日志中的同步记录
@@ -341,7 +351,7 @@ cmd_sync_status() {
     echo ""
     cd "$BACKEND_DIR"
     echo -e "${CYAN}调度任务列表:${NC}"
-    php artisan schedule:list 2>/dev/null | head -10
+    run_artisan schedule:list 2>/dev/null | head -10
 }
 
 # 导出备份

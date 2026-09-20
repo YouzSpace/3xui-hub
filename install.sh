@@ -16,7 +16,7 @@ NC='\033[0m'
 # 配置
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
-REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
+REPO_URL="https://github.com/HTryone/3xui-hub.git"
 VERSION="1.0.0"
 
 # 日志函数
@@ -204,7 +204,7 @@ install_php() {
                 add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
             fi
             apt-get update -y
-            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl
+            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl sudo
             ;;
     esac
 
@@ -353,9 +353,9 @@ deploy_project() {
 
         # 国内镜像列表，按优先级尝试
         MIRRORS=(
-            "https://ghfast.top/https://github.com/YouzSpace/3xui-hub.git"
-            "https://ghproxy.net/https://github.com/YouzSpace/3xui-hub.git"
-            "https://github.com/YouzSpace/3xui-hub.git"
+            "https://ghfast.top/https://github.com/HTryone/3xui-hub.git"
+            "https://ghproxy.net/https://github.com/HTryone/3xui-hub.git"
+            "https://github.com/HTryone/3xui-hub.git"
         )
 
         CLONED=false
@@ -372,6 +372,9 @@ deploy_project() {
         if [ "$CLONED" = false ]; then
             error_exit "所有下载源均失败，请检查网络"
         fi
+
+        # 安装源是复刻仓库，后续更新（git pull / 3hub update / check-update）默认对准原作者仓库
+        git -C "$INSTALL_DIR" remote set-url origin "https://github.com/YouzSpace/3xui-hub.git" 2>/dev/null || true
     fi
 
     cd "$INSTALL_DIR"
@@ -424,7 +427,7 @@ EOF
     # 设置 .env 权限（运行用户只读）
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
-    chown root:"$NGINX_USER" .env 2>/dev/null || true
+    chown "$NGINX_USER":"$NGINX_USER" .env 2>/dev/null || true
     chmod 640 .env 2>/dev/null || true
 
     # 创建 MySQL 数据库
@@ -449,6 +452,8 @@ EOF
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
     chown -R "$NGINX_USER":"$NGINX_USER" storage bootstrap/cache 2>/dev/null || true
+    # 导入备份需要在 backend/ 目录本身创建 .env.bak（BackupController 的 File::copy）
+    chown "$NGINX_USER":"$NGINX_USER" . 2>/dev/null || true
 
     success "环境配置完成"
 }
@@ -609,15 +614,16 @@ NGINX
 setup_cron() {
     info "配置定时任务（流量自动同步）..."
 
-    CRON_CMD="* * * * * cd ${INSTALL_DIR}/backend && php artisan schedule:run >> /dev/null 2>&1"
+    # schedule:run 必须以网站运行用户执行：root 跑会持续往 storage/framework/cache
+    # 写 root 属主缓存文件，导致 www-data 的队列 worker 间歇性 Permission denied
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
 
-    # 检查是否已存在
-    if crontab -l 2>/dev/null | grep -q "artisan schedule:run"; then
-        success "定时任务已存在"
-    else
-        (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
-        success "定时任务已配置（每分钟检查，每5分钟同步流量）"
-    fi
+    CRON_CMD="* * * * * sudo -u ${NGINX_USER} bash -c 'cd ${INSTALL_DIR}/backend && php artisan schedule:run >> /dev/null 2>&1'"
+
+    # 覆盖式写入：先移除旧条目（含旧版 root 直跑的条目）再写入当前版本
+    (crontab -l 2>/dev/null | grep -v "artisan schedule:run"; echo "$CRON_CMD") | crontab -
+    success "定时任务已配置（schedule:run 以 ${NGINX_USER} 运行，每分钟检查，每5分钟同步流量）"
 }
 
 # 配置常驻队列 Worker（后台流量同步）
