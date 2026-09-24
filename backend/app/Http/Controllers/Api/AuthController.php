@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AccessToken;
 use App\Models\User;
+use App\Services\RateGuardService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -17,10 +18,16 @@ use App\Services\UserAdminService;
  * POST /api/login-email → 邮箱密码登录
  * POST /api/register    → 邮箱注册
  * GET  /api/captcha     → 图形验证码
+ *
+ * 限流规则（管理员可在后台「邮箱配置 → 安全限制」调）见 RateGuardService。
  */
 class AuthController extends Controller
 {
     use ApiResponse;
+
+    public function __construct(private RateGuardService $rateGuard)
+    {
+    }
 
     /** Token 登录 */
     public function login(Request $request): \Illuminate\Http\JsonResponse
@@ -52,15 +59,27 @@ class AuthController extends Controller
             return $this->error('邮箱和密码必填', 400);
         }
 
+        $ip = (string) $request->ip();
+
+        // 登录锁定（与管理员登录同款语义）：锁定期间连正确密码也拒
+        $blocked = $this->rateGuard->loginBlocked($email, $ip);
+        if ($blocked !== null) {
+            return $this->error($blocked, 429);
+        }
+
         $user = User::where('email', $email)->first();
 
         if (!$user || !$user->password || !Hash::check($password, $user->password)) {
+            // 邮箱不存在与密码错误共用同一条文案，计数也共用同一个键
+            $this->rateGuard->recordLoginFailure($email, $ip);
             return $this->error('邮箱或密码错误', 401);
         }
 
         if (!$user->enabled) {
             return $this->error('账号已禁用', 403);
         }
+
+        $this->rateGuard->clearLoginFailures($email, $ip);
 
         return $this->success(['access_token' => $this->createAccessToken($user)]);
     }
@@ -73,6 +92,15 @@ class AuthController extends Controller
         $password = $data['password'] ?? '';
         $captcha = $data['captcha'] ?? '';
         $emailCode = $data['email_code'] ?? '';
+
+        $ip = (string) $request->ip();
+
+        // 注册按 IP 限流，入口先卡一道；放行即记数（后面的校验失败分支同样占额度）
+        $blocked = $this->rateGuard->registerBlocked($ip);
+        if ($blocked !== null) {
+            return $this->error($blocked, 429);
+        }
+        $this->rateGuard->recordRegister($ip);
 
         if (!$email || !$password) {
             return $this->error('邮箱和密码必填', 400);

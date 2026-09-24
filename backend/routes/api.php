@@ -36,6 +36,10 @@ Route::middleware('web')->group(function () {
     Route::post('/login-email', [AuthController::class, 'loginEmail']);
     Route::post('/email-verify/send', [\App\Http\Controllers\Api\EmailVerifyController::class, 'sendCode']);
     Route::post('/email-verify/check', [\App\Http\Controllers\Api\EmailVerifyController::class, 'verifyCode']);
+
+    // 找回密码（自助，邮箱验证码）
+    Route::post('/password-reset/send', [\App\Http\Controllers\Api\PasswordResetController::class, 'sendCode']);
+    Route::post('/password-reset/reset', [\App\Http\Controllers\Api\PasswordResetController::class, 'reset']);
 });
 
 // 订阅：仅凭 token，无需 Bearer

@@ -43,6 +43,7 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::put('/users/{user}', [AdminUserController::class, 'update']);
     Route::delete('/users/{user}', [AdminUserController::class, 'destroy']);
     Route::post('/users/{user}/reset-traffic', [AdminUserController::class, 'resetTraffic']);
+    Route::post('/users/{user}/reset-password', [AdminUserController::class, 'resetPassword']);
     Route::post('/users/{user}/protocol', [AdminUserController::class, 'switchProtocol']);
     Route::post('/users/{user}/renew', [AdminUserController::class, 'renew']);
 

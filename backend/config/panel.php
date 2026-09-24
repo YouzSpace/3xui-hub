@@ -55,4 +55,32 @@ return [
      | 只改一边（改了 .env 没起 worker，或起了 worker 没改 .env）时，默认值保证不会把任务派丢。
      */
     'node_ops_queue' => env('PANEL_NODE_OPS_QUEUE') ?: 'default',
+
+    /*
+     | 用户端接口限流（防刷）。
+     |
+     | 这几个值管理员可以在后台「邮箱配置 → 安全限制」页自己调：改的是 SiteConfig 里的同名
+     | rate_* 键，**SiteConfig 有非空值就覆盖这里的默认值**；这里只是兜底（站点还没配置过、
+     | 配置被清空、或部署侧想用 env 一把锁死默认值）。任何一项 <= 0 都表示该项不限。
+     |
+     | 规则见 App\Services\RateGuardService（4 个用户端接口共用一个服务）。
+     */
+    'ratelimit' => [
+        // 同一邮箱两次收验证码的最小间隔（秒）
+        'rate_code_interval'       => (int) env('PANEL_RATE_CODE_INTERVAL', 60),
+        // 同一邮箱 24 小时内最多收验证码（次）
+        'rate_code_per_day'        => (int) env('PANEL_RATE_CODE_PER_DAY', 10),
+        // 同一 IP 每小时最多请求发码接口（次，两个发码接口合计）
+        'rate_code_ip_hourly'      => (int) env('PANEL_RATE_CODE_IP_HOURLY', 20),
+        // 同一邮箱+IP 验证码最多试错（次）
+        'rate_verify_max_attempts' => (int) env('PANEL_RATE_VERIFY_MAX_ATTEMPTS', 10),
+        // 试错超限后锁定（秒）
+        'rate_verify_lock_seconds' => (int) env('PANEL_RATE_VERIFY_LOCK_SECONDS', 300),
+        // 邮箱密码登录失败（次）触发锁定
+        'rate_login_max_attempts'  => (int) env('PANEL_RATE_LOGIN_MAX_ATTEMPTS', 5),
+        // 登录锁定时长（秒）
+        'rate_login_lock_seconds'  => (int) env('PANEL_RATE_LOGIN_LOCK_SECONDS', 300),
+        // 同一 IP 每小时最多注册（个）
+        'rate_register_ip_hourly'  => (int) env('PANEL_RATE_REGISTER_IP_HOURLY', 10),
+    ],
 ];

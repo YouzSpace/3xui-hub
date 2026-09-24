@@ -4,13 +4,31 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\SiteConfig;
+use App\Services\RateGuardService;
+use App\Services\SimpleMailerService;
+use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Cache;
 
+/**
+ * 注册邮箱验证码。
+ * POST /api/email-verify/send  → 发送注册验证码
+ * POST /api/email-verify/check → 校验注册验证码
+ *
+ * 本控制器不查「邮箱是否已注册」，没有枚举面；限流键与找回密码那条链路共用
+ * （同 IP 每小时发码额度是两个接口合计），见 RateGuardService。
+ */
 class EmailVerifyController extends Controller
 {
+    use ApiResponse;
+
+    public function __construct(
+        private SimpleMailerService $mailer,
+        private RateGuardService $rateGuard,
+    ) {
+    }
+
     /**
      * 发送注册验证码
      */
@@ -19,6 +37,17 @@ class EmailVerifyController extends Controller
         $data = $request->validate([
             'email' => ['required', 'email'],
         ]);
+
+        $ip = (string) $request->ip();
+
+        // 入口先过限流，再管「有没有开邮箱验证 / SMTP 配没配」这些分支
+        $blocked = $this->rateGuard->codeSendBlocked($data['email'], $ip);
+        if ($blocked !== null) {
+            return $this->error($blocked, 429);
+        }
+
+        // 放行即记数（与 /api/password-reset/send 共享同一套计数）
+        $this->rateGuard->recordCodeSend($data['email'], $ip);
 
         // 检查是否启用邮箱验证
         if (!SiteConfig::getValue('register_email_verify')) {
@@ -30,10 +59,7 @@ class EmailVerifyController extends Controller
         }
 
         // 检查SMTP配置
-        $config = SiteConfig::getMany([
-            'smtp_host', 'smtp_port', 'smtp_username', 'smtp_password',
-            'smtp_encryption', 'smtp_from_address', 'smtp_from_name', 'email_template',
-        ]);
+        $config = SiteConfig::getMany(['smtp_host', 'smtp_from_name', 'email_template']);
 
         if (empty($config['smtp_host'])) {
             return response()->json([
@@ -49,50 +75,13 @@ class EmailVerifyController extends Controller
         // 存储验证码（5分钟有效）
         Cache::put('email_verify_' . $data['email'], $code, 300);
 
-        // 解密密码
-        $password = '';
-        if (!empty($config['smtp_password'])) {
-            try {
-                $password = \Illuminate\Support\Facades\Crypt::decryptString($config['smtp_password']);
-            } catch (\Throwable $e) {
-                Log::error('SMTP password decrypt failed', ['error' => $e->getMessage()]);
-            }
-        }
-
         // 发送邮件
-        $fromAddress = $config['smtp_from_address'] ?: ($config['smtp_username'] ?? '');
-        $fromName    = $config['smtp_from_name'] ?? '';
-        $template    = !empty($config['email_template']) ? $config['email_template'] : '<div style="padding:20px;font-family:sans-serif"><h2>注册验证码</h2><p style="font-size:24px;color:#2563eb;font-weight:bold">{{code}}</p><p style="color:#666">5分钟内有效，请勿泄露。</p></div>';
-        $body        = str_replace('{{code}}', $code, $template);
+        $fromName = $config['smtp_from_name'] ?? '';
+        $template = !empty($config['email_template']) ? $config['email_template'] : '<div style="padding:20px;font-family:sans-serif"><h2>注册验证码</h2><p style="font-size:24px;color:#2563eb;font-weight:bold">{{code}}</p><p style="color:#666">5分钟内有效，请勿泄露。</p></div>';
+        $body     = str_replace('{{code}}', $code, $template);
 
         try {
-            config([
-                'mail.default'            => 'smtp',
-                'mail.mailers.smtp.host'       => $config['smtp_host'],
-                'mail.mailers.smtp.port'       => (int) ($config['smtp_port'] ?? 587),
-                'mail.mailers.smtp.username'   => $config['smtp_username'] ?? null,
-                'mail.mailers.smtp.password'   => $password,
-                'mail.mailers.smtp.encryption' => ($config['smtp_encryption'] === 'none') ? null : $config['smtp_encryption'],
-                'mail.mailers.smtp.local_domain' => 'localhost',
-                'mail.mailers.smtp.auth_mode'  => 'login',
-                'mail.mailers.smtp.timeout'    => 30,
-                'mail.mailers.smtp.stream_options' => [
-                    'ssl' => [
-                        'verify_peer'       => false,
-                        'verify_peer_name'  => false,
-                        'allow_self_signed' => true,
-                    ],
-                ],
-            ]);
-            app('mail.manager')->forgetMailers();
-
-            Mail::html($body, function ($message) use ($data, $fromAddress, $fromName) {
-                $message->to($data['email'])
-                    ->subject(!empty($fromName) ? $fromName : 'ControlHub');
-                if ($fromAddress) {
-                    $message->from($fromAddress, $fromName ?: null);
-                }
-            });
+            $this->mailer->send($data['email'], !empty($fromName) ? $fromName : 'ControlHub', $body);
         } catch (\Throwable $e) {
             Log::error('Send email verify code failed', ['error' => $e->getMessage()]);
             return response()->json([
@@ -119,9 +108,19 @@ class EmailVerifyController extends Controller
             'code'  => ['required', 'string', 'size:6'],
         ]);
 
+        $ip = (string) $request->ip();
+
+        // 试错打满后锁定期内一律拒，正确验证码也不例外
+        $blocked = $this->rateGuard->verifyBlocked($data['email'], $ip);
+        if ($blocked !== null) {
+            return $this->error($blocked, 429);
+        }
+
         $cached = Cache::get('email_verify_' . $data['email']);
 
         if (!$cached || $cached !== $data['code']) {
+            $this->rateGuard->recordVerifyFailure($data['email'], $ip);
+
             return response()->json([
                 'code' => 400,
                 'msg' => '验证码错误',
@@ -131,6 +130,8 @@ class EmailVerifyController extends Controller
 
         // 验证成功后删除验证码
         Cache::forget('email_verify_' . $data['email']);
+
+        $this->rateGuard->clearVerifyFailures($data['email'], $ip);
 
         return response()->json([
             'code' => 0,

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
+use App\Models\AccessToken;
 use App\Models\Node;
 use App\Models\Plan;
 use App\Models\User;
@@ -12,6 +13,7 @@ use App\Services\ProtocolSwitchService;
 use App\Services\UserAdminService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 
 /**
  * Admin 用户管理（M3.2~M3.5 + M10.4 + 套餐联动）。
@@ -111,6 +113,20 @@ class UserController extends Controller
         $this->service->resetTraffic($user);
 
         return $this->success($this->present($user->fresh()->load('plan'), true), '流量已重置');
+    }
+
+    /** 管理员重置用户密码：改密 + 作废该用户全部登录态。 */
+    public function resetPassword(Request $request, User $user): \Illuminate\Http\JsonResponse
+    {
+        $data = $request->validate([
+            'password' => ['required', 'string', 'min:6'],
+        ]);
+
+        $user->forceFill(['password' => Hash::make($data['password'])])->save();
+
+        AccessToken::where('user_id', $user->id)->delete();
+
+        return $this->success(null, '密码已重置');
     }
 
     /** 总量套餐续费：重置总流量 + 重新启用。 */
