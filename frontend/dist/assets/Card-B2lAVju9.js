@@ -1,0 +1,1 @@
+import{A as e,N as t,n,p as r,yt as i}from"./client-CGVadGDN.js";var a=n({__name:`Card`,props:{padding:{type:Boolean,default:!0}},setup(n){return(a,o)=>(e(),r(`div`,{class:i([`ch-card`,{"ch-card--flush":!n.padding}])},[t(a.$slots,`default`,{},void 0,!0)],2))}},[[`__scopeId`,`data-v-9bca7751`]]);export{a as t};

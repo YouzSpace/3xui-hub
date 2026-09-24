@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.7.0**
+**版本：1.11.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -60,11 +60,11 @@ docker-compose up -d --build # 更新并重启
 
 - 登录：邮箱密码 / Token 登录
 - 注册：邮箱注册（图形验证码）
-- 仪表盘：流量统计、订阅地址、节点列表
+- 仪表盘：流量统计、订阅地址、节点列表、使用文档入口
 - 订购订阅：选择套餐、在线支付
-- 最近订单：查看已支付订单
-- 公告查看：系统公告
-- 教程中心：分类教程、详情阅读
+- 我的订单：独立页面查看历史订单与支付状态
+- 系统公告：铃铛弹窗查看，发布新公告后进入即自动弹出（可「不再提示」）；「我的」页进入全屏公告页
+- 使用文档：独立二级页面，按分类内容列表 + 详情阅读
 - 反馈链接：问题反馈入口
 
 ### 自动化
@@ -146,6 +146,13 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.11.0 (2026-09-25)
+
+- 用户端：使用文档独立为全屏二级页面，「我的」页与仪表盘入口均跳该页
+- 用户端：弹层改为上下居中，内容超高时弹层内部滚动，去掉拖拽把手
+- 用户端：系统公告改为弹窗查看，发布新公告后进入即自动弹出，支持「不再提示」
+- 用户端：「我的」页保留全屏公告页入口，公告页去掉重复标题
+
 ### v1.7.0 (2026-09-18)
 
 - 新节点接入改为按用户异步初始化，单个用户失败不阻塞其他用户
@@ -203,7 +210,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.7.0**
+**Version: 1.11.0**
 
 ## Quick Install
 
@@ -254,7 +261,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.7.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.11.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
