@@ -21,9 +21,12 @@ class SubscriptionSettingController extends Controller
         'sub_show_traffic',
         'sub_show_expire',
         'sub_show_flag',
+        'sub_show_userid',
         'sub_rename_enabled',
         'sub_rename_regex',
         'sub_rename_replacement',
+        'sub_custom_info_enabled',
+        'sub_custom_info_text',
     ];
 
     /**

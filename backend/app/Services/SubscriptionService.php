@@ -105,13 +105,112 @@ class SubscriptionService
      */
     private function generateBase64(User $user, array $links): string
     {
-        // 添加流量信息节点
-        $infoLinks = $this->createInfoLinks($user);
-        foreach ($infoLinks as $infoLink) {
-            array_unshift($links, $infoLink);
+        $regionCounters = []; // 按地区计数
+        $outLinks = [];
+
+        // 信息条目排在真实节点之前
+        foreach ($this->createInfoLinks($user) as $infoLink) {
+            $outLinks[] = $infoLink;
         }
 
-        return base64_encode(implode("\n", $links));
+        foreach ($links as $link) {
+            try {
+                $outLinks[] = $this->applyNameToLink($link, $regionCounters);
+            } catch (\Throwable $e) {
+                // 名称处理失败：保留原链接，不毁掉整份订阅
+                $outLinks[] = $link;
+            }
+        }
+
+        return base64_encode(implode("\n", $outLinks));
+    }
+
+    /**
+     * 对链接 #fragment（名称段）应用名称处理，链接其余部分原样保留。
+     */
+    private function applyNameToLink(string $link, array &$regionCounters): string
+    {
+        $hashPos = strrpos($link, '#');
+        if ($hashPos === false) {
+            return $link;
+        }
+
+        $rawName = urldecode(substr($link, $hashPos + 1));
+        $newName = $this->processNodeName($rawName, $regionCounters);
+
+        return substr($link, 0, $hashPos) . '#' . urlencode($newName);
+    }
+
+    /**
+     * 统一节点名称处理：用户 ID 清理 → 正则重命名 → 旗帜。
+     */
+    private function processNodeName(string $name, array &$regionCounters): string
+    {
+        if (SiteConfig::getValue('sub_show_userid', '0') !== '1') {
+            $name = $this->stripUserIdFromName($name);
+        }
+
+        $name = $this->renameNode($name);
+
+        $showFlag = SiteConfig::getValue('sub_show_flag', '0');
+        if ($showFlag === '1') {
+            $name = $this->addFlagToName($name, $regionCounters);
+        }
+
+        return $name;
+    }
+
+    /**
+     * 清理节点名中的面板用户标识（ch_user_N）及残留孤立分隔符。
+     */
+    private function stripUserIdFromName(string $name): string
+    {
+        $name = preg_replace('/ch_user_\d+/u', '', $name) ?? $name;
+        // 残留空括号
+        $name = preg_replace('/\[\s*\]/u', '', $name) ?? $name;
+        // 连续空格
+        $name = preg_replace('/\s{2,}/u', ' ', $name) ?? $name;
+        // 多余的连续 -
+        $name = preg_replace('/(?:\s*-\s*){2,}/u', '-', $name) ?? $name;
+        // 首尾孤立分隔符
+        $name = preg_replace('/^[\s\-\[\]()_]+|[\s\-\[\]()_]+$/u', '', $name) ?? $name;
+
+        return $name;
+    }
+
+    /**
+     * base64 / base64url 解码（允许缺 padding）。失败返回 null。
+     */
+    private function decodeBase64Url(string $value): ?string
+    {
+        $value = strtr($value, '-_', '+/');
+        $pad = strlen($value) % 4;
+        if ($pad === 1) {
+            return null;
+        }
+        if ($pad > 0) {
+            $value .= str_repeat('=', 4 - $pad);
+        }
+        $decoded = base64_decode($value, true);
+
+        return $decoded === false ? null : $decoded;
+    }
+
+    /**
+     * 解析 ss userinfo（base64(method:password)）为 [method, password]。失败返回 null。
+     */
+    private function parseSsCredentials(string $userInfo): ?array
+    {
+        $decoded = $this->decodeBase64Url($userInfo);
+        if ($decoded === null || strpos($decoded, ':') === false) {
+            return null;
+        }
+        [$method, $password] = explode(':', $decoded, 2);
+        if ($method === '' || $password === '') {
+            return null;
+        }
+
+        return [$method, $password];
     }
 
     /**
@@ -151,6 +250,9 @@ class SubscriptionService
 
             if (isset($proxy['uuid'])) {
                 $yaml .= "    uuid: {$proxy['uuid']}\n";
+            }
+            if (isset($proxy['cipher'])) {
+                $yaml .= "    cipher: {$proxy['cipher']}\n";
             }
             if (isset($proxy['password'])) {
                 $yaml .= "    password: {$proxy['password']}\n";
@@ -223,14 +325,17 @@ class SubscriptionService
     }
 
     /**
-     * 解析链接为 Clash 代理配置。
+     * 解析链接为 Clash 代理配置。解析失败或不支持时返回 null（跳过该节点）。
      */
     private function parseLinkToClashProxy(string $link, array &$regionCounters): ?array
     {
-        // 解析 vless://、trojan://、ss:// 等链接
-        if (preg_match('/^(vless|trojan|ss):\/\/([^@]+)@([^:]+):(\d+)/', $link, $m)) {
+        try {
+            // 解析 vless://、trojan://、ss:// 等链接
+            if (!preg_match('/^(vless|trojan|ss):\/\/([^@]+)@([^:]+):(\d+)/', $link, $m)) {
+                return null;
+            }
             $protocol = $m[1];
-            $uuid = $m[2];
+            $userPart = $m[2];
             $server = $m[3];
             $port = (int) $m[4];
 
@@ -253,13 +358,28 @@ class SubscriptionService
                 $name = "{$protocol}-{$server}:{$port}";
             }
 
-            // 应用正则重命名
-            $name = $this->renameNode($name);
+            // 应用名称处理（用户 ID 清理 / 正则重命名 / 旗帜）
+            $name = $this->processNodeName($name, $regionCounters);
+            if (trim($name) === '') {
+                $name = "{$protocol}-{$server}:{$port}";
+            }
 
-            // 应用旗帜显示
-            $showFlag = SiteConfig::getValue('sub_show_flag', '0');
-            if ($showFlag === '1') {
-                $name = $this->addFlagToName($name, $regionCounters);
+            // ss：base64 解码凭据，输出 cipher + password
+            if ($protocol === 'ss') {
+                $credentials = $this->parseSsCredentials($userPart);
+                if ($credentials === null) {
+                    return null;
+                }
+
+                return [
+                    'name' => $name,
+                    'type' => 'ss',
+                    'server' => $server,
+                    'port' => $port,
+                    'cipher' => $credentials[0],
+                    'password' => $credentials[1],
+                    'udp' => true,
+                ];
             }
 
             $proxy = [
@@ -267,25 +387,28 @@ class SubscriptionService
                 'type' => $protocol,
                 'server' => $server,
                 'port' => $port,
-                'uuid' => $uuid,
                 'udp' => true,
                 'client-fingerprint' => $params['fp'] ?? 'chrome',
             ];
 
-            // 解析 flow 参数（Reality 需要）
-            if (isset($params['flow'])) {
-                $proxy['flow'] = $params['flow'];
-            } elseif ($protocol === 'vless' && isset($params['security']) && $params['security'] === 'reality') {
-                // Reality 默认使用 xtls-rprx-vision
-                $proxy['flow'] = 'xtls-rprx-vision';
-            }
+            // trojan 用 password，vless 用 uuid
+            if ($protocol === 'trojan') {
+                $proxy['password'] = $userPart;
+            } else {
+                $proxy['uuid'] = $userPart;
 
-            // encryption 参数
-            if (isset($params['encryption'])) {
-                $proxy['encryption'] = $params['encryption'];
-            } elseif ($protocol === 'vless') {
-                // VLESS 协议默认使用 none 加密
-                $proxy['encryption'] = 'none';
+                // flow 只透传不发明：链接没有 flow 就绝不输出
+                if (isset($params['flow'])) {
+                    $proxy['flow'] = $params['flow'];
+                }
+
+                // encryption 参数
+                if (isset($params['encryption'])) {
+                    $proxy['encryption'] = $params['encryption'];
+                } else {
+                    // VLESS 协议默认使用 none 加密
+                    $proxy['encryption'] = 'none';
+                }
             }
 
             // TLS / Reality
@@ -293,11 +416,11 @@ class SubscriptionService
                 if ($params['security'] === 'tls') {
                     $proxy['tls'] = true;
                     if (isset($params['sni'])) {
-                        $proxy['sni'] = $params['sni'];
+                        $proxy['sni'] = $this->cleanSni($params['sni']);
                     }
                 } elseif ($params['security'] === 'reality') {
                     $proxy['tls'] = true;
-                    $proxy['servername'] = $params['sni'] ?? $server;
+                    $proxy['servername'] = $this->cleanSni($params['sni'] ?? $server);
                     if (isset($params['fp'])) {
                         $proxy['client-fingerprint'] = $params['fp'];
                     }
@@ -322,6 +445,7 @@ class SubscriptionService
                     }
                     $proxy['ws-opts'] = $wsOpts;
                 } elseif ($params['type'] === 'xhttp') {
+                    // clash 的 xhttp-opts 保留（mihomo 1.19.31 实测支持）
                     $xhttpOpts = [
                         'path' => $params['path'] ?? '/',
                         'mode' => $params['mode'] ?? 'auto',
@@ -340,9 +464,10 @@ class SubscriptionService
             }
 
             return $proxy;
+        } catch (\Throwable $e) {
+            // 解析失败：跳过该节点，不毁掉整份订阅
+            return null;
         }
-
-        return null;
     }
 
     /**
@@ -350,21 +475,34 @@ class SubscriptionService
      */
     private function generateSingbox(User $user, array $links): string
     {
-        $outbounds = [];
         $regionCounters = []; // 按地区计数
 
         // 添加流量信息节点
         $infoOutbounds = $this->createInfoOutbounds($user);
-        foreach ($infoOutbounds as $infoOutbound) {
-            $outbounds[] = $infoOutbound;
-        }
 
+        $realOutbounds = [];
         foreach ($links as $link) {
             $outbound = $this->parseLinkToSingboxOutbound($link, $regionCounters);
             if ($outbound) {
-                $outbounds[] = $outbound;
+                $realOutbounds[] = $outbound;
             }
         }
+
+        // 有链接但全部被跳过（无真实节点出站）时注入提示条目，排 direct 之后第一位
+        // $links 本身为空保持现状（返回空串），不加提示
+        $hintOutbounds = [];
+        if (!empty($links) && empty($realOutbounds)) {
+            $hintOutbounds[] = [
+                'type' => 'shadowsocks',
+                'tag' => '不支持Sing-box请用Clash或Base64',
+                'server' => '127.0.0.1',
+                'server_port' => 1,
+                'method' => 'aes-256-gcm',
+                'password' => 'info',
+            ];
+        }
+
+        $outbounds = array_merge($hintOutbounds, $infoOutbounds, $realOutbounds);
 
         if (empty($outbounds)) {
             return '';
@@ -381,14 +519,17 @@ class SubscriptionService
     }
 
     /**
-     * 解析链接为 Sing-box outbound 配置。
+     * 解析链接为 Sing-box outbound 配置。解析失败或不支持时返回 null（跳过该节点）。
      */
     private function parseLinkToSingboxOutbound(string $link, array &$regionCounters): ?array
     {
-        // 解析 vless://、trojan://、ss:// 等链接
-        if (preg_match('/^(vless|trojan|ss):\/\/([^@]+)@([^:]+):(\d+)/', $link, $m)) {
+        try {
+            // 解析 vless://、trojan://、ss:// 等链接
+            if (!preg_match('/^(vless|trojan|ss):\/\/([^@]+)@([^:]+):(\d+)/', $link, $m)) {
+                return null;
+            }
             $protocol = $m[1];
-            $uuid = $m[2];
+            $userPart = $m[2];
             $server = $m[3];
             $port = (int) $m[4];
 
@@ -411,17 +552,15 @@ class SubscriptionService
                 $name = "{$protocol}-{$server}:{$port}";
             }
 
-            // 应用正则重命名
-            $name = $this->renameNode($name);
-
-            // 应用旗帜显示
-            $showFlag = SiteConfig::getValue('sub_show_flag', '0');
-            if ($showFlag === '1') {
-                $name = $this->addFlagToName($name, $regionCounters);
+            // 应用名称处理（用户 ID 清理 / 正则重命名 / 旗帜）
+            $name = $this->processNodeName($name, $regionCounters);
+            if (trim($name) === '') {
+                $name = "{$protocol}-{$server}:{$port}";
             }
 
+            // ss 的 type 用 shadowsocks
             $outbound = [
-                'type' => $protocol,
+                'type' => $protocol === 'ss' ? 'shadowsocks' : $protocol,
                 'tag' => $name,
                 'server' => $server,
                 'server_port' => $port,
@@ -429,24 +568,22 @@ class SubscriptionService
 
             // UUID 或 password
             if ($protocol === 'vless') {
-                $outbound['uuid'] = $uuid;
-                // 解析 flow 参数（Reality 需要）
+                $outbound['uuid'] = $userPart;
+                // flow 只透传不发明：链接没有 flow 就绝不输出
                 if (isset($params['flow'])) {
                     $outbound['flow'] = $params['flow'];
-                } elseif (isset($params['security']) && $params['security'] === 'reality') {
-                    // Reality 默认使用 xtls-rprx-vision
-                    $outbound['flow'] = 'xtls-rprx-vision';
                 }
+                // 注意：sing-box 的 vless 不输出 encryption 字段
             } elseif ($protocol === 'trojan') {
-                $outbound['password'] = $uuid;
+                $outbound['password'] = $userPart;
             } elseif ($protocol === 'ss') {
-                $outbound['method'] = $params['method'] ?? 'aes-256-gcm';
-                $outbound['password'] = $uuid;
-            }
-
-            // encryption 参数
-            if (isset($params['encryption'])) {
-                $outbound['encryption'] = $params['encryption'];
+                // base64 解码凭据拆出 method / password
+                $credentials = $this->parseSsCredentials($userPart);
+                if ($credentials === null) {
+                    return null;
+                }
+                $outbound['method'] = $credentials[0];
+                $outbound['password'] = $credentials[1];
             }
 
             // TLS / Reality
@@ -454,12 +591,12 @@ class SubscriptionService
                 if ($params['security'] === 'tls') {
                     $outbound['tls'] = [
                         'enabled' => true,
-                        'server_name' => $params['sni'] ?? $server,
+                        'server_name' => $this->cleanSni($params['sni'] ?? $server),
                     ];
                 } elseif ($params['security'] === 'reality') {
                     $tlsConfig = [
                         'enabled' => true,
-                        'server_name' => $params['sni'] ?? $server,
+                        'server_name' => $this->cleanSni($params['sni'] ?? $server),
                         'reality' => [
                             'enabled' => true,
                             'public_key' => $params['pbk'] ?? '',
@@ -479,6 +616,10 @@ class SubscriptionService
             // 传输协议
             $network = $params['type'] ?? 'tcp';
             if ($network && !in_array($network, ['tcp', 'none'], true)) {
+                // sing-box 1.14.1 不支持 xhttp 等传输：跳过该节点
+                if (!in_array($network, ['ws', 'grpc', 'http', 'httpupgrade'], true)) {
+                    return null;
+                }
                 $transport = ['type' => $network];
                 if (isset($params['path'])) {
                     $transport['path'] = $params['path'];
@@ -486,25 +627,14 @@ class SubscriptionService
                 if (isset($params['host'])) {
                     $transport['headers'] = ['Host' => $params['host']];
                 }
-                if ($network === 'xhttp') {
-                    $transport['mode'] = $params['mode'] ?? 'auto';
-                    // 解析 extra 参数（JSON 格式）
-                    if (isset($params['extra'])) {
-                        $extra = json_decode($params['extra'], true);
-                        if ($extra) {
-                            if (isset($extra['xPaddingBytes'])) {
-                                $transport['extra'] = ['xPaddingBytes' => $extra['xPaddingBytes']];
-                            }
-                        }
-                    }
-                }
                 $outbound['transport'] = $transport;
             }
 
             return $outbound;
+        } catch (\Throwable $e) {
+            // 解析失败：跳过该节点，不毁掉整份订阅
+            return null;
         }
-
-        return null;
     }
 
     /**
@@ -698,6 +828,19 @@ class SubscriptionService
             ];
         }
 
+        // 自定义显示（信息条目）
+        foreach ($this->customInfoLines() as $line) {
+            $proxies[] = [
+                'name' => $line,
+                'type' => 'ss',
+                'server' => '127.0.0.1',
+                'port' => 1,
+                'cipher' => 'aes-256-gcm',
+                'password' => 'info',
+                'udp' => false,
+            ];
+        }
+
         return $proxies;
     }
 
@@ -753,6 +896,18 @@ class SubscriptionService
             $outbounds[] = [
                 'type' => 'shadowsocks',
                 'tag' => "重置: {$resetDays}天后",
+                'server' => '127.0.0.1',
+                'server_port' => 1,
+                'method' => 'aes-256-gcm',
+                'password' => 'info',
+            ];
+        }
+
+        // 自定义显示（信息条目）
+        foreach ($this->customInfoLines() as $line) {
+            $outbounds[] = [
+                'type' => 'shadowsocks',
+                'tag' => $line,
                 'server' => '127.0.0.1',
                 'server_port' => 1,
                 'method' => 'aes-256-gcm',
@@ -823,7 +978,49 @@ class SubscriptionService
             $links[] = "ss://{$userInfo}@127.0.0.1:1#" . urlencode("重置: {$resetDays}天后");
         }
 
+        // 自定义显示（信息条目）
+        foreach ($this->customInfoLines() as $line) {
+            $links[] = "ss://{$userInfo}@127.0.0.1:1#" . urlencode($line);
+        }
+
         return $links;
+    }
+
+    /**
+     * 自定义显示（信息条目）文本行。空行忽略。
+     */
+    private function customInfoLines(): array
+    {
+        if (SiteConfig::getValue('sub_custom_info_enabled', '0') !== '1') {
+            return [];
+        }
+
+        $text = SiteConfig::getValue('sub_custom_info_text', '');
+        $lines = preg_split('/\r\n|\r|\n/', $text);
+        $result = [];
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line !== '') {
+                $result[] = $line;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * SNI 剥端口：`apple.com:443` → `apple.com`；纯域名 / IPv6 原样返回。
+     * Clash 的 servername 不容忍端口（x509 校验会挂），Xray 系容忍。
+     */
+    private function cleanSni(string $sni): string
+    {
+        // 仅剥「单冒号 + 纯数字端口」形式；含多冒号的 IPv6 不动
+        $pos = strrpos($sni, ':');
+        if ($pos !== false && strpos($sni, ':') === $pos && $pos > 0 && ctype_digit(substr($sni, $pos + 1))) {
+            return substr($sni, 0, $pos);
+        }
+
+        return $sni;
     }
 
     private function linkMatchesPort(string $link, int $port): bool
