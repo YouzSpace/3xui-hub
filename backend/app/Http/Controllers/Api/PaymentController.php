@@ -31,6 +31,7 @@ class PaymentController extends Controller
         $data = $request->validate([
             'plan_id' => ['required', 'integer'],
             'payment_config_id' => ['sometimes', 'nullable', 'integer'],
+            'discount_code' => ['sometimes', 'nullable', 'string', 'max:32'],
         ]);
 
         $plan = Plan::find($data['plan_id']);
@@ -77,7 +78,12 @@ class PaymentController extends Controller
         }
 
         try {
-            $result = $this->paymentService->createOrder($user, $data['plan_id'], $data['payment_config_id'] ?? null);
+            $result = $this->paymentService->createOrder(
+                $user,
+                $data['plan_id'],
+                $data['payment_config_id'] ?? null,
+                $data['discount_code'] ?? null,
+            );
         } catch (\InvalidArgumentException $e) {
             return $this->error($e->getMessage(), 400);
         } catch (\Throwable $e) {

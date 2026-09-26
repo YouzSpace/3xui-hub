@@ -15,6 +15,9 @@ class Order extends Model
         'user_id',
         'plan_id',
         'amount',
+        'original_amount',
+        'discount_code_id',
+        'discount_amount',
         'status',
         'payment_config_id',
         'trade_no',
@@ -26,6 +29,9 @@ class Order extends Model
     {
         return [
             'amount' => 'decimal:2',
+            'original_amount' => 'decimal:2',
+            'discount_amount' => 'decimal:2',
+            'discount_code_id' => 'integer',
             'paid_at' => 'datetime',
         ];
     }

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\DiscountController as ApiDiscountController;
 use App\Http\Controllers\Api\NodeController as ApiNodeController;
 use App\Http\Controllers\Api\PaymentController as ApiPaymentController;
 use App\Http\Controllers\Api\PlanController as ApiPlanController;
@@ -77,6 +78,10 @@ Route::middleware('api.auth')->group(function () {
     Route::get('/payment/status', [ApiPaymentController::class, 'status']);
     Route::get('/payment/orders', [ApiPaymentController::class, 'orders']);
     Route::post('/payment/retry', [ApiPaymentController::class, 'retry']);
+
+    // 邀请码 / 兑换码
+    Route::get('/invite/me', [ApiDiscountController::class, 'myInvite']);
+    Route::post('/discount/check', [ApiDiscountController::class, 'check']);
 
     Route::get('/_auth_check', function (\Illuminate\Http\Request $request): \Illuminate\Http\JsonResponse {
         return response()->json([

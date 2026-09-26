@@ -63,7 +63,7 @@ return [
      | rate_* 键，**SiteConfig 有非空值就覆盖这里的默认值**；这里只是兜底（站点还没配置过、
      | 配置被清空、或部署侧想用 env 一把锁死默认值）。任何一项 <= 0 都表示该项不限。
      |
-     | 规则见 App\Services\RateGuardService（4 个用户端接口共用一个服务）。
+     | 规则见 App\Services\RateGuardService（5 个用户端接口共用一个服务）。
      */
     'ratelimit' => [
         // 同一邮箱两次收验证码的最小间隔（秒）
@@ -82,5 +82,16 @@ return [
         'rate_login_lock_seconds'  => (int) env('PANEL_RATE_LOGIN_LOCK_SECONDS', 300),
         // 同一 IP 每小时最多注册（个）
         'rate_register_ip_hourly'  => (int) env('PANEL_RATE_REGISTER_IP_HOURLY', 10),
+
+        // 邀请码/优惠码校验：单用户每分钟请求上限
+        'rate_discount_per_minute'      => (int) env('PANEL_RATE_DISCOUNT_PER_MINUTE', 10),
+        // 邀请码/优惠码校验：单用户每日失败上限
+        'rate_discount_fail_per_day'    => (int) env('PANEL_RATE_DISCOUNT_FAIL_PER_DAY', 50),
+        // 邀请码/优惠码校验：单 IP 每小时失败上限
+        'rate_discount_ip_fail_hourly'  => (int) env('PANEL_RATE_DISCOUNT_IP_FAIL_HOURLY', 100),
+        // 连续失败多少次触发锁定
+        'rate_discount_max_attempts'    => (int) env('PANEL_RATE_DISCOUNT_MAX_ATTEMPTS', 10),
+        // 锁定时长（秒）
+        'rate_discount_lock_seconds'    => (int) env('PANEL_RATE_DISCOUNT_LOCK_SECONDS', 900),
     ],
 ];

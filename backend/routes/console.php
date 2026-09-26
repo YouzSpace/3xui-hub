@@ -18,5 +18,8 @@ Schedule::job(HealthCheckJob::class)->everyFiveMinutes()->name('health-check')->
 // 每天检查并重置周期套餐月流量（基于用户的 next_traffic_reset_at）
 Schedule::command('traffic:monthly-reset')->dailyAt('00:00')->name('monthly-reset-traffic')->withoutOverlapping();
 
+// 每天刷新到期的邀请码（旧码立即失效，只认最新码）
+Schedule::command('invite:refresh')->dailyAt('00:10')->name('invite-code-refresh')->withoutOverlapping();
+
 // 任务超时兜底：超过阈值（config('tasks.stale_after_minutes')）未终态的异步任务标记失败，防止 running 永久停留
 Schedule::call(fn () => app(\App\Services\AsyncTaskService::class)->timeoutStale())->everyFiveMinutes()->name('async-task-timeout')->withoutOverlapping();

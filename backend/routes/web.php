@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Admin\AsyncTaskController as AdminAsyncTaskController;
 use App\Http\Controllers\Admin\BackupController as AdminBackupController;
+use App\Http\Controllers\Admin\DiscountCodeController as AdminDiscountCodeController;
 use App\Http\Controllers\Admin\DomainController as AdminDomainController;
 use App\Http\Controllers\Admin\EmailController as AdminEmailController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
@@ -115,4 +116,12 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::post('/tutorials', [AdminTutorialController::class, 'store']);
     Route::put('/tutorials/{tutorial}', [AdminTutorialController::class, 'update']);
     Route::delete('/tutorials/{tutorial}', [AdminTutorialController::class, 'destroy']);
+
+    // 优惠码 / 邀请机制
+    Route::get('/discount-codes', [AdminDiscountCodeController::class, 'index']);
+    Route::post('/discount-codes', [AdminDiscountCodeController::class, 'store']);
+    Route::put('/discount-codes/{code}', [AdminDiscountCodeController::class, 'update']);
+    Route::delete('/discount-codes/{code}', [AdminDiscountCodeController::class, 'destroy']);
+    Route::get('/invite-settings', [AdminDiscountCodeController::class, 'inviteSettings']);
+    Route::put('/invite-settings', [AdminDiscountCodeController::class, 'updateInviteSettings']);
 });

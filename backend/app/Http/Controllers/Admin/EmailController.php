@@ -34,6 +34,8 @@ class EmailController extends Controller
         'rate_login_max_attempts',
         'rate_login_lock_seconds',
         'rate_register_ip_hourly',
+        // 折扣码校验限流（rate_discount_*）不在这里：那 5 个参数归「优惠码管理 → 邀请机制设置」页，
+        // 见 Admin\DiscountCodeController::inviteSettings()。
     ];
 
     /** 获取 SMTP 配置和邮件模板 */

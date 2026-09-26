@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\PaymentConfig;
 use App\Models\Plan;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -18,12 +19,20 @@ class PaymentService
     public function __construct(
         private UserAdminService $userAdminService,
         private BanService $banService,
+        private DiscountCodeService $discountCodeService,
+        private RateGuardService $rateGuard,
     ) {}
 
     /**
      * 创建订单并返回支付链接。
+     *
+     * 折扣在下单时算定并固化到订单（amount = 折后实付，original_amount = 原价），
+     * 支付回调不再重新计算。
+     *
+     * 传了折扣码时走与 /api/discount/check 同一套限流（RateGuardService），
+     * 否则下单接口就是一条可被脚本枚举的旁路。
      */
-    public function createOrder(User $user, int $planId, ?int $paymentConfigId = null): array
+    public function createOrder(User $user, int $planId, ?int $paymentConfigId = null, ?string $discountCode = null): array
     {
         $plan = Plan::find($planId);
         if (!$plan) {
@@ -48,15 +57,69 @@ class PaymentService
             throw new \InvalidArgumentException('暂无可用支付方式');
         }
 
-        $order = Order::create([
-            'order_no' => Order::generateOrderNo(),
-            'user_id' => $user->id,
-            'plan_id' => $planId,
-            'amount' => $plan->price,
-            'status' => 'pending',
-            'payment_config_id' => $payment->id,
-            'pay_ip' => request()->ip(),
-        ]);
+        $originalAmount = (float) $plan->price;
+        // 原价为 0 的免费套餐不适用折扣码（折后价不可能 ≥ 原价），直接跳过校验
+        $useDiscount = $discountCode !== null && trim($discountCode) !== '' && $originalAmount > 0;
+
+        if ($useDiscount) {
+            $userId = (int) $user->id;
+            $ip     = (string) request()->ip();
+
+            // 限流与 /api/discount/check 共用同一套计数（RateGuardService）：下单是第二个
+            // 能拿码试错的入口，不接这里脚本就能绕过 check 的限流直接枚举。
+            // 检查排在查库之前：被限流/锁定时直接抛，一个字节的库都不查，也就没有枚举反馈。
+            $blocked = $this->rateGuard->discountCheckBlocked($userId, $ip);
+            if ($blocked !== null) {
+                throw new \InvalidArgumentException($blocked);
+            }
+            $this->rateGuard->recordDiscountRequest($userId);
+
+            try {
+                // 校验 + 建单 + 占用次数放在同一事务里，失败整体回滚，不会白扣一次
+                $order = DB::transaction(function () use ($user, $plan, $planId, $payment, $originalAmount, $discountCode) {
+                    $result = $this->discountCodeService->validateAndApply($user, $discountCode, $plan, $originalAmount);
+
+                    $order = Order::create([
+                        'order_no' => Order::generateOrderNo(),
+                        'user_id' => $user->id,
+                        'plan_id' => $planId,
+                        'amount' => $result['final_amount'],
+                        'original_amount' => $originalAmount,
+                        'discount_amount' => round($originalAmount - $result['final_amount'], 2),
+                        'discount_code_id' => $result['code']->id,
+                        'status' => 'pending',
+                        'payment_config_id' => $payment->id,
+                        'pay_ip' => request()->ip(),
+                    ]);
+
+                    // 占用一次使用次数（内部 lockForUpdate，防并发双花）
+                    $this->discountCodeService->consume($result['code'], $user);
+
+                    return $order;
+                });
+            } catch (\InvalidArgumentException $e) {
+                // 码无效 / 已失效 / 已被占用：记一次失败。记账放在事务之外，订单回滚掉，
+                // 失败计数必须留下 —— 计数跟着回滚等于没限流（计数走 RateLimiter，
+                // 与订单事务互不牵连）。
+                $this->rateGuard->recordDiscountFailure($userId, $ip);
+
+                throw $e;
+            }
+
+            // 校验通过：清掉自己攒的失败计数（同 check 接口口径，不清 IP 维度）
+            $this->rateGuard->clearDiscountFailures($userId);
+        } else {
+            $order = Order::create([
+                'order_no' => Order::generateOrderNo(),
+                'user_id' => $user->id,
+                'plan_id' => $planId,
+                'amount' => $originalAmount,
+                'original_amount' => $originalAmount,
+                'status' => 'pending',
+                'payment_config_id' => $payment->id,
+                'pay_ip' => request()->ip(),
+            ]);
+        }
 
         // 免费套餐直接完成
         if ($plan->price <= 0) {
@@ -217,6 +280,9 @@ class PaymentService
             'trade_no' => $tradeNo,
             'paid_at' => now(),
         ])->save();
+
+        // 首次完成才走到这里（上面已有 paid 早退），再叠加 rewardInviter 内部幂等判断形成双保险
+        $this->discountCodeService->rewardInviter($order);
 
         $user = $order->user;
         $plan = $order->plan;
