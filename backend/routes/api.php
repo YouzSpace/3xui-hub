@@ -50,7 +50,9 @@ Route::get('/plans', [ApiPlanController::class, 'index']);
 
 // 教程（公开，只返回已启用的）
 Route::get('/tutorials', function () {
-    return response()->json(['code' => 0, 'data' => \App\Models\Tutorial::where('enabled', true)->orderBy('sort')->orderByDesc('id')->get(['id', 'title', 'category', 'content', 'created_at'])]);
+    return response()->json(['code' => 0, 'data' => \App\Models\Tutorial::where('enabled', true)
+        ->selectRaw("id, title, COALESCE(NULLIF(TRIM(category), ''), '默认') as category, content, created_at")
+        ->orderBy('sort')->orderByDesc('id')->get()]);
 });
 Route::get('/tutorials/{tutorial}', function (\App\Models\Tutorial $tutorial) {
     if (!$tutorial->enabled) return response()->json(['code' => 404, 'msg' => 'Not found'], 404);
