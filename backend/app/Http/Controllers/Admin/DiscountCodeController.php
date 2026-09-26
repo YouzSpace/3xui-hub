@@ -42,13 +42,14 @@ class DiscountCodeController extends Controller
     ];
 
     /**
-     * 优惠码列表（可按 source/status 筛选，分页）。
+     * 优惠码列表（可按 source/status/user 筛选，分页）。
      */
     public function index(Request $request): \Illuminate\Http\JsonResponse
     {
         $request->validate([
             'source' => ['sometimes', 'nullable', 'in:invite,redeem,admin'],
             'status' => ['sometimes', 'nullable', 'in:active,used_up,expired,refreshed'],
+            'user' => ['sometimes', 'nullable', 'string', 'max:255'],
             'page' => ['sometimes', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
@@ -63,6 +64,12 @@ class DiscountCodeController extends Controller
         if ($request->filled('status')) {
             $query->where('status', $request->input('status'));
         }
+        if ($request->filled('user')) {
+            // 按持有用户邮箱模糊搜。whereHas 走子查询，user_id 为 null 的管理员码
+            // 天然不匹配（而不是报错或误伤），所以这里不用额外判空。
+            $keyword = $request->input('user');
+            $query->whereHas('user', fn ($q) => $q->where('email', 'like', "%{$keyword}%"));
+        }
 
         $total = (clone $query)->count();
         $items = $query->orderByDesc('id')
@@ -76,6 +83,7 @@ class DiscountCodeController extends Controller
                 'user_email' => $c->user->email ?? null,
                 'discount' => (float) $c->discount,
                 'max_uses' => $c->max_uses,
+                'max_uses_per_user' => $c->max_uses_per_user,
                 'used_count' => $c->used_count,
                 'expires_at' => $c->expires_at?->toDateTimeString(),
                 'note' => $c->note,
@@ -149,6 +157,12 @@ class DiscountCodeController extends Controller
             'status' => ['sometimes', 'in:active,used_up,expired,refreshed'],
             'plan_id' => ['sometimes', 'nullable', 'integer', 'exists:plans,id'],
         ]);
+
+        // 次数下限保护：used_count 是已经发生的真实消耗，把上限改到它之下会让数据自相矛盾
+        // （显示「已用 2 次 / 上限 1 次」）。要降上限得先删掉多出来的订单，不能靠改字段掩盖。
+        if (array_key_exists('max_uses', $data) && $data['max_uses'] < $discountCode->used_count) {
+            return $this->error("使用次数上限不能小于已使用次数（当前已用 {$discountCode->used_count} 次）", 400);
+        }
 
         $discountCode->fill($data)->save();
 

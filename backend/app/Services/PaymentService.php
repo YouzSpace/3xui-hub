@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\DiscountCode;
 use App\Models\Domain;
 use App\Models\Order;
 use App\Models\PaymentConfig;
@@ -60,6 +61,7 @@ class PaymentService
         $originalAmount = (float) $plan->price;
         // 原价为 0 的免费套餐不适用折扣码（折后价不可能 ≥ 原价），直接跳过校验
         $useDiscount = $discountCode !== null && trim($discountCode) !== '' && $originalAmount > 0;
+        $reused = false;
 
         if ($useDiscount) {
             $userId = (int) $user->id;
@@ -75,11 +77,22 @@ class PaymentService
             $this->rateGuard->recordDiscountRequest($userId);
 
             try {
-                // 校验 + 建单 + 占用次数放在同一事务里，失败整体回滚，不会白扣一次
-                $order = DB::transaction(function () use ($user, $plan, $planId, $payment, $originalAmount, $discountCode) {
+                // 校验 + 建单放在同一事务里，失败整体回滚。
+                // **不占用次数**：这里只把 discount_code_id 登记到订单上，真正占用
+                // （used_count+1、邀请码锁死用户）后移到支付成功的 completeOrder()。
+                // 未支付/放弃/超时的订单因此不需要任何回滚 —— 压根没占用过。
+                $order = DB::transaction(function () use ($user, $plan, $planId, $payment, $originalAmount, $discountCode, &$reused) {
                     $result = $this->discountCodeService->validateAndApply($user, $discountCode, $plan, $originalAmount);
 
-                    $order = Order::create([
+                    // 同一用户已有一笔用同一张码、同一套餐的 pending 单 → 复用那笔，不新建。
+                    // 占用后移后，重复建单没有意义，只会让同一张码在多笔 pending 单上排队。
+                    if ($result['reuse_order']) {
+                        $reused = true;
+
+                        return $result['reuse_order'];
+                    }
+
+                    return Order::create([
                         'order_no' => Order::generateOrderNo(),
                         'user_id' => $user->id,
                         'plan_id' => $planId,
@@ -91,11 +104,6 @@ class PaymentService
                         'payment_config_id' => $payment->id,
                         'pay_ip' => request()->ip(),
                     ]);
-
-                    // 占用一次使用次数（内部 lockForUpdate，防并发双花）
-                    $this->discountCodeService->consume($result['code'], $user);
-
-                    return $order;
                 });
             } catch (\InvalidArgumentException $e) {
                 // 码无效 / 已失效 / 已被占用：记一次失败。记账放在事务之外，订单回滚掉，
@@ -132,8 +140,10 @@ class PaymentService
             ];
         }
 
-        // 调用支付网关获取支付链接
-        $payUrl = $this->buildPayUrl($payment, $order);
+        // 调用支付网关获取支付链接。
+        // 复用旧单时用订单自己的支付配置（与 PaymentController 重发 pending 单的口径一致），
+        // 新建单才用本次请求选中的支付方式。
+        $payUrl = $this->buildPayUrl($reused ? ($order->paymentConfig ?: $payment) : $payment, $order);
 
         return [
             'order_no' => $order->order_no,
@@ -281,10 +291,31 @@ class PaymentService
             'paid_at' => now(),
         ])->save();
 
+        $user = $order->user;
+
+        // 支付成功才真正占用折扣码：used_count+1、满额置 used_up、邀请码锁死用户。
+        // 必须排在 rewardInviter 之前（发奖建立在「本次邀请已生效」之上）。
+        // 首次完成才走到这里（上面已有 paid 早退），重复回调不会二次占用。
+        if ($order->discount_code_id && $user) {
+            $usedCode = DiscountCode::find($order->discount_code_id);
+            if ($usedCode) {
+                try {
+                    $this->discountCodeService->consume($usedCode, $user);
+                } catch (\Throwable $e) {
+                    // 并发兜底：码在支付前已被别处用满。用户钱已经付了，订单必须照常完成，
+                    // 这里只记日志，绝不向上抛 —— 抛出去回调会返回 FAIL，网关会反复重推。
+                    Log::warning('支付成功但折扣码占用失败（码可能已用满）', [
+                        'order_no' => $order->order_no,
+                        'discount_code_id' => $order->discount_code_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
         // 首次完成才走到这里（上面已有 paid 早退），再叠加 rewardInviter 内部幂等判断形成双保险
         $this->discountCodeService->rewardInviter($order);
 
-        $user = $order->user;
         $plan = $order->plan;
 
         if ($user && $plan) {

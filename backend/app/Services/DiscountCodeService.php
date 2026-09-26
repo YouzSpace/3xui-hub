@@ -53,13 +53,14 @@ class DiscountCodeService
     }
 
     /**
-     * 校验并使用一个码，返回折扣结果。
+     * 校验一个码并算出折后价，返回结果。
      * 失败抛 InvalidArgumentException，message 直接面向用户显示。
      *
-     * 注意：实际写入（used_count 自增、用户锁、发兑换码）不在这里，
-     * 由 consume() / rewardInviter() 在事务 + 锁中完成。
+     * 注意：**只校验，不占用**。实际写入（used_count 自增、用户锁）在 consume() 里，
+     * 且 consume() 只在支付成功（completeOrder）时调用 —— 下单阶段码只是「被引用」在订单上。
+     * 因此本方法在下单与 /api/discount/check 两处都安全（check 接口同样只读）。
      *
-     * @return array{discount: float, final_amount: float, code: DiscountCode}
+     * @return array{discount: float, final_amount: float, code: DiscountCode, reuse_order: Order|null}
      */
     public function validateAndApply(User $user, string $code, Plan $plan, float $originalAmount): array
     {
@@ -114,16 +115,35 @@ class DiscountCodeService
             throw new \InvalidArgumentException('折后金额不足 1 元，无法使用优惠码');
         }
 
+        // 8. 同一用户 + 同一张码 + 同一套餐，已有未支付的 pending 单 → 交给调用方复用，别新建重复单。
+        //    占用后移到支付成功后，同一张码挂多笔 pending 单只会在支付时反复撞 consume 的次数校验，
+        //    对用户和站点都没有意义。去重维度带 plan_id：旧 pending 单永不过期，若跨套餐复用，
+        //    用户买新套餐会拿到旧套餐那笔订单（价不对、套餐不对）。
+        $reuseOrder = Order::where('user_id', $user->id)
+            ->where('discount_code_id', $discountCode->id)
+            ->where('plan_id', $plan->id)
+            ->where('status', 'pending')
+            ->orderByDesc('id')
+            ->first();
+
         return [
             'discount' => (float) $discountCode->discount,
             'final_amount' => $finalAmount,
             'code' => $discountCode,
+            'reuse_order' => $reuseOrder,
         ];
     }
 
     /**
-     * 下单时真正占用一次使用次数（需在事务 + lockForUpdate 中调用）。
-     * 重新加锁读一次该码，防并发"双花"。
+     * 真正占用一次使用次数（used_count+1、满额置 used_up、邀请码锁死用户）。
+     *
+     * **只在支付成功（PaymentService::completeOrder）时调用**，不在下单时调用：
+     * 下单只把 discount_code_id 登记到订单上，未支付/放弃/超时的订单天然没有占用，
+     * 也就没有任何需要回滚的东西。
+     *
+     * 重新加锁读一次该码，防并发"双花"：多笔 pending 单同时收到支付回调时，
+     * 这里发现次数已满会抛 InvalidArgumentException —— 抛而不是静默放过，
+     * 由调用方决定怎么处理（completeOrder 记日志后照常完成订单：钱已经收了）。
      */
     public function consume(DiscountCode $code, User $user): void
     {
@@ -134,6 +154,7 @@ class DiscountCodeService
         if ($locked->status !== DiscountCode::STATUS_ACTIVE) {
             throw new \InvalidArgumentException(self::CODE_INVALID_MSG);
         }
+        // 加锁后重读的次数校验：并发支付时只有第一笔能过，其余在这里被拦下并抛异常
         if ($locked->used_count >= $locked->max_uses) {
             throw new \InvalidArgumentException(self::CODE_INVALID_MSG);
         }
