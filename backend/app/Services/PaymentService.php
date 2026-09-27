@@ -368,7 +368,9 @@ class PaymentService
             $usedCode = DiscountCode::find($order->discount_code_id);
             if ($usedCode) {
                 try {
-                    $this->discountCodeService->consume($usedCode, $user);
+                    // 传入当前订单 id：调用前本单已被置为 'paid'，consume 内的
+                    // 「每用户次数」复核必须排除它，否则第一笔就自计数被误拦。
+                    $this->discountCodeService->consume($usedCode, $user, $order->id);
                 } catch (\Throwable $e) {
                     // 并发兜底：码在支付前已被别处用满。用户钱已经付了，订单必须照常完成，
                     // 这里只记日志，绝不向上抛 —— 抛出去回调会返回 FAIL，网关会反复重推。

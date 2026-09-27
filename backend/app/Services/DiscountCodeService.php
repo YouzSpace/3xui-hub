@@ -170,8 +170,14 @@ class DiscountCodeService
      * 重新加锁读一次该码，防并发"双花"：多笔 pending 单同时收到支付回调时，
      * 这里发现次数已满会抛 InvalidArgumentException —— 抛而不是静默放过，
      * 由调用方决定怎么处理（completeOrder 记日志后照常完成订单：钱已经收了）。
+     *
+     * $excludeOrderId：调用方（completeOrder）在本方法之前**已经把当前订单置为 'paid'**，
+     * 若不排除，下面「按已支付订单数复核」会把这笔订单自己数进去 —— 第一笔就命中
+     * `usedByMe >= max_uses_per_user` 被误拦，抛出异常后 used_count 永不增长、
+     * 码永远停在 active，用户可无限复用同一张码（营销资损）。
+     * 排除自身不削弱并发保护：先完成的订单仍会被后完成的订单数到。
      */
-    public function consume(DiscountCode $code, User $user): void
+    public function consume(DiscountCode $code, User $user, ?int $excludeOrderId = null): void
     {
         $locked = DiscountCode::whereKey($code->id)->lockForUpdate()->first();
         if (! $locked) {
@@ -189,11 +195,13 @@ class DiscountCodeService
         // 用户可以用同一张码并发建多笔 pending 单，回调同时到达时各自都通过了
         // 下单时的检查。这里加锁后按「已支付」重数一遍，第二笔起被拦下。
         // 与 used_count 的差别：那是全站总量，这是单人额度。
+        // 必须排除当前订单（调用前它已被置为 paid），否则第一笔即自计数被误拦。
         if ($locked->source !== DiscountCode::SOURCE_INVITE
             && (int) $locked->max_uses_per_user > 0) {
             $usedByMe = Order::where('discount_code_id', $locked->id)
                 ->where('user_id', $user->id)
                 ->where('status', 'paid')
+                ->when($excludeOrderId, fn ($q) => $q->where('id', '!=', $excludeOrderId))
                 ->count();
 
             if ($usedByMe >= (int) $locked->max_uses_per_user) {
