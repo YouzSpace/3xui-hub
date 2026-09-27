@@ -65,7 +65,7 @@ class PaymentController extends Controller
             // 重新获取支付链接
             $payment = $pendingOrder->paymentConfig;
             if ($payment) {
-                $payUrl = $this->paymentService->buildPayUrl($payment, $pendingOrder);
+                [$payUrl, $failMsg] = $this->paymentService->buildPayUrl($payment, $pendingOrder);
                 if ($payUrl) {
                     return $this->success([
                         'order_no' => $pendingOrder->order_no,
@@ -73,6 +73,12 @@ class PaymentController extends Controller
                         'status' => 'pending',
                         'pay_url' => $payUrl,
                     ]);
+                }
+
+                // 网关明确认为该订单号不可用（判重）→ 旧单已废，直接作废，让下面走新建流程。
+                // 不作废的话用户每次点购买都会复用这笔死单，永远「获取支付链接失败」。
+                if ($this->paymentService->isOrderNoUnusable($failMsg)) {
+                    $pendingOrder->forceFill(['status' => Order::STATUS_EXPIRED])->save();
                 }
             }
         }
@@ -202,10 +208,18 @@ class PaymentController extends Controller
             return $this->error('支付配置异常', 500);
         }
 
-        $payUrl = $this->paymentService->buildPayUrl($payment, $order);
+        [$payUrl, $failMsg] = $this->paymentService->buildPayUrl($payment, $order);
 
         if (!$payUrl) {
-            return $this->error('获取支付链接失败', 500);
+            // 网关判重：这笔单号已不可用，作废它并提示用户重新下单（不能提示「稍后再试」——
+            // 那会让用户反复点，每次都是同一个结果）。
+            if ($this->paymentService->isOrderNoUnusable($failMsg)) {
+                $order->forceFill(['status' => Order::STATUS_EXPIRED])->save();
+
+                return $this->error('支付链接已失效，请返回商城重新下单', 410);
+            }
+
+            return $this->error('获取支付链接失败，请稍后再试', 500);
         }
 
         return $this->success([

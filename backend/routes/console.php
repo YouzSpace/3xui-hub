@@ -21,5 +21,9 @@ Schedule::command('traffic:monthly-reset')->dailyAt('00:00')->name('monthly-rese
 // 每天刷新到期的邀请码（旧码立即失效，只认最新码）
 Schedule::command('invite:refresh')->dailyAt('00:10')->name('invite-code-refresh')->withoutOverlapping();
 
+// 作废超时（24 小时）未支付的订单，防止 pending 单无限堆积：
+// 带码死单会被反复复用导致用户永远付不了款；无码死单会被反复重发网关刷 ERROR 日志。
+Schedule::command('order:expire-pending')->hourly()->name('expire-pending-orders')->withoutOverlapping();
+
 // 任务超时兜底：超过阈值（config('tasks.stale_after_minutes')）未终态的异步任务标记失败，防止 running 永久停留
 Schedule::call(fn () => app(\App\Services\AsyncTaskService::class)->timeoutStale())->everyFiveMinutes()->name('async-task-timeout')->withoutOverlapping();

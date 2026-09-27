@@ -107,6 +107,24 @@ class DiscountCodeService
             throw new \InvalidArgumentException('该优惠码仅限指定套餐使用');
         }
 
+        // 5.5 每用户次数校验（此前该字段全链路未生效，管理员设的「每人限用 N 次」形同虚设，
+        //     单用户可跨套餐反复刷同一张码，直接造成营销资损）。
+        //     口径与「占用后移」一致：只数**已支付成功**的订单，pending 不占次数。
+        //     去重维度不带 plan_id —— 「每人 N 次」约束的是人，不是套餐。
+        //     邀请码天然每人一次（consume 里锁 used_invite_code_id），这里不重复拦，
+        //     否则会与「不能用自己的邀请码」等既有文案打架。
+        if ($discountCode->source !== DiscountCode::SOURCE_INVITE
+            && (int) $discountCode->max_uses_per_user > 0) {
+            $usedByMe = Order::where('discount_code_id', $discountCode->id)
+                ->where('user_id', $user->id)
+                ->where('status', 'paid')
+                ->count();
+
+            if ($usedByMe >= (int) $discountCode->max_uses_per_user) {
+                throw new \InvalidArgumentException('该优惠码您已使用过，无法再次使用');
+            }
+        }
+
         // 6. 计算折后价
         $finalAmount = round($originalAmount * (float) $discountCode->discount, 2);
 
@@ -119,12 +137,20 @@ class DiscountCodeService
         //    占用后移到支付成功后，同一张码挂多笔 pending 单只会在支付时反复撞 consume 的次数校验，
         //    对用户和站点都没有意义。去重维度带 plan_id：旧 pending 单永不过期，若跨套餐复用，
         //    用户买新套餐会拿到旧套餐那笔订单（价不对、套餐不对）。
+        //
+        //    复用前必须比对金额：管理员改过折扣（或套餐改价）后，用户手上的旧单仍是旧价，
+        //    直接复用会让用户按**改价前**的金额支付，促销调价不即时生效。
+        //    金额不一致时返回 null 不复用，调用方会新建一笔按当前折扣算价的订单。
         $reuseOrder = Order::where('user_id', $user->id)
             ->where('discount_code_id', $discountCode->id)
             ->where('plan_id', $plan->id)
             ->where('status', 'pending')
             ->orderByDesc('id')
             ->first();
+
+        if ($reuseOrder && abs((float) $reuseOrder->amount - $finalAmount) > 0.001) {
+            $reuseOrder = null;
+        }
 
         return [
             'discount' => (float) $discountCode->discount,
@@ -157,6 +183,22 @@ class DiscountCodeService
         // 加锁后重读的次数校验：并发支付时只有第一笔能过，其余在这里被拦下并抛异常
         if ($locked->used_count >= $locked->max_uses) {
             throw new \InvalidArgumentException(self::CODE_INVALID_MSG);
+        }
+
+        // 每用户次数复核（与 validateAndApply 同一口径）：下单只校验一次不够 ——
+        // 用户可以用同一张码并发建多笔 pending 单，回调同时到达时各自都通过了
+        // 下单时的检查。这里加锁后按「已支付」重数一遍，第二笔起被拦下。
+        // 与 used_count 的差别：那是全站总量，这是单人额度。
+        if ($locked->source !== DiscountCode::SOURCE_INVITE
+            && (int) $locked->max_uses_per_user > 0) {
+            $usedByMe = Order::where('discount_code_id', $locked->id)
+                ->where('user_id', $user->id)
+                ->where('status', 'paid')
+                ->count();
+
+            if ($usedByMe >= (int) $locked->max_uses_per_user) {
+                throw new \InvalidArgumentException('该优惠码您已使用过，无法再次使用');
+            }
         }
 
         $locked->used_count = $locked->used_count + 1;
@@ -250,6 +292,12 @@ class DiscountCodeService
     public function issueInviteCode(User $user): DiscountCode
     {
         return DB::transaction(function () use ($user) {
+            // 锁住用户行：ensureInviteCode 是「先查 active 码、没有才发」的两步逻辑，
+            // 并发（用户页面同时发起两个请求）时两个请求可能都查不到、各发一张，
+            // 违反「同一用户最多一张 active 邀请码」的不变量。
+            // 这里先对 user 行加锁，让两个请求串行，后到的那个能看见前一个刚发的码。
+            User::whereKey($user->id)->lockForUpdate()->first();
+
             DiscountCode::where('source', DiscountCode::SOURCE_INVITE)
                 ->where('user_id', $user->id)
                 ->where('status', DiscountCode::STATUS_ACTIVE)

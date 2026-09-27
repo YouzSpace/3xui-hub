@@ -143,7 +143,36 @@ class PaymentService
         // 调用支付网关获取支付链接。
         // 复用旧单时用订单自己的支付配置（与 PaymentController 重发 pending 单的口径一致），
         // 新建单才用本次请求选中的支付方式。
-        $payUrl = $this->buildPayUrl($reused ? ($order->paymentConfig ?: $payment) : $payment, $order);
+        $payPayment = $reused ? ($order->paymentConfig ?: $payment) : $payment;
+        [$payUrl, $failMsg] = $this->buildPayUrl($payPayment, $order);
+
+        // 复用旧单出链接失败，且原因是「网关认为该订单号已存在」时，旧单号已彻底不可用：
+        // 必须作废它、换新单号重下，否则用户每次购买都会撞同一笔单，永久报「获取支付链接失败」。
+        // （不带码路径由 PaymentController 在建单前先试旧单、失败再新建，天然规避了这个问题；
+        //   带码路径由 validateAndApply 强制返回复用单，必须在这里兜底。）
+        if ($payUrl === '' && $reused && $this->isOrderNoUnusable($failMsg)) {
+            Log::warning('复用旧单被网关判重，作废后换新单号重下', [
+                'old_order_no' => $order->order_no,
+                'gateway_msg' => $failMsg,
+            ]);
+
+            $order->forceFill(['status' => Order::STATUS_EXPIRED])->save();
+
+            $order = Order::create([
+                'order_no' => Order::generateOrderNo(),
+                'user_id' => $user->id,
+                'plan_id' => $planId,
+                'amount' => $order->amount,
+                'original_amount' => $order->original_amount,
+                'discount_amount' => $order->discount_amount ?? 0,
+                'discount_code_id' => $order->discount_code_id,
+                'status' => 'pending',
+                'payment_config_id' => $payPayment->id,
+                'pay_ip' => request()->ip(),
+            ]);
+
+            [$payUrl, $failMsg] = $this->buildPayUrl($payPayment, $order);
+        }
 
         return [
             'order_no' => $order->order_no,
@@ -155,8 +184,17 @@ class PaymentService
 
     /**
      * 构建支付链接（POST请求获取h5_url）。
+     *
+     * 返回值升级为 [链接, 网关拒绝原因]：
+     * - 成功：[$h5_url, null]
+     * - 网关明确拒绝（如「重复订单！」）：['', $msg]  ← 调用方据此作废旧单重建
+     * - 网络/解析异常：['', null]                     ← 属于临时故障，调用方不应作废订单
+     *
+     * 区分这两类至关重要：网络抖动时用户可能已经扫码在付，作废订单会把钱付到已作废的单上。
+     *
+     * @return array{0: string, 1: ?string}
      */
-    public function buildPayUrl(PaymentConfig $payment, Order $order): string
+    public function buildPayUrl(PaymentConfig $payment, Order $order): array
     {
         // notify_url 必须是完整的回调 URL，如果不是则用主域名默认值（网关固定打主域）
         $notifyUrl = ($payment->notify_url && str_starts_with($payment->notify_url, 'http'))
@@ -168,13 +206,15 @@ class PaymentService
         $params = [
             'pay_memberid' => $payment->member_id,
             'pay_orderid' => $order->order_no,
-            'pay_applydate' => $order->created_at->format('Y-m-d H:i:s'),
+            // 复用旧单重发时用「当前时间」，不能用 $order->created_at：老单可能是几天前创建的，
+            // 网关会因时间差过大拒单或对账错乱（现场有 7 月老单被翻出重发的案例）。
+            'pay_applydate' => now()->format('Y-m-d H:i:s'),
             'pay_bankcode' => $payment->bank_code,
             'pay_notifyurl' => $notifyUrl,
             'pay_callbackurl' => $callbackUrl,
             'pay_amount' => number_format($order->amount, 2, '.', ''),
             'pay_productname' => '套餐购买-' . ($order->plan->name ?? ''),
-            'pay_ip' => $order->pay_ip ?: '127.0.0.1',
+            'pay_ip' => request()->ip() ?: ($order->pay_ip ?: '127.0.0.1'),
             'pay_type' => 'JSON',
         ];
 
@@ -191,15 +231,43 @@ class PaymentService
             Log::info('支付网关响应', ['order_no' => $order->order_no, 'response' => $data]);
 
             if (($data['status'] ?? 0) == 1 && !empty($data['h5_url'])) {
-                return $data['h5_url'];
+                return [$data['h5_url'], null];
             }
 
-            Log::error('支付网关下单失败', ['order_no' => $order->order_no, 'msg' => $data['msg'] ?? 'unknown']);
-            return '';
+            $msg = (string) ($data['msg'] ?? 'unknown');
+            Log::error('支付网关下单失败', ['order_no' => $order->order_no, 'msg' => $msg]);
+
+            // 网关明确拒绝：把原因带出去，调用方可据此决定是否作废旧单重建
+            return ['', $msg];
         } catch (\Throwable $e) {
             Log::error('支付网关请求异常', ['order_no' => $order->order_no, 'error' => $e->getMessage()]);
-            return '';
+
+            // 网络异常：原因留空，调用方不得作废订单（用户可能已在支付）
+            return ['', null];
         }
+    }
+
+    /**
+     * 判断网关拒绝原因是否属于「该订单号已不可用」——即必须换新单号才能重新出链接。
+     *
+     * 各网关文案不统一（实测有「重复订单！」），故做关键词匹配。命中即作废旧单重建，
+     * 不命中（含网络异常 $msg === null）一律保留原单，避免误杀用户正在支付的订单。
+     *
+     * 公开给 PaymentController 复用：控制器里「重发旧单失败」的场景需要同一个判断。
+     */
+    public function isOrderNoUnusable(?string $msg): bool
+    {
+        if ($msg === null || $msg === '') {
+            return false;
+        }
+
+        foreach (['重复订单', '订单已存在', '订单号已存在', '重复提交', '已下单'] as $needle) {
+            if (mb_strpos($msg, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -428,7 +496,30 @@ class PaymentService
             ];
         }
 
-        $payUrl = $this->buildPayUrl($payment, $order);
+        [$payUrl, $failMsg] = $this->buildPayUrl($payment, $order);
+
+        // 重置订单号带 RST 前缀且每次都是新生成的，正常不会判重；万一网关仍拒绝，
+        // 作废后换新单号重下一次，避免把一笔永远拿不到链接的单丢给用户。
+        if ($payUrl === '' && $this->isOrderNoUnusable($failMsg)) {
+            Log::warning('重置订单被网关判重，作废后换新单号重下', [
+                'old_order_no' => $order->order_no,
+                'gateway_msg' => $failMsg,
+            ]);
+
+            $order->forceFill(['status' => Order::STATUS_EXPIRED])->save();
+
+            $order = Order::create([
+                'order_no' => 'RST' . Order::generateOrderNo(),
+                'user_id' => $user->id,
+                'plan_id' => $plan->id,
+                'amount' => $resetPrice,
+                'status' => 'pending',
+                'payment_config_id' => $payment->id,
+                'pay_ip' => request()->ip(),
+            ]);
+
+            [$payUrl] = $this->buildPayUrl($payment, $order);
+        }
 
         return [
             'order_no' => $order->order_no,
