@@ -22,16 +22,16 @@ use Illuminate\Support\Facades\DB;
  * - 只动 status='pending' 的行，已支付订单（paid）绝不触碰；
  * - 不改 orders 之外任何数据（折扣码的 used_count 只在支付成功时增加，作废未支付单
  *   不涉及任何次数回滚）；
- * - 默认 TTL 24 小时，可用 --hours 调整；--dry-run 只打印不改库。
+ * - 默认 TTL 1 小时，可用 --hours 调整；--dry-run 只打印不改库。
  *
- * 运行：php artisan order:expire-pending                 （作废超 24 小时的 pending 单）
+ * 运行：php artisan order:expire-pending                 （作废超 1 小时的 pending 单）
  *      php artisan order:expire-pending --hours=6        （自定义 TTL）
  *      php artisan order:expire-pending --dry-run        （只预览，不改库）
  */
 class ExpirePendingOrders extends Command
 {
     protected $signature = 'order:expire-pending
-                            {--hours=24 : 超过多少小时未支付即作废}
+                            {--hours=1 : 超过多少小时未支付即作废}
                             {--dry-run : 只打印将要作废的订单，不写库}';
 
     protected $description = '作废超时未支付的订单，防止 pending 单无限堆积';
