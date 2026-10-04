@@ -281,10 +281,11 @@ class SubscriptionService
             if (isset($proxy['reality-opts'])) {
                 $yaml .= "    reality-opts:\n";
                 if (isset($proxy['reality-opts']['public-key'])) {
-                    $yaml .= "      public-key: {$proxy['reality-opts']['public-key']}\n";
+                    $yaml .= "      public-key: \"{$proxy['reality-opts']['public-key']}\"\n";
                 }
                 if (isset($proxy['reality-opts']['short-id'])) {
-                    $yaml .= "      short-id: {$proxy['reality-opts']['short-id']}\n";
+                    // 必须加引号：066559 这类纯数字前导零的 sid 不加引号会被 YAML 当数值解析，前导零丢失后 mihomo 校验失败（invalid REALITY short ID）
+                    $yaml .= "      short-id: \"{$proxy['reality-opts']['short-id']}\"\n";
                 }
             }
             if (isset($proxy['network'])) {
@@ -302,8 +303,8 @@ class SubscriptionService
             }
             if (isset($proxy['xhttp-opts'])) {
                 $yaml .= "    xhttp-opts:\n";
-                $yaml .= "      path: {$proxy['xhttp-opts']['path']}\n";
-                $yaml .= "      mode: {$proxy['xhttp-opts']['mode']}\n";
+                $yaml .= "      path: \"{$proxy['xhttp-opts']['path']}\"\n";
+                $yaml .= "      mode: \"{$proxy['xhttp-opts']['mode']}\"\n";
                 if (isset($proxy['xhttp-opts']['x-padding-bytes'])) {
                     $yaml .= "      x-padding-bytes: {$proxy['xhttp-opts']['x-padding-bytes']}\n";
                 }
