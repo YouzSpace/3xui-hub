@@ -6,6 +6,7 @@ use App\Http\Controllers\Admin\BackupController as AdminBackupController;
 use App\Http\Controllers\Admin\DiscountCodeController as AdminDiscountCodeController;
 use App\Http\Controllers\Admin\DomainController as AdminDomainController;
 use App\Http\Controllers\Admin\EmailController as AdminEmailController;
+use App\Http\Controllers\Admin\HomeController as AdminHomeController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Admin\PaymentController as AdminPaymentController;
@@ -112,6 +113,11 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/payments/{payment}', [AdminPaymentController::class, 'show']);
     Route::put('/payments/{payment}', [AdminPaymentController::class, 'update']);
     Route::delete('/payments/{payment}', [AdminPaymentController::class, 'destroy']);
+
+    // 自定义公开首页（HTML + CSS）
+    Route::get('/home-custom', [AdminHomeController::class, 'show']);
+    Route::put('/home-custom', [AdminHomeController::class, 'save']);
+    Route::post('/home-custom/reset', [AdminHomeController::class, 'reset']);
 
     // 站点信息配置
     Route::get('/site-settings', [AdminSiteSettingController::class, 'index']);

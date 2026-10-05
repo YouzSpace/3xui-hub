@@ -22,7 +22,9 @@ Route::get('/ping', function (): \Illuminate\Http\JsonResponse {
 
 // 公开：站点配置（无需鉴权）
 Route::get('/site-config', function (): \Illuminate\Http\JsonResponse {
-    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon', 'register_email_verify', 'announcement', 'feedback_link', 'sub_clash_enabled', 'sub_singbox_enabled', 'sub_show_flag', 'sub_rename_enabled', 'sub_rename_regex', 'sub_rename_replacement'];
+    $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon', 'register_email_verify', 'announcement', 'feedback_link', 'sub_clash_enabled', 'sub_singbox_enabled', 'sub_show_flag', 'sub_rename_enabled', 'sub_rename_regex', 'sub_rename_replacement',
+        // 自定义公开首页：前端读到空值就走默认首页，老面板行为不变
+        'home_custom_html', 'home_custom_css'];
     $data = \App\Models\SiteConfig::getMany($keys);
     return response()->json(['code' => 0, 'msg' => 'ok', 'data' => $data]);
 });
