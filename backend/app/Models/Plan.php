@@ -22,6 +22,8 @@ class Plan extends Model
         'period_traffic',
         'total_traffic',
         'is_active',
+        'include_local',
+        'third_party_sub_ids',
     ];
 
     protected function casts(): array
@@ -32,7 +34,21 @@ class Plan extends Model
             'period_traffic' => 'integer',
             'total_traffic' => 'integer',
             'is_active' => 'boolean',
+            'include_local' => 'boolean',
+            'third_party_sub_ids' => 'array',
         ];
+    }
+
+    /** 该套餐注入的第三方订阅 ID 列表（third_party_sub_ids JSON 数组，空 = 不含第三方） */
+    public function thirdPartySubIdList(): array
+    {
+        return array_values(array_filter((array) ($this->third_party_sub_ids ?? [])));
+    }
+
+    /** 该套餐是否包含本地节点（老套餐默认 true，行为不变） */
+    public function includesLocal(): bool
+    {
+        return (bool) ($this->include_local ?? true);
     }
 
     public function users(): HasMany

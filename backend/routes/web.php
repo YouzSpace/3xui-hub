@@ -9,9 +9,11 @@ use App\Http\Controllers\Admin\EmailController as AdminEmailController;
 use App\Http\Controllers\Admin\HomeController as AdminHomeController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
+use App\Http\Controllers\Admin\PanelColorsController as AdminPanelColorsController;
 use App\Http\Controllers\Admin\PaymentController as AdminPaymentController;
 use App\Http\Controllers\Admin\PlanController as AdminPlanController;
 use App\Http\Controllers\Admin\SyncTrafficController as AdminSyncTrafficController;
+use App\Http\Controllers\Admin\ThirdPartyController as AdminThirdPartyController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Admin\SiteSettingController as AdminSiteSettingController;
 use App\Http\Controllers\Admin\SubscriptionSettingController as AdminSubscriptionSettingController;
@@ -56,6 +58,13 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // 否则 multiplier 会被当成 node id 吞掉（同 /payments/protocols 的先例）
     Route::put('/nodes/multiplier/original', [AdminNodeController::class, 'updateOriginalMultiplier']);
     Route::put('/nodes/multiplier/display', [AdminNodeController::class, 'updateMultiplierDisplay']);
+    // 第三方订阅（固定路径）—— 必须排在 /nodes/{node} 参数路由之前，否则 third-party 会被当成 node id 吞掉
+    Route::get('/nodes/third-party', [AdminThirdPartyController::class, 'index']);
+    Route::post('/nodes/third-party', [AdminThirdPartyController::class, 'store']);
+    Route::put('/nodes/third-party/switch', [AdminThirdPartyController::class, 'switch']);
+    Route::post('/nodes/third-party/{sub}/refresh', [AdminThirdPartyController::class, 'refresh']);
+    Route::put('/nodes/third-party/{sub}', [AdminThirdPartyController::class, 'update']);
+    Route::delete('/nodes/third-party/{sub}', [AdminThirdPartyController::class, 'destroy']);
     Route::get('/nodes/{node}', [AdminNodeController::class, 'show']);
     Route::put('/nodes/{node}', [AdminNodeController::class, 'update']);
     Route::delete('/nodes/{node}', [AdminNodeController::class, 'destroy']);
@@ -94,6 +103,9 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::put('/email/notify', [AdminEmailController::class, 'saveNotifyConfig']);
     // 批量发信（群发/单发，限速默认关闭由管理员填上限）
     Route::post('/email/batch-send', [AdminEmailController::class, 'batchSend']);
+    // 按月定时发信（管理员选每月第 N 天 HH:MM，到点自动发；默认关闭）
+    Route::get('/email/schedule-mail', [AdminEmailController::class, 'scheduleMailConfig']);
+    Route::put('/email/schedule-mail', [AdminEmailController::class, 'saveScheduleMailConfig']);
     // 发信日志
     Route::get('/email/logs', [AdminEmailController::class, 'mailLogs']);
 
@@ -118,6 +130,11 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/home-custom', [AdminHomeController::class, 'show']);
     Route::put('/home-custom', [AdminHomeController::class, 'save']);
     Route::post('/home-custom/reset', [AdminHomeController::class, 'reset']);
+
+    // 管理后台配色（自定义管理端的核心颜色，亮/暗两套）
+    Route::get('/panel-colors', [AdminPanelColorsController::class, 'show']);
+    Route::put('/panel-colors', [AdminPanelColorsController::class, 'save']);
+    Route::post('/panel-colors/reset', [AdminPanelColorsController::class, 'reset']);
 
     // 站点信息配置
     Route::get('/site-settings', [AdminSiteSettingController::class, 'index']);

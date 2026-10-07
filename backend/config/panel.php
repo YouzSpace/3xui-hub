@@ -9,6 +9,13 @@ return [
      | 仅调超时，不动重试与并发行为。
      */
 
+    // 第三方订阅拉取的 CA bundle（HTTPS 证书校验用）。
+    // 默认空 = 走 PHP/curl 系统自带 CA（绝大多数 Linux 生产服务器自带，行为不变）。
+    // 部署侧拉机场订阅若报 cURL error 60（SSL 校验拿不到根证书，常见于 Windows 开发机 /
+    // 精简镜像缺 CA bundle），把路径指到一个 CA bundle（openssl 的 ca-bundle.crt /
+    // ca-certificates.crt 等），可用 env 覆盖；指向的文件不存在则自动回退系统校验。
+    'third_party_ca_bundle' => env('PANEL_THIRD_PARTY_CA_BUNDLE', ''),
+
     // 常规 API 请求总超时（ThreeXUiClient 构造 Guzzle 客户端时的默认值）
     'api_timeout' => (float) env('PANEL_API_TIMEOUT', 15),
 

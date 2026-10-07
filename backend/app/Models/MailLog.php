@@ -28,9 +28,10 @@ class MailLog extends Model
         ];
     }
 
-    public const TYPE_NOTIFY = 'notify';
-    public const TYPE_BATCH  = 'batch';
-    public const TYPE_TEST   = 'test';
+    public const TYPE_NOTIFY   = 'notify';
+    public const TYPE_BATCH    = 'batch';
+    public const TYPE_TEST     = 'test';
+    public const TYPE_SCHEDULE = 'schedule';
 
     public const STATUS_SENT   = 'sent';
     public const STATUS_FAILED = 'failed';

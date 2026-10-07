@@ -3,6 +3,7 @@
 use App\Jobs\BanCheckJob;
 use App\Jobs\HealthCheckJob;
 use App\Jobs\MailNotifyScanJob;
+use App\Jobs\MailScheduleJob;
 use Illuminate\Support\Facades\Schedule;
 
 // 流量自动同步：每5分钟
@@ -34,3 +35,12 @@ Schedule::call(fn () => app(\App\Services\AsyncTaskService::class)->timeoutStale
 // 四个开关默认关闭（SiteConfig 未配置即关闭），未开启时本任务不查库也不发信。
 // 同一天同一场景对同一用户只发一次，防重复逻辑在 MailNotifyScanJob 内。
 Schedule::job(MailNotifyScanJob::class)->everyFiveMinutes()->name('mail-notify-scan')->withoutOverlapping();
+
+// 按月定时发信：每 5 分钟检查「管理员配置的每月第 N 天 HH:MM」是否到点，
+// 到点且当月没发过就把配好的那封信入队（收件人/标题/正文/限速复用批量发信配置）。
+// 默认关闭（SiteConfig 未配置即关）；同一自然月只发一轮（MailScheduleJob 内去重）。
+Schedule::job(MailScheduleJob::class)->everyFiveMinutes()->name('mail-schedule-scan')->withoutOverlapping();
+
+// 第三方订阅拉取：每 2 小时抓取启用的第三方订阅并缓存节点链接。
+// 没有启用订阅时命令直接跳过；拉取失败保留上次成功缓存（ThirdPartyService 内处理）。
+Schedule::command('third-party:fetch')->everyTwoHours()->name('third-party-fetch')->withoutOverlapping();

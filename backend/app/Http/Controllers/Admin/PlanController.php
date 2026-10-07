@@ -78,7 +78,19 @@ class PlanController extends Controller
             'monthly_traffic' => ['nullable', 'integer', 'min:0'],
             'period_traffic' => ['nullable', 'integer', 'min:0'],
             'total_traffic' => ['nullable', 'integer', 'min:0'],
+            // 第三方：本地节点开关 + 勾选的第三方订阅 ID 列表（JSON 数组）
+            'include_local' => ['sometimes', 'boolean'],
+            'third_party_sub_ids' => ['sometimes', 'array'],
+            'third_party_sub_ids.*' => ['integer', 'exists:third_party_subs,id'],
         ]);
+
+        // 纯第三方套餐（不勾本地、勾了第三方）：第三方不管流量只管时间 → 强制周期套餐。
+        // 必须在「按类型清理无关字段」之前改 type：否则 type=total 的清理分支会把 months 置 null，
+        // 传入的天数就丢了（测试 test_pure_third_party_plan_forced_period_zero_traffic 验证过）。
+        $includeLocal = array_key_exists('include_local', $data) ? (bool) $data['include_local'] : true;
+        if (!$includeLocal && !empty($data['third_party_sub_ids'] ?? [])) {
+            $data['type'] = 'period';
+        }
 
         // 根据类型清理无关字段
         if ($data['type'] === 'period') {
@@ -92,6 +104,20 @@ class PlanController extends Controller
             $data['months'] = null;
             $data['monthly_traffic'] = null;
             $data['period_traffic'] = null;
+        }
+
+        // 第三方字段：未传时给默认值（include_local 默认 true，老套餐行为不变；ids 默认空数组）
+        $data['include_local'] = array_key_exists('include_local', $data)
+            ? (bool) $data['include_local']
+            : true;
+        $data['third_party_sub_ids'] = $data['third_party_sub_ids'] ?? [];
+
+        // 纯第三方套餐（不勾本地、勾了第三方）：流量字段全部归零（上面已把 type 锁成周期）。
+        // 用户端据此不显示流量、只显示到期日期。
+        if (!$data['include_local'] && !empty($data['third_party_sub_ids'])) {
+            $data['monthly_traffic'] = 0;
+            $data['period_traffic'] = 0;
+            $data['total_traffic'] = null;
         }
 
         return $data;
@@ -110,6 +136,9 @@ class PlanController extends Controller
             'period_traffic' => $p->period_traffic,
             'total_traffic' => $p->total_traffic,
             'is_active' => (bool) $p->is_active,
+            // 第三方：本地节点开关 + 勾选的第三方订阅 ID 列表
+            'include_local' => (bool) ($p->include_local ?? true),
+            'third_party_sub_ids' => array_values(array_map('intval', (array) ($p->third_party_sub_ids ?? []))),
             'created_at' => $p->created_at?->toIso8601String(),
         ];
     }

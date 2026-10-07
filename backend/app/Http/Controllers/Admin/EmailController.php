@@ -3,11 +3,11 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Jobs\SendMailJob;
 use App\Models\MailLog;
 use App\Models\SiteConfig;
-use App\Models\User;
 use App\Services\MailNotifyService;
+use App\Services\MailBatchService;
+use App\Services\MailScheduleService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
@@ -27,6 +27,9 @@ class EmailController extends Controller
         'smtp_from_name',
         'email_template',
         'register_email_verify', // 注册时启用邮箱验证
+        // 发信速度限制（「限制」页配置，批量发信与按月定时发信共用）
+        'mail_rate_limit_enabled',
+        'mail_rate_per_minute',
 
         // 用户端接口限流（见 App\Services\RateGuardService）：
         // 空值 = 用 config/panel.php 的默认值，0 = 该项不限
@@ -71,6 +74,9 @@ class EmailController extends Controller
             'smtp_from_name'    => ['nullable', 'string', 'max:100'],
             'email_template'    => ['nullable', 'string', 'max:65535'],
             'register_email_verify' => ['nullable', 'boolean'],
+            // 发信速度限制（批量与定时共用）：开关存 '1'/''，速率 1-600
+            'mail_rate_limit_enabled' => ['nullable', 'boolean'],
+            'mail_rate_per_minute'    => ['nullable', 'integer', 'min:1', 'max:600'],
 
             // 限流：非负整数，0 = 不限（空值走 config/panel.php 默认）
             'rate_code_interval'       => ['nullable', 'integer', 'min:0'],
@@ -163,16 +169,35 @@ class EmailController extends Controller
         $template = !empty($config['email_template']) ? $config['email_template'] : '<div style="padding:20px;font-family:sans-serif"><h2>注册验证码</h2><p style="font-size:24px;color:#2563eb;font-weight:bold">{{code}}</p><p style="color:#666">5分钟内有效，请勿泄露。</p></div>';
         $body = str_replace('{{code}}', 'TEST1234', $template);
 
+        $subject = !empty($fromName) ? $fromName : 'ControlHub';
+
         try {
-            Mail::html($body, function ($message) use ($data, $fromAddress, $fromName) {
+            Mail::html($body, function ($message) use ($data, $fromAddress, $fromName, $subject) {
                 $message->to($data['to'])
-                    ->subject(!empty($fromName) ? $fromName : 'ControlHub');
+                    ->subject($subject);
                 if ($fromAddress) {
                     $message->from($fromAddress, $fromName ?: null);
                 }
             });
+
+            // 测试邮件也要落日志：否则发没发出去、失败原因都无处可查
+            MailLog::create([
+                'type'     => MailLog::TYPE_TEST,
+                'status'   => MailLog::STATUS_SENT,
+                'to_email' => $data['to'],
+                'subject'  => $subject,
+            ]);
         } catch (\Throwable $e) {
             Log::error('Email test failed', ['error' => $e->getMessage()]);
+
+            MailLog::create([
+                'type'     => MailLog::TYPE_TEST,
+                'status'   => MailLog::STATUS_FAILED,
+                'to_email' => $data['to'],
+                'subject'  => $subject,
+                'error'    => $e->getMessage(),
+            ]);
+
             return $this->error('发送失败：' . $e->getMessage(), 500);
         }
 
@@ -227,7 +252,8 @@ class EmailController extends Controller
 
     /**
      * 群发 / 单发。
-     * 全部走队列，页面不阻塞；限速开关与上限由管理员自己填（默认关闭限速）。
+     * 全部走队列，页面不阻塞；限速在「限制」页统一配置（默认关闭），与按月定时共用。
+     * 收件人解析与发信共用 MailBatchService（按月定时发信也走这里，规则单一来源）。
      */
     public function batchSend(Request $request): \Illuminate\Http\JsonResponse
     {
@@ -238,8 +264,6 @@ class EmailController extends Controller
             'plan_id'      => ['nullable', 'integer'],
             'user_status'  => ['nullable', 'in:normal,over,expired'],
             'single_query' => ['nullable', 'string', 'max:255'],
-            'rate_limit_enabled' => ['nullable', 'boolean'],
-            'rate_per_minute'    => ['nullable', 'integer', 'min:1', 'max:600'],
         ]);
 
         $config = SiteConfig::getMany(['smtp_host']);
@@ -247,137 +271,74 @@ class EmailController extends Controller
             return $this->error('请先配置 SMTP 服务器地址', 400);
         }
 
-        $query = $this->buildRecipientQuery($data);
+        $batch = app(MailBatchService::class);
 
-        if ($data['mode'] === 'single') {
-            $q = trim((string) ($data['single_query'] ?? ''));
-            if ($q === '') {
-                return $this->error('请填写要发给谁（邮箱或用户 ID）', 400);
+        try {
+            $recipients = $batch->resolveRecipients($data);
+        } catch (\RuntimeException) {
+            if ($data['mode'] === 'single') {
+                $q = trim((string) ($data['single_query'] ?? ''));
+                return $this->error($q === '' ? '请填写要发给谁（邮箱或用户 ID）' : '没找到该用户', $q === '' ? 400 : 404);
             }
-            // 单发：邮箱精确或用户 ID 精确，最多命中 1 人
-            $user = User::where('email', $q)->orWhere('id', ctype_digit($q) ? (int) $q : 0)->first();
-            if ($user === null) {
-                return $this->error('没找到该用户', 404);
-            }
-            $recipients = collect([$user]);
-        } else {
-            $recipients = $query->get();
-            if ($recipients->isEmpty()) {
-                return $this->error('没有符合条件的用户', 400);
-            }
+            return $this->error('没有符合条件的用户', 400);
         }
 
         $batchId = (int) now()->format('YmdHis');
-        $subject = $data['subject'];
-        $body    = $data['body'];
 
-        // 限速：关闭时一次性全丢；开启时按「每分钟 N 封」错开 delay
-        $limitEnabled = (bool) ($data['rate_limit_enabled'] ?? false);
-        $perMinute    = max(1, (int) ($data['rate_per_minute'] ?? 30));
+        // 限速统一取「限制」页的全局配置（mail_rate_limit_*）：批量与按月定时共用一份
+        $rate = MailBatchService::rateLimitConfig();
 
-        // 用 values() 拿到 0..n-1 的连续下标：Eloquent 集合的 keys() 是主键，
-        // 直接拿它算「第几分钟发」会得到错误的错开量。
-        $recipients = $recipients->values();
-        $total      = $recipients->count();
-
-        foreach ($recipients as $i => $user) {
-            $delaySeconds = $limitEnabled ? intdiv($i, $perMinute) * 60 : 0;
-
-            $job = SendMailJob::dispatch(
-                toEmail: (string) $user->email,
-                subject: $subject,
-                htmlBody: $this->renderForUser($body, $user),
-                type: MailLog::TYPE_BATCH,
-                userId: $user->id,
-                batchId: $batchId,
-            );
-
-            if ($delaySeconds > 0) {
-                $job->delay(now()->addSeconds($delaySeconds));
-            }
-        }
+        $total = $batch->dispatchToUsers(
+            users: $recipients,
+            subject: $data['subject'],
+            body: $data['body'],
+            batchId: $batchId,
+        );
 
         return $this->success([
             'batch_id'     => $batchId,
             'total'        => $total,
-            'rate_limited' => $limitEnabled ? $perMinute : null,
+            'rate_limited' => $rate['enabled'] ? $rate['per_minute'] : null,
         ], "已加入发送队列，共 {$total} 封");
     }
 
-    /** 按筛选条件构造收件人查询 */
-    private function buildRecipientQuery(array $data): \Illuminate\Database\Eloquent\Builder
+    // ============ 按月定时发信 ============
+
+    /** 读取按月定时发信配置（默认关闭） */
+    public function scheduleMailConfig(): \Illuminate\Http\JsonResponse
     {
-        $q = User::with('plan');
-
-        if (!empty($data['plan_id'])) {
-            $q->where('plan_id', (int) $data['plan_id']);
-        }
-
-        switch ($data['user_status'] ?? '') {
-            case 'over':
-                // 超量：周期或总量任一超限
-                $q->where(function ($w) {
-                    $w->where(function ($x) {
-                        $x->where('traffic_limit', '>', 0)->whereColumn('traffic_used', '>=', 'traffic_limit');
-                    })->orWhere(function ($x) {
-                        $x->where('monthly_traffic_limit', '>', 0)
-                          ->whereColumn('monthly_traffic_used', '>=', 'monthly_traffic_limit');
-                    });
-                });
-                break;
-            case 'expired':
-                $q->whereNotNull('expired_at')->where('expired_at', '<', now());
-                break;
-            case 'normal':
-            default:
-                // 正常：未禁用、未过期、未超量
-                $q->where('enabled', true)
-                  ->where(function ($x) {
-                      $x->whereNull('expired_at')->orWhere('expired_at', '>', now());
-                  })
-                  ->where(function ($x) {
-                      $x->where('traffic_limit', '<=', 0)
-                        ->orWhereColumn('traffic_used', '<', 'traffic_limit');
-                  });
-                break;
-        }
-
-        return $q;
+        return $this->success(MailScheduleService::config());
     }
 
-    /** 为单个用户渲染正文变量 */
-    private function renderForUser(string $body, User $user): string
+    /** 保存按月定时发信配置（收件人/标题/正文同批量发信；发信限速走「限制」页全局配置） */
+    public function saveScheduleMailConfig(Request $request): \Illuminate\Http\JsonResponse
     {
-        $limit = (int) $user->traffic_limit;
-        $used  = (int) $user->traffic_used;
-        $vars = [
-            '{{email}}'         => (string) $user->email,
-            '{{user_id}}'       => (string) $user->id,
-            '{{site_title}}'    => SiteConfig::getValue('site_title', 'ControlHub'),
-            '{{used}}'          => $this->formatBytes($used),
-            '{{limit}}'         => $this->formatBytes($limit),
-            '{{percent}}'       => (string) ($limit > 0 ? round($used / $limit * 100, 1) : 0),
-            '{{plan_name}}'     => $user->plan?->name ?? '无',
-            '{{expire_date}}'   => $user->expired_at?->format('Y-m-d') ?? '—',
-            '{{days_left}}'     => (string) ($user->expired_at ? (int) ceil(now()->diffInDays($user->expired_at, false)) : 0),
-            '{{subscribe_url}}' => $user->token ? url('/api/sub/' . $user->token) : '',
-        ];
-        return strtr($body, $vars);
-    }
+        $data = $request->validate([
+            'enabled' => ['nullable', 'boolean'],
+            'day'     => ['nullable', 'integer', 'min:1'],
+            // 正则自带冒号，Laravel 解析规则串会按第一个 : 截断参数 → 必须套 / 定界符
+            'time'    => ['nullable', 'string', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+            'config'  => ['nullable', 'array'],
+            // 内容不强制必填：本页是「修改自动保存」，先开开关后补内容是常态；
+            // 标题/正文为空时 MailScheduleJob 到点会跳过并记日志（不会误发空信）。
+            'config.subject'       => ['nullable', 'string', 'max:255'],
+            'config.body'          => ['nullable', 'string', 'max:65535'],
+            'config.mode'          => ['nullable', 'in:all,filter,single'],
+            'config.plan_id'       => ['nullable', 'integer'],
+            'config.user_status'   => ['nullable', 'in:normal,over,expired'],
+            'config.single_query' => ['nullable', 'string', 'max:255'],
+        ]);
 
-    private function formatBytes(int $bytes): string
-    {
-        if ($bytes <= 0) return '0 B';
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $i = max(0, min((int) floor(log($bytes, 1024)), count($units) - 1));
-        return round($bytes / pow(1024, $i), 2) . ' ' . $units[$i];
+        $out = MailScheduleService::save($data);
+
+        return $this->success($out, '定时发信配置已保存');
     }
 
     /** 发信日志（分页） */
     public function mailLogs(Request $request): \Illuminate\Http\JsonResponse
     {
         $data = $request->validate([
-            'type'   => ['nullable', 'in:notify,batch,test'],
+            'type'   => ['nullable', 'in:notify,batch,test,schedule'],
             'status' => ['nullable', 'in:sent,failed'],
             'page'   => ['nullable', 'integer', 'min:1'],
         ]);

@@ -38,6 +38,8 @@ class UserController extends Controller
             'plan_id' => $user->plan_id,
             'plan_type' => $user->plan?->type,
             'plan_name' => $user->plan?->name,
+            // 套餐是否含本地节点（纯第三方套餐：用户端不显示流量，只显示到期日期）
+            'plan_include_local' => $user->plan ? (bool) $user->plan->includesLocal() : true,
             'plan_months' => $user->plan?->months,
             'plan_price' => (float) ($user->plan?->price ?? 0),
             'plan_reset_price' => (float) ($user->plan?->reset_price ?? 0),

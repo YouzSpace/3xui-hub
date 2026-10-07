@@ -27,6 +27,9 @@ class PlanController extends Controller
             'monthly_traffic' => $p->monthly_traffic,
             'period_traffic' => $p->period_traffic,
             'total_traffic' => $p->total_traffic,
+            // 纯第三方套餐（不勾本地）的购买页展示用：只显示天数，不显示流量
+            'include_local' => (bool) ($p->include_local ?? true),
+            'third_party_sub_ids' => array_values(array_map('intval', (array) ($p->third_party_sub_ids ?? []))),
         ])->values());
     }
 }

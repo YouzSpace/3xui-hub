@@ -44,57 +44,69 @@ class SubscriptionService
     }
 
     /**
-     * 获取用户的所有链接。
+     * 获取用户的所有链接 = 本地节点（按套餐「含本地」开关）+ 第三方节点（按套餐勾选 + 手动开通）。
+     * 第三方链接已统一改名为「地区+序号」（保密，不暴露机场原名）。
      */
     private function getLinks(User $user): array
     {
-        $nodes = Node::where('enabled', true)
-            ->where('status', 'online')
-            ->whereHas('inbounds', function ($q) use ($user) {
-                $q->where('protocol', $user->protocol);
-            })
-            ->get();
-
         $links = [];
         $email = $user->clientEmail();
 
-        foreach ($nodes as $node) {
-            $inboundIds = $node->inbounds()
-                ->where('protocol', $user->protocol)
-                ->pluck('inbound_id')
-                ->toArray();
+        // 本地节点：套餐「不含本地」时跳过（ensureUsable 保证 plan 存在，null 是防御性判断）
+        if ($user->plan === null || $user->plan->includesLocal()) {
+            $nodes = Node::where('enabled', true)
+                ->where('status', 'online')
+                ->whereHas('inbounds', function ($q) use ($user) {
+                    $q->where('protocol', $user->protocol);
+                })
+                ->get();
 
-            if (empty($inboundIds)) {
-                continue;
-            }
+            foreach ($nodes as $node) {
+                $inboundIds = $node->inbounds()
+                    ->where('protocol', $user->protocol)
+                    ->pluck('inbound_id')
+                    ->toArray();
 
-            try {
-                $driver = $this->driverFactory->make($node);
-
-                // 取各配置入站的端口，用于过滤
-                $configuredPorts = [];
-                foreach ($inboundIds as $inboundId) {
-                    $inbound = $driver->getInbound($inboundId);
-                    if (is_array($inbound) && isset($inbound['port'])) {
-                        $configuredPorts[] = (int) $inbound['port'];
-                    }
+                if (empty($inboundIds)) {
+                    continue;
                 }
 
-                foreach ($driver->getClientLinks($email) as $link) {
-                    if (!is_string($link) || $link === '') {
-                        continue;
+                try {
+                    $driver = $this->driverFactory->make($node);
+
+                    // 取各配置入站的端口，用于过滤
+                    $configuredPorts = [];
+                    foreach ($inboundIds as $inboundId) {
+                        $inbound = $driver->getInbound($inboundId);
+                        if (is_array($inbound) && isset($inbound['port'])) {
+                            $configuredPorts[] = (int) $inbound['port'];
+                        }
                     }
-                    // 只保留配置了的入站端口
-                    if (!empty($configuredPorts) && !$this->linkMatchesAnyPort($link, $configuredPorts)) {
-                        continue;
+
+                    foreach ($driver->getClientLinks($email) as $link) {
+                        if (!is_string($link) || $link === '') {
+                            continue;
+                        }
+                        // 只保留配置了的入站端口
+                        if (!empty($configuredPorts) && !$this->linkMatchesAnyPort($link, $configuredPorts)) {
+                            continue;
+                        }
+                        if (!in_array($link, $links, true)) {
+                            $links[] = $link;
+                        }
                     }
-                    if (!in_array($link, $links, true)) {
-                        $links[] = $link;
-                    }
+                } catch (\Throwable $e) {
+                    report($e);
                 }
-            } catch (\Throwable $e) {
-                report($e);
             }
+        }
+
+        // 第三方节点：只读本地缓存（后台定时拉取），不产生网络请求；总开关/套餐勾选的判断都在服务内
+        try {
+            $links = array_merge($links, app(ThirdPartyService::class)->linksForUser($user));
+        } catch (\Throwable $e) {
+            // 第三方挂了不能毁掉本地订阅
+            report($e);
         }
 
         return $links;
@@ -214,6 +226,77 @@ class SubscriptionService
     }
 
     /**
+     * 解析 hysteria / hysteria2 链接的 userPart（base64(密码[:/aead])）为明文密码。
+     * aead 后缀（/gch、/aead）是拥塞控制/混淆方式，客户端自动处理，不进密码字段。
+     */
+    private function parseHysteriaPassword(string $userPart): ?string
+    {
+        $decoded = $this->decodeBase64Url($userPart);
+        if ($decoded === null || $decoded === '') {
+            return null;
+        }
+
+        $decoded = preg_replace('/:(\/gch|\/aead)$/i', '', $decoded) ?? $decoded;
+
+        return $decoded !== '' ? $decoded : null;
+    }
+
+    /**
+     * mihomo（Clash）的 TLS / 传输段：vmess 分支复用（与 vless/trojan 段同一套字段写法）。
+     * tls / reality / ws / xhttp，缺省 transport 为 tcp。
+     */
+    private function applyClashTlsAndNetwork(array &$proxy, array $params, string $server): void
+    {
+        // TLS / Reality
+        if (isset($params['security'])) {
+            if ($params['security'] === 'tls') {
+                $proxy['tls'] = true;
+                if (isset($params['sni'])) {
+                    $proxy['sni'] = $this->cleanSni($params['sni']);
+                }
+            } elseif ($params['security'] === 'reality') {
+                $proxy['tls'] = true;
+                $proxy['servername'] = $this->cleanSni($params['sni'] ?? $server);
+                if (isset($params['fp'])) {
+                    $proxy['client-fingerprint'] = $params['fp'];
+                }
+                if (isset($params['pbk'])) {
+                    $proxy['reality-opts'] = [
+                        'public-key' => $params['pbk'],
+                    ];
+                    if (isset($params['sid'])) {
+                        $proxy['reality-opts']['short-id'] = $params['sid'];
+                    }
+                }
+            }
+        }
+
+        // 传输协议
+        $proxy['network'] = $params['type'] ?? 'tcp';
+        if (isset($params['type'])) {
+            if ($params['type'] === 'ws') {
+                $wsOpts = ['path' => $params['path'] ?? '/'];
+                if (isset($params['host'])) {
+                    $wsOpts['headers'] = ['Host' => $params['host']];
+                }
+                $proxy['ws-opts'] = $wsOpts;
+            } elseif ($params['type'] === 'xhttp') {
+                $xhttpOpts = [
+                    'path' => $params['path'] ?? '/',
+                    'mode' => $params['mode'] ?? 'auto',
+                ];
+                if (isset($params['extra'])) {
+                    $extra = json_decode($params['extra'], true);
+                    if (is_array($extra) && isset($extra['xPaddingBytes'])) {
+                        $xhttpOpts['x-padding-bytes'] = $extra['xPaddingBytes'];
+                    }
+                }
+                $proxy['xhttp-opts'] = $xhttpOpts;
+            }
+        }
+    }
+
+    /**
      * 生成 Clash YAML 格式。
      */
     private function generateClash(User $user, array $links): string
@@ -260,11 +343,17 @@ class SubscriptionService
             if (isset($proxy['encryption'])) {
                 $yaml .= "    encryption: {$proxy['encryption']}\n";
             }
+            if (isset($proxy['alter_id'])) {
+                $yaml .= "    alter_id: {$proxy['alter_id']}\n";
+            }
             if (isset($proxy['flow'])) {
                 $yaml .= "    flow: {$proxy['flow']}\n";
             }
             if (isset($proxy['udp'])) {
                 $yaml .= "    udp: " . ($proxy['udp'] ? 'true' : 'false') . "\n";
+            }
+            if (isset($proxy['sniffing'])) {
+                $yaml .= "    sniffing: " . ($proxy['sniffing'] ? 'true' : 'false') . "\n";
             }
             if (isset($proxy['tls'])) {
                 $yaml .= "    tls: " . ($proxy['tls'] ? 'true' : 'false') . "\n";
@@ -331,8 +420,9 @@ class SubscriptionService
     private function parseLinkToClashProxy(string $link, array &$regionCounters): ?array
     {
         try {
-            // 解析 vless://、trojan://、ss:// 等链接
-            if (!preg_match('/^(vless|trojan|ss):\/\/([^@]+)@([^:]+):(\d+)/', $link, $m)) {
+            // 解析 vless://、vmess://、trojan://、ss://、hysteria2:// 等链接
+            // host 段用 [^:\/\]]+：排除 : / ]（兼容 IPv6 方括号 host 的普通场景；方括号 host 的 : 落在端口前，不影响匹配）
+            if (!preg_match('/^(vless|vmess|trojan|ss|hysteria2|hysteria):\/\/([^@]+)@([^:\/\]]+):(\d+)/', $link, $m)) {
                 return null;
             }
             $protocol = $m[1];
@@ -381,6 +471,64 @@ class SubscriptionService
                     'password' => $credentials[1],
                     'udp' => true,
                 ];
+            }
+
+            // vmess：userPart = base64(JSON {id,alterId})；密码字段 + 加密方式
+            if ($protocol === 'vmess') {
+                $auth = json_decode($this->decodeBase64Url($userPart) ?? '', true);
+                $vmessUuid = is_array($auth) ? (string) ($auth['id'] ?? '') : '';
+                if ($vmessUuid === '') {
+                    return null;
+                }
+
+                $proxy = [
+                    'name' => $name,
+                    'type' => 'vmess',
+                    'server' => $server,
+                    'port' => $port,
+                    'udp' => true,
+                    'password' => $vmessUuid,
+                    'client-fingerprint' => $params['fp'] ?? 'chrome',
+                ];
+                // mihomo：aid≠0 时透传 alter_id + 对应加密；aid=0 一律 none
+                if ((int) ($auth['alterId'] ?? 0) > 0) {
+                    $proxy['alter_id'] = (int) $auth['alterId'];
+                    $proxy['encryption'] = $params['enc'] ?? 'auto';
+                } else {
+                    $proxy['encryption'] = 'none';
+                }
+
+                $this->applyClashTlsAndNetwork($proxy, $params, $server);
+
+                return $proxy;
+            }
+
+            // hysteria2 / hysteria：userPart = base64(密码)，密码常带 :aead 后缀
+            if ($protocol === 'hysteria2' || $protocol === 'hysteria') {
+                $password = $this->parseHysteriaPassword($userPart);
+                if ($password === null) {
+                    return null;
+                }
+
+                $proxy = [
+                    'name' => $name,
+                    'type' => $protocol, // mihomo：hysteria2 用 type: hysteria2，v1 用 hysteria
+                    'server' => $server,
+                    'port' => $port,
+                    'password' => $password,
+                    'udp' => true,
+                ];
+                if (isset($params['sni']) || ($params['insecure'] ?? '0') !== '0') {
+                    $proxy['tls'] = true;
+                    $proxy['servername'] = $this->cleanSni($params['sni'] ?? $server);
+                }
+                if (isset($params['fp'])) {
+                    $proxy['client-fingerprint'] = $params['fp'];
+                }
+                // mihomo 的 hysteria 依赖 sniffing 探测流量类型，显式开启
+                $proxy['sniffing'] = true;
+
+                return $proxy;
             }
 
             $proxy = [
@@ -525,8 +673,9 @@ class SubscriptionService
     private function parseLinkToSingboxOutbound(string $link, array &$regionCounters): ?array
     {
         try {
-            // 解析 vless://、trojan://、ss:// 等链接
-            if (!preg_match('/^(vless|trojan|ss):\/\/([^@]+)@([^:]+):(\d+)/', $link, $m)) {
+            // 解析 vless://、vmess://、trojan://、ss://、hysteria2:// 等链接
+            // host 段用 [^:\/\]]+：排除 : / ]（与 Clash 解析器同一套正则）
+            if (!preg_match('/^(vless|vmess|trojan|ss|hysteria2|hysteria):\/\/([^@]+)@([^:\/\]]+):(\d+)/', $link, $m)) {
                 return null;
             }
             $protocol = $m[1];
@@ -577,6 +726,18 @@ class SubscriptionService
                 // 注意：sing-box 的 vless 不输出 encryption 字段
             } elseif ($protocol === 'trojan') {
                 $outbound['password'] = $userPart;
+            } elseif ($protocol === 'vmess') {
+                // userPart = base64(JSON {id, alterId})
+                $auth = json_decode($this->decodeBase64Url($userPart) ?? '', true);
+                $vmessUuid = is_array($auth) ? (string) ($auth['id'] ?? '') : '';
+                if ($vmessUuid === '') {
+                    return null;
+                }
+                $outbound['uuid'] = $vmessUuid;
+                // sing-box 只认 aid≠0 的 vmess 加密（none / aes-128-gcm / chacha20-poly1305 / xchacha20-poly1305）
+                $enc = $params['enc'] ?? 'auto';
+                $outbound['cipher'] = in_array($enc, ['none', 'aes-128-gcm', 'chacha20-poly1305', 'xchacha20-poly1305'], true) ? $enc : 'auto';
+                // 不支持的 vmess 传输：sing-box 没有 xhttp，遇到 xhttp/ws 以外的就跳过
             } elseif ($protocol === 'ss') {
                 // base64 解码凭据拆出 method / password
                 $credentials = $this->parseSsCredentials($userPart);
@@ -585,6 +746,25 @@ class SubscriptionService
                 }
                 $outbound['method'] = $credentials[0];
                 $outbound['password'] = $credentials[1];
+            } elseif ($protocol === 'hysteria2' || $protocol === 'hysteria') {
+                $password = $this->parseHysteriaPassword($userPart);
+                if ($password === null) {
+                    return null;
+                }
+                $outbound['type'] = $protocol; // hysteria2 / hysteria 直接用协议名
+                $outbound['password'] = $password;
+                // sing-box hysteria2 出站要求 TLS 段：有 sni 用 sni，否则默认带 server_name
+                $tls = ['enabled' => true];
+                if (isset($params['sni'])) {
+                    $tls['server_name'] = $this->cleanSni($params['sni']);
+                }
+                if (($params['insecure'] ?? '0') === '1') {
+                    $tls['insecure'] = true;
+                }
+                if (isset($params['fp'])) {
+                    $tls['utls'] = ['enabled' => true, 'fingerprint' => $params['fp']];
+                }
+                $outbound['tls'] = $tls;
             }
 
             // TLS / Reality
