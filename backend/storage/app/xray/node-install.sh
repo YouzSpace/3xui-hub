@@ -83,7 +83,12 @@ echo "==> 解压内核"
 unzip -oq "$ZIP" -d "$NODE_DIR"
 chmod +x "$NODE_DIR/xray"
 rm -f "$ZIP"
-XRAY_VER=$("$NODE_DIR/xray" version | head -1 | awk '{print $2}' || echo "unknown")
+# 先收全量输出再截取：head -1 会让 xray 收 SIGPIPE，pipefail 下整条管道返回 141，
+# 被 set -e 当成失败。原写法靠 `|| echo unknown` 压住不中断，副作用是 unknown 被拼进
+# 版本号成了两行，写进 state.json 就是非法 JSON（agent 起不来）。这里改成不产生 SIGPIPE。
+VER_RAW=$("$NODE_DIR/xray" version 2>/dev/null) || VER_RAW=""
+XRAY_VER=$(printf '%s\n' "$VER_RAW" | head -1 | awk '{print $2}')
+XRAY_VER=${XRAY_VER:-unknown}
 echo "  xray 就位，版本: $XRAY_VER"
 
 echo "==> 下载 agent 二进制（Go 版）"
