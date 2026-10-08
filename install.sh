@@ -197,7 +197,12 @@ install_php() {
             systemctl restart "$FPM_SERVICE"
             ;;
         apt)
-            apt-get update -y
+            # 第三方源（如 mysql/sury）签名过期是公网常见情况，会让 apt-get update 整体返回
+            # 非 0 并中断安装。这里不因单个源坏掉就退出：先更新、失败只告警，随后由下面的
+            # 实际安装步骤来判定依赖是否真的可用（装不上再报错，信息更准确）。
+            if ! apt-get update -y; then
+                warn "apt-get update 有源报错（常见为第三方源 GPG 签名过期），继续尝试安装"
+            fi
             mkdir -p /etc/apt/sources.list.d
             if [ "$OS" = "debian" ]; then
                 apt-get install -y apt-transport-https lsb-release ca-certificates curl gnupg
@@ -207,7 +212,9 @@ install_php() {
                 apt-get install -y software-properties-common
                 add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
             fi
-            apt-get update -y
+            if ! apt-get update -y; then
+                warn "apt-get update 仍有源报错，继续尝试安装"
+            fi
             apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl sudo cron
             ;;
     esac
@@ -1058,6 +1065,17 @@ main() {
         case $PKG_MANAGER in
             yum) yum install -y git ;;
             apt) apt-get install -y git ;;
+        esac
+    fi
+
+    # 确保 unzip 可用：节点安装脚本（node-install.sh）把 unzip 列为硬依赖，
+    # 而那是节点侧脚本、用户装完面板后才会用到；面板这一步顺带装上，
+    # 免得用户去装节点时才发现缺依赖。
+    if ! command -v unzip &>/dev/null; then
+        info "安装 unzip..."
+        case $PKG_MANAGER in
+            yum) yum install -y unzip ;;
+            apt) apt-get install -y unzip ;;
         esac
     fi
 
