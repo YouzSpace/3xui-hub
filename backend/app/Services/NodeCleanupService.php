@@ -76,6 +76,12 @@ class NodeCleanupService
             return ['ok' => false, 'summary' => '缺少节点连接信息，无法清理远端客户端'];
         }
 
+        // xray 节点：客户端只存在于节点内核，删除节点后 agent 随之失联（密钥鉴权失效），
+        // 面板侧无下发清理的通道 —— 远端内核随 VPS 一并处置，这里直接判完成。
+        if (($snapshot['driver_type'] ?? '3x-ui') === 'xray') {
+            return ['ok' => true, 'summary' => 'xray 节点：无面板式远端客户端，无需清理'];
+        }
+
         try {
             $node = (new Node())->setRawAttributes($snapshot);
             $driver = $this->driverFactory->make($node);

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DiscountController as ApiDiscountController;
+use App\Http\Controllers\Api\NodeApiController;
 use App\Http\Controllers\Api\NodeController as ApiNodeController;
 use App\Http\Controllers\Api\PaymentController as ApiPaymentController;
 use App\Http\Controllers\Api\PlanController as ApiPlanController;
@@ -65,6 +66,21 @@ Route::get('/payment/methods', [ApiPaymentController::class, 'methods']);
 
 // 支付回调（无需鉴权，由支付网关调用）
 Route::post('/payment/notify', [ApiPaymentController::class, 'notify']);
+
+/*
+|--------------------------------------------------------------------------
+| xray 节点 API（/api/node-api/*，node.auth 按 X-Node-Secret 鉴权）
+| agent 全程只出连：注册 / 拉配置(ETag) / 推流量 / 心跳 / 指令长轮询 + 回执
+|--------------------------------------------------------------------------
+*/
+Route::prefix('node-api')->middleware('node.auth')->group(function () {
+    Route::post('/register', [NodeApiController::class, 'register']);
+    Route::get('/config', [NodeApiController::class, 'config']);
+    Route::post('/push', [NodeApiController::class, 'push']);
+    Route::post('/alive', [NodeApiController::class, 'alive']);
+    Route::post('/execute', [NodeApiController::class, 'execute']);
+    Route::post('/ack', [NodeApiController::class, 'ack']);
+});
 
 // 受 api.auth 保护的端点
 Route::middleware('api.auth')->group(function () {

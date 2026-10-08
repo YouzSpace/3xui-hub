@@ -1,2 +1,6 @@
 *
+!private/
+!public/
 !.gitignore
+# xray 节点资产（二进制/脚本/manifest）随面板入库分发，节点只连面板
+!xray/

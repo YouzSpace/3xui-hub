@@ -13,6 +13,8 @@ QUEUE_SERVICE="3xui-hub-queue.service"
 NODE_QUEUE_TEMPLATE="3xui-hub-queue-node@"
 NODE_QUEUE_UNIT_FILE="/etc/systemd/system/3xui-hub-queue-node@.service"
 NODE_QUEUE_INSTANCES="1 2"
+# xray 节点 WebSocket 长连接服务（Workerman 常驻；nginx 反代 /node-ws → 127.0.0.1:8091）
+NODE_WS_SERVICE="3xui-hub-node-ws.service"
 
 # 颜色
 RED='\033[0;31m'
@@ -173,6 +175,128 @@ EOF
         systemctl enable "$u" >/dev/null 2>&1
         systemctl restart "$u"
     done
+}
+
+# 配置 xray 节点 WS 长连接服务（3xui-hub-node-ws.service）
+#
+# 为什么每次 update 都重写单元文件 + 自愈安装：老版本（没有这个服务）升级上来时，
+# 不装就会出现「agent 连不上 WS → 降级 HTTP 通道」，功能可用但实时性打折；
+# 而且单元文件由脚本统一维护，避免线上手改漂移。restart 失败降级为告警不中断更新
+# （WS 挂掉时 agent 会自动降级 HTTP，面板功能不受影响，不应该阻断整个升级流程）。
+configure_node_ws() {
+    if [ ! -f "$BACKEND_DIR/artisan" ]; then
+        return 0
+    fi
+
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    # .env 显式写入开关（幂等；默认值即 true，写入是让管理员可见可控）
+    if ! grep -q '^XRAY_WS_ENABLED=' "$BACKEND_DIR/.env" 2>/dev/null; then
+        echo 'XRAY_WS_ENABLED=true' >> "$BACKEND_DIR/.env"
+    fi
+
+    cat > "/etc/systemd/system/$NODE_WS_SERVICE" << EOF
+[Unit]
+Description=3xui-hub Node WebSocket Server (xray nodes)
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${BACKEND_DIR}
+ExecStart=/usr/bin/php artisan node:ws-serve
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$NODE_WS_SERVICE" >/dev/null 2>&1
+    systemctl restart "$NODE_WS_SERVICE"
+
+    # nginx 反代自愈：老版本升级上来的 conf 缺 /node-ws location，补上（幂等）
+    ensure_nginx_node_ws
+
+    if systemctl is-active --quiet "$NODE_WS_SERVICE"; then
+        return 0
+    fi
+    return 1
+}
+
+# nginx /node-ws 反代自愈（幂等）
+#
+# 本功能发布前安装的老面板，3xui-hub.conf 里没有 /node-ws location —— agent 连 WS 会
+# 404，自动降级 HTTP（功能可用但实时性打折）。这里在「location ~ ^/(api|admin-api)」
+# 锚点前插入反代块，把 WS 通道补齐。
+# 保护：改前备份、nginx -t 校验失败自动回滚，绝不破坏用户的 SSL / 自定义配置。
+ensure_nginx_node_ws() {
+    local CONF=""
+    if [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
+        CONF="/www/server/panel/vhost/nginx/3xui-hub.conf"
+    else
+        CONF="/etc/nginx/conf.d/3xui-hub.conf"
+    fi
+    [ -f "$CONF" ] || return 0
+    grep -q '/node-ws' "$CONF" 2>/dev/null && grep -q 'node-install' "$CONF" 2>/dev/null && return 0
+
+    cp -f "$CONF" "${CONF}.bak-nodews"
+    python3 - "$CONF" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    s = f.read()
+blocks = ''
+if '/node-ws' not in s:
+    blocks += '''    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
+    location /node-ws {
+        proxy_pass http://127.0.0.1:8091;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+'''
+if 'node-install' not in s:
+    blocks += '''    # xray 节点资产与安装脚本（转 PHP；否则被 SPA fallback 吞掉）
+    location ~ ^/(node-install\\.sh|node-agent\\.sh|node-bin/) {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+'''
+if not blocks:
+    sys.exit(0)  # 已有，无需处理
+anchor = 'location ~ ^/(api|admin-api)'
+idx = s.find(anchor)
+if idx < 0:
+    sys.exit(2)  # 找不到锚点，无法安全插入
+line_start = s.rfind('\n', 0, idx) + 1
+with open(path, "w", encoding="utf-8") as f:
+    f.write(s[:line_start] + blocks + s[line_start:])
+PY
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx >/dev/null 2>&1 || true
+            echo "Nginx 反代: 已补 /node-ws"
+            rm -f "${CONF}.bak-nodews"
+        else
+            mv -f "${CONF}.bak-nodews" "$CONF"
+            echo "Nginx 反代: 补丁未通过 nginx -t，已回滚（可手工添加 /node-ws）"
+        fi
+    else
+        rm -f "${CONF}.bak-nodews"
+        [ "$rc" -eq 2 ] && echo "Nginx 反代: 未找到 api|admin-api 锚点，跳过（请手工确认 /node-ws）"
+    fi
 }
 
 # 修复 storage / bootstrap/cache 属主（幂等自愈）
@@ -350,6 +474,13 @@ cmd_status() {
     else
         echo -e "节点 Worker: ${YELLOW}部分运行${NC}（node-ops，${NODE_ACTIVE}/${NODE_TOTAL}）"
     fi
+
+    # xray 节点 WS 长连接服务（agent 主通道；未运行时节点自动走 HTTP 降级）
+    if systemctl is-active "$NODE_WS_SERVICE" &>/dev/null; then
+        echo -e "节点 WS 服务: ${GREEN}运行中${NC}（xray 节点实时通道）"
+    else
+        echo -e "节点 WS 服务: ${YELLOW}未运行${NC}（xray 节点走 HTTP 降级通道，修复: 3hub update）"
+    fi
 }
 
 # 检测更新
@@ -405,6 +536,15 @@ cmd_update() {
 
     # 配置数据库队列和常驻 Worker
     configure_queue_worker
+
+    # xray 节点 WS 长连接服务（自愈安装 + 重启；失败仅告警：agent 会降级 HTTP 通道）
+    echo -e "${CYAN}检查节点 WS 服务...${NC}"
+    if configure_node_ws; then
+        echo -e "节点 WS 服务: ${GREEN}已就绪${NC}"
+    else
+        echo -e "${YELLOW}节点 WS 服务未就绪（节点将使用 HTTP 降级通道，不影响功能）${NC}"
+        echo -e "${YELLOW}排查: systemctl status $NODE_WS_SERVICE${NC}"
+    fi
 
     # 清除缓存
     run_artisan config:clear 2>&1
@@ -785,6 +925,14 @@ cmd_restart() {
             systemctl restart "$u"
             echo -e "节点 Worker: ${GREEN}已重启${NC}（$u）"
         done
+    fi
+
+    # 节点 WS 长连接服务（xray 节点实时通道）
+    if systemctl is-active "$NODE_WS_SERVICE" &>/dev/null; then
+        systemctl restart "$NODE_WS_SERVICE"
+        echo -e "节点 WS 服务: ${GREEN}已重启${NC}（$NODE_WS_SERVICE）"
+    else
+        echo -e "节点 WS 服务: ${YELLOW}未安装或未运行${NC}（运行 3hub update 安装）"
     fi
 
     echo -e "${GREEN}服务重启完成${NC}"

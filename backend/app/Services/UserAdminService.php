@@ -198,6 +198,12 @@ class UserAdminService
     {
         $email = $clientData['email'];
 
+        if ($node->isXray()) {
+            $this->provisionXrayClientOnNode($user, $node, $clientData);
+
+            return;
+        }
+
         $inboundIds = $node->inboundIdsFor($user->protocol);
         if (empty($inboundIds)) {
             return;
@@ -226,6 +232,32 @@ class UserAdminService
                 if (!empty($created['uuid']) && !$user->uuid) {
                     $user->forceFill(['uuid' => $created['uuid']])->save();
                 }
+            }
+        } catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * xray 节点上的单用户同步：入队 adu/rmu 指令（agent 秒级执行，不等回执）。
+     *
+     * 与 3x-ui 路径同口径：只处理该节点应承载的协议（P1 仅 vless）；
+     * enable=false（无套餐/已关闭）语义 = 内核移除（rmu），启用 = adu 重加。
+     */
+    private function provisionXrayClientOnNode(User $user, Node $node, array &$clientData): void
+    {
+        if ($user->protocol !== 'vless') {
+            return;
+        }
+
+        $clientData['uuid'] = (string) $user->uuid;
+
+        try {
+            $driver = $this->driverFactory->make($node);
+            if ($driver->getClient($clientData['email']) !== null) {
+                $driver->updateClient($clientData['email'], $clientData);
+            } else {
+                $driver->createClient($clientData, []);
             }
         } catch (\Throwable $e) {
             report($e);

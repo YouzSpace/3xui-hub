@@ -56,10 +56,21 @@ class SubscriptionService
         if ($user->plan === null || $user->plan->includesLocal()) {
             $nodes = Node::where('enabled', true)
                 ->where('status', 'online')
-                ->whereHas('inbounds', function ($q) use ($user) {
-                    $q->where('protocol', $user->protocol);
+                ->where(function ($q) use ($user) {
+                    $q->whereHas('inbounds', function ($qq) use ($user) {
+                        $qq->where('protocol', $user->protocol);
+                    });
+                    // xray 节点不落 3x-ui 入站记录：按「协议匹配的启用入站」纳入
+                    $q->orWhere(function ($qq) use ($user) {
+                        $qq->where('driver_type', 'xray')
+                            ->whereHas('xrayInbounds', function ($qqq) use ($user) {
+                                $qqq->where('protocol', $user->protocol)
+                                    ->where('enabled', true);
+                            });
+                    });
                 })
                 ->get();
+
 
             foreach ($nodes as $node) {
                 $inboundIds = $node->inbounds()
@@ -67,12 +78,23 @@ class SubscriptionService
                     ->pluck('inbound_id')
                     ->toArray();
 
-                if (empty($inboundIds)) {
+                // 3x-ui 节点维持原逻辑：没有该协议入站就跳过
+                if (! $node->isXray() && empty($inboundIds)) {
                     continue;
                 }
 
                 try {
                     $driver = $this->driverFactory->make($node);
+
+                    if ($node->isXray()) {
+                        foreach ($driver->getClientLinks($email) as $link) {
+                            if (is_string($link) && $link !== '' && !in_array($link, $links, true)) {
+                                $links[] = $link;
+                            }
+                        }
+
+                        continue;
+                    }
 
                     // 取各配置入站的端口，用于过滤
                     $configuredPorts = [];

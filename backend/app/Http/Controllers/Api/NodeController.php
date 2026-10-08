@@ -24,8 +24,14 @@ class NodeController extends Controller
 
         $nodes = Node::where('enabled', true)
             ->where('status', 'online')
-            ->whereHas('inbounds', function ($q) use ($user) {
-                $q->where('protocol', $user->protocol);
+            ->where(function ($q) use ($user) {
+                $q->whereHas('inbounds', function ($qq) use ($user) {
+                    $qq->where('protocol', $user->protocol);
+                });
+                // xray 节点不落 3x-ui 入站记录：vless 用户按驱动类型纳入
+                if ($user->protocol === 'vless') {
+                    $q->orWhere('driver_type', 'xray');
+                }
             })
             ->get();
 
@@ -42,7 +48,9 @@ class NodeController extends Controller
                 'id' => $n->id,
                 'name' => $n->name,
                 'host' => $n->host,
-                'port' => $n->port,
+                'port' => $n->isXray()
+                    ? (int) ($n->driver_config['reality']['listen_port'] ?? 443)
+                    : $n->port,
                 'latency' => $n->latency,
                 'status' => $n->status,
             ];

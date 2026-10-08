@@ -38,6 +38,11 @@ class SyncTrafficCommand extends Command
         $allDeltaUserIds = [];
 
         foreach ($nodes as $node) {
+            // xray 节点流量由 agent 主动推送（/node-api/push），不做面板侧轮询
+            if ($node->isXray()) {
+                continue;
+            }
+
             try {
                 $result = $syncService->syncNodeFromSource($node, function () use ($driverFactory, $node) {
                     $driver = $driverFactory->make($node);

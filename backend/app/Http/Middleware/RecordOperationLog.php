@@ -21,7 +21,8 @@ class RecordOperationLog
 
         // 只处理 admin-api 和用户 api
         $isApi = $request->is('admin-api/*') || $request->is('api/*');
-        if (!$isApi || $request->is('api/ping')) {
+        // 节点 agent 的高频上报（register/push/alive/execute/ack）不写操作日志，避免刷爆
+        if (!$isApi || $request->is('api/ping') || $request->is('api/node-api/*')) {
             return $response;
         }
 

@@ -19,7 +19,24 @@ use App\Http\Controllers\Admin\SiteSettingController as AdminSiteSettingControll
 use App\Http\Controllers\Admin\SubscriptionSettingController as AdminSubscriptionSettingController;
 use App\Http\Controllers\Admin\SystemStatusController as AdminSystemStatusController;
 use App\Http\Controllers\Admin\TutorialController as AdminTutorialController;
+use App\Http\Controllers\Admin\XrayInboundController as AdminXrayInboundController;
+use App\Http\Controllers\Admin\XrayOutboundController as AdminXrayOutboundController;
+use App\Http\Controllers\Admin\XrayRoutingController as AdminXrayRoutingController;
+use App\Http\Controllers\Admin\NodeWarpController as AdminNodeWarpController;
 use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| 节点资产分发（xray 双通道 M0：资产随面板入库，节点只连面板，GitHub 零依赖）
+| 全部公开端点——节点安装/注册前无凭据可鉴权
+|--------------------------------------------------------------------------
+*/
+Route::get('/node-install.sh', [\App\Http\Controllers\Api\NodeAssetController::class, 'nodeInstall']);
+Route::get('/node-agent.sh', [\App\Http\Controllers\Api\NodeAssetController::class, 'nodeAgent']);
+Route::get('/node-bin/manifest.json', [\App\Http\Controllers\Api\NodeAssetController::class, 'manifest']);
+// agent 二进制路由必须排在 {version}/{arch}.zip 之前（虽然 {arch}.zip 后缀模式不会吞它，双保险）
+Route::get('/node-bin/agent/{arch}', [\App\Http\Controllers\Api\NodeAssetController::class, 'agentBinary']);
+Route::get('/node-bin/{version}/{arch}.zip', [\App\Http\Controllers\Api\NodeAssetController::class, 'binary']);
 
 /*
 |--------------------------------------------------------------------------
@@ -70,6 +87,34 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::delete('/nodes/{node}', [AdminNodeController::class, 'destroy']);
     Route::post('/nodes/{node}/test', [AdminNodeController::class, 'test']);
     Route::post('/nodes/probe-inbounds', [AdminNodeController::class, 'probeInbounds']);
+
+    // xray 节点配置能力（入站 / 出站 / 路由 / WARP；仅 driver_type=xray 的节点可用，控制器内校验）
+    Route::get('/nodes/{node}/xray-inbounds', [AdminXrayInboundController::class, 'index']);
+    Route::post('/nodes/{node}/xray-inbounds', [AdminXrayInboundController::class, 'store']);
+    // 密钥生成必须排在 {inbound} 参数路由之前（同 third-party 的先例）
+    Route::post('/nodes/{node}/xray-inbounds/reality-keypair', [AdminXrayInboundController::class, 'realityKeypair']);
+    Route::put('/nodes/{node}/xray-inbounds/{inbound}', [AdminXrayInboundController::class, 'update']);
+    Route::delete('/nodes/{node}/xray-inbounds/{inbound}', [AdminXrayInboundController::class, 'destroy']);
+
+    Route::get('/nodes/{node}/xray-outbounds', [AdminXrayOutboundController::class, 'index']);
+    Route::post('/nodes/{node}/xray-outbounds', [AdminXrayOutboundController::class, 'store']);
+    Route::post('/nodes/{node}/xray-outbounds/import', [AdminXrayOutboundController::class, 'import']);
+    Route::put('/nodes/{node}/xray-outbounds/{outbound}', [AdminXrayOutboundController::class, 'update']);
+    Route::delete('/nodes/{node}/xray-outbounds/{outbound}', [AdminXrayOutboundController::class, 'destroy']);
+    Route::post('/nodes/{node}/xray-outbounds/{outbound}/test', [AdminXrayOutboundController::class, 'test']);
+
+    Route::get('/nodes/{node}/xray-routing', [AdminXrayRoutingController::class, 'index']);
+    Route::post('/nodes/{node}/xray-routing', [AdminXrayRoutingController::class, 'store']);
+    Route::post('/nodes/{node}/xray-routing/test', [AdminXrayRoutingController::class, 'test']);
+    Route::put('/nodes/{node}/xray-routing/{rule}', [AdminXrayRoutingController::class, 'update']);
+    Route::delete('/nodes/{node}/xray-routing/{rule}', [AdminXrayRoutingController::class, 'destroy']);
+
+    Route::get('/nodes/{node}/warp', [AdminNodeWarpController::class, 'show']);
+    Route::post('/nodes/{node}/warp/register', [AdminNodeWarpController::class, 'register']);
+    Route::post('/nodes/{node}/warp/apply', [AdminNodeWarpController::class, 'apply']);
+    Route::post('/nodes/{node}/warp/rotate', [AdminNodeWarpController::class, 'rotate']);
+    Route::put('/nodes/{node}/warp', [AdminNodeWarpController::class, 'update']);
+    Route::delete('/nodes/{node}/warp', [AdminNodeWarpController::class, 'destroy']);
 
     // 套餐管理
     Route::get('/plans', [AdminPlanController::class, 'index']);

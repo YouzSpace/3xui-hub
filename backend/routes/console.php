@@ -44,3 +44,7 @@ Schedule::job(MailScheduleJob::class)->everyFiveMinutes()->name('mail-schedule-s
 // 第三方订阅拉取：每 2 小时抓取启用的第三方订阅并缓存节点链接。
 // 没有启用订阅时命令直接跳过；拉取失败保留上次成功缓存（ThirdPartyService 内处理）。
 Schedule::command('third-party:fetch')->everyTwoHours()->name('third-party-fetch')->withoutOverlapping();
+
+// WARP 定时换 IP：每分钟检查各节点 WARP 账户的 auto_rotate_hours 是否到点（0=关闭）。
+// 到点换 IP = 重新注册设备 → 重组 wireguard 出站 → bump config → 节点秒级拉取生效。
+Schedule::command('xray:warp-rotate')->everyMinute()->name('xray-warp-rotate')->withoutOverlapping();

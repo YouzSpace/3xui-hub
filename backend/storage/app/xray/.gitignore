@@ -1,0 +1,3 @@
+# 放行 xray 资产目录全部内容（二进制/脚本/manifest 随面板入库）
+!*
+!.gitignore

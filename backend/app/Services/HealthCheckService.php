@@ -222,10 +222,17 @@ class HealthCheckService
 
     private function apply(Node $node, string $status, int $latency): void
     {
-        $node->forceFill([
+        $fields = [
             'status' => $status,
             'latency' => $latency,
-            'last_check_at' => now(),
-        ])->save();
+        ];
+
+        // xray 节点的 last_check_at 是 agent 心跳时间（/node-api/alive 维护）；
+        // 健康检查只翻 status，绝不覆盖心跳时间，否则「心跳新鲜度」判定会失真。
+        if (! $node->isXray()) {
+            $fields['last_check_at'] = now();
+        }
+
+        $node->forceFill($fields)->save();
     }
 }

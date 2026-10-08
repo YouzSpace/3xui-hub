@@ -576,6 +576,25 @@ server {
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
     }
 
+    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
+    location /node-ws {
+        proxy_pass http://127.0.0.1:8091;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # xray 节点资产与安装脚本（转 PHP；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
+    location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
     location ~ ^/(api|admin-api) {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
@@ -602,6 +621,25 @@ server {
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+
+    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
+    location /node-ws {
+        proxy_pass http://127.0.0.1:8091;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # xray 节点资产与安装脚本（转 PHP；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
+    location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
+        try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
     location ~ ^/(api|admin-api) {
@@ -766,6 +804,48 @@ EOF
             error_exit "节点任务 Worker (实例 ${i}) 未设置开机自启，请执行: systemctl enable 3xui-hub-queue-node@${i}.service"
     done
     success "节点任务 Worker 已启动（node-ops 队列，2 实例）"
+}
+
+# 配置 xray 节点 WS 长连接服务（agent 主通道；nginx 反代 /node-ws → 127.0.0.1:8091）
+#
+# 为什么单开一个服务：xray 节点 agent 与面板之间用 WebSocket 长连接做实时通道
+# （指令秒级下发 / 配置变更即时通知），Workerman 常驻进程由 systemd 看护。
+# 连不上 WS 时 agent 会自动降级到 HTTP 六端点通道，面板核心功能不依赖本服务，
+# 因此启动失败只告警不阻断安装。
+setup_node_ws() {
+    info "配置节点 WS 长连接服务..."
+
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    cat > /etc/systemd/system/3xui-hub-node-ws.service << EOF
+[Unit]
+Description=3xui-hub Node WebSocket Server (xray nodes)
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${INSTALL_DIR}/backend
+ExecStart=/usr/bin/php artisan node:ws-serve
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now 3xui-hub-node-ws.service 2>/dev/null || true
+
+    if systemctl is-active --quiet 3xui-hub-node-ws.service; then
+        success "节点 WS 服务已启动"
+    else
+        warn "节点 WS 服务未启动（节点将使用 HTTP 降级通道，不影响功能；排查: systemctl status 3xui-hub-node-ws.service）"
+    fi
 }
 
 # 修复 storage / bootstrap/cache 属主（幂等自愈）
@@ -1003,6 +1083,9 @@ main() {
     # 必须排在 setup_env（写 .env）之后：它要先确认 .env 里的 PANEL_NODE_OPS_QUEUE
     # 已生效再起 worker，顺序反了就成了「worker 监听一条没人投递的队列」
     setup_node_ops_worker
+
+    # 配置节点 WS 长连接服务（xray 节点 agent 实时通道）
+    setup_node_ws
 
     # 安装 3hub 命令
     install_3hub

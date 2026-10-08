@@ -58,16 +58,19 @@ class NodeController extends Controller
     {
         $data = $this->validateNode($request);
         $shouldEnable = (bool) ($data['enabled'] ?? true);
+        $driverType = $data['driver_type'] ?? '3x-ui';
 
-        $selectedInboundIds = $this->selectedInboundIds($data['inbounds'] ?? []);
-        if ($selectedInboundIds === []) {
-            return $this->error('请至少选择一个入站');
+        if ($driverType !== 'xray') {
+            $selectedInboundIds = $this->selectedInboundIds($data['inbounds'] ?? []);
+            if ($selectedInboundIds === []) {
+                return $this->error('请至少选择一个入站');
+            }
         }
 
-        $node = DB::transaction(function () use ($data) {
+        $node = DB::transaction(function () use ($data, $driverType) {
             $node = Node::create([
                 'name' => $data['name'],
-                'host' => $data['host'],
+                'host' => $data['host'] ?? '',
                 'port' => (int) ($data['port'] ?? 443),
                 'scheme' => $data['scheme'] ?? 'https',
                 'web_base_path' => $data['web_base_path'] ?? '',
@@ -77,13 +80,31 @@ class NodeController extends Controller
                 'enabled' => false,
                 'verify_ssl' => (bool) ($data['verify_ssl'] ?? false),
                 'status' => 'offline',
+                'driver_type' => $driverType,
                 'traffic_multiplier' => $data['traffic_multiplier'] ?? null,
             ]);
 
-            $this->syncInbounds($node, $data['inbounds'] ?? [], false);
+            if ($node->isXray()) {
+                // xray 节点：生成 node_secret + 初始化 driver_config（Reality 待 agent 注册回填）
+                $node->regenerateNodeSecret();
+                $cfg = $node->driver_config;
+                $cfg['pull_interval'] = (int) SiteConfig::getValue('xray_pull_interval', '30');
+                $node->driver_config = $cfg;
+                $node->save();
+            } else {
+                $this->syncInbounds($node, $data['inbounds'] ?? [], false);
+            }
 
             return $node;
         });
+
+        if ($node->isXray()) {
+            // xray 节点：无 3x-ui 接入初始化流程；置 enabled 后等 agent 注册上线（status 保持 offline），
+            // install_command 由 present() 输出
+            $node->forceFill(['enabled' => $shouldEnable])->save();
+
+            return $this->success($this->present($node->fresh(), true), '创建成功');
+        }
 
         // P1-1/P1-2 修复：初始化异步化——按用户逐条派发，单用户失败不影响其余；
         // 全部成功（且勾选启用）才由 maybeFinalize 启用节点；有失败只标 offline，不改 enabled。
@@ -103,8 +124,9 @@ class NodeController extends Controller
     public function update(Request $request, Node $node): \Illuminate\Http\JsonResponse
     {
         $data = $this->validateNode($request, true);
+        $driverType = $data['driver_type'] ?? $node->driver_type;
 
-        if (array_key_exists('inbounds', $data) && $this->selectedInboundIds($data['inbounds'] ?? []) === []) {
+        if (!$node->isXray() && array_key_exists('inbounds', $data) && $this->selectedInboundIds($data['inbounds'] ?? []) === []) {
             return $this->error('请至少选择一个入站');
         }
 
@@ -128,10 +150,10 @@ class NodeController extends Controller
         }
 
         $syncTask = null;
-        DB::transaction(function () use ($node, $data, &$syncTask) {
+        DB::transaction(function () use ($node, $data, $driverType, &$syncTask) {
             $node->forceFill([
                 'name' => $data['name'] ?? $node->name,
-                'host' => $data['host'] ?? $node->host,
+                'host' => isset($data['host']) ? $data['host'] : $node->host,
                 'port' => isset($data['port']) ? (int) $data['port'] : $node->port,
                 'scheme' => $data['scheme'] ?? $node->scheme,
                 'web_base_path' => array_key_exists('web_base_path', $data) ? $data['web_base_path'] : $node->web_base_path,
@@ -140,13 +162,19 @@ class NodeController extends Controller
                 'api_key' => array_key_exists('api_key', $data) ? $data['api_key'] : $node->api_key,
                 'enabled' => isset($data['enabled']) ? (bool) $data['enabled'] : $node->enabled,
                 'verify_ssl' => isset($data['verify_ssl']) ? (bool) $data['verify_ssl'] : $node->verify_ssl,
+                'driver_type' => $driverType,
                 // 传 null 就是「清空改回继承原始倍率」，与文档口径一致
                 'traffic_multiplier' => array_key_exists('traffic_multiplier', $data)
                     ? ($data['traffic_multiplier'] === null ? null : (float) $data['traffic_multiplier'])
                     : $node->traffic_multiplier,
             ])->save();
 
-            if (array_key_exists('inbounds', $data)) {
+            if ($node->isXray()) {
+                // xray：确保 node_secret 存在（首次转 xray 时补生成）
+                if ($node->nodeSecret() === null) {
+                    $node->regenerateNodeSecret();
+                }
+            } elseif (array_key_exists('inbounds', $data)) {
                 $syncTask = $this->syncInbounds($node, $data['inbounds'] ?? []);
             }
         });
@@ -199,7 +227,8 @@ class NodeController extends Controller
         $node->forceFill([
             'status' => $ok ? 'online' : 'offline',
             'latency' => (int) ($health['latencyMs'] ?? 0),
-            'last_check_at' => now(),
+            // xray 节点的心跳时间由 agent 维护（/node-api/alive），手动测试不覆盖
+            'last_check_at' => $node->isXray() ? $node->last_check_at : now(),
         ])->save();
 
         if (!$ok) {
@@ -319,9 +348,15 @@ class NodeController extends Controller
 
     private function validateNode(Request $request, bool $forUpdate = false): array
     {
+        $isXray = ($request->input('driver_type') ?? '3x-ui') === 'xray';
+
+        // xray 节点不连 3x-ui：host/username/api_key 非必填；3x-ui 节点维持原必填
+        $hostRule = $isXray ? 'sometimes' : ($forUpdate ? 'sometimes' : 'required');
+
         $rules = [
+            'driver_type' => ['sometimes', 'in:3x-ui,xray'],
             'name' => [$forUpdate ? 'sometimes' : 'required', 'string', 'max:120'],
-            'host' => [$forUpdate ? 'sometimes' : 'required', 'string', 'max:200'],
+            'host' => [$hostRule, 'string', 'max:200'],
             'port' => ['sometimes', 'integer', 'between:1,65535'],
             'scheme' => ['sometimes', 'in:http,https'],
             'web_base_path' => ['sometimes', 'nullable', 'string', 'max:200'],
@@ -437,6 +472,7 @@ class NodeController extends Controller
             'status' => $n->status,
             'latency' => $n->latency,
             'last_check_at' => $n->last_check_at?->toIso8601String(),
+            'driver_type' => $n->driver_type ?? '3x-ui',
             'inbounds' => $n->inbounds->groupBy('protocol')->map(fn ($items) => $items->pluck('inbound_id')->values())->all(),
             // null = 该节点继承原始倍率；前端要靠这个区分「继承」和「手动设成 1.0」
             'traffic_multiplier' => $n->traffic_multiplier,
@@ -451,6 +487,24 @@ class NodeController extends Controller
             $data['has_api_key'] = $n->api_key !== null;
             // 面板登录密码较敏感，仅返回布尔，编辑留空即不改
             $data['has_password'] = $n->password !== null;
+        }
+
+        if ($n->isXray()) {
+            // 「已配置 biz」判定：存在启用中的 reality 入站（Reality 密钥已随入站迁移到面板侧管理）
+            $data['reality_registered'] = $n->xrayInbounds()
+                ->where('protocol', 'vless')
+                ->where('enabled', true)
+                ->get()
+                ->contains(fn ($in) => ($in->stream_settings['security'] ?? null) === 'reality');
+            $data['node_secret_prefix'] = $n->nodeSecret() !== null ? substr($n->nodeSecret(), 0, 4) . '…' : null;
+            $data['xray_version'] = $n->driver_config['xray_version'] ?? null;
+            $data['config_version'] = $n->xrayConfigVersion();
+            $data['lag_seconds'] = (int) ($n->driver_config['lag_seconds'] ?? 0);
+            // 实时监控快照（WS/HTTP 上报）与长连接状态
+            $agent = $n->driver_config['agent'] ?? null;
+            $data['agent'] = is_array($agent) ? $agent : null;
+            $data['ws_connected'] = (bool) ($n->driver_config['ws']['connected'] ?? false);
+            $data['install_command'] = $n->installCommand((string) config('app.url'));
         }
 
         return $data;

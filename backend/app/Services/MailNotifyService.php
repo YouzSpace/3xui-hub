@@ -110,7 +110,7 @@ class MailNotifyService
         ];
     }
 
-    /** 全部通知项配置（供接口返回） */
+    /** 全部通知项配置（供接口返回，扁平键与前端 loadNotify 的读取一致） */
     public static function allConfig(): array
     {
         $extra = SiteConfig::getMany([
@@ -121,14 +121,18 @@ class MailNotifyService
 
         $out = [];
         foreach (array_keys(self::SCENES) as $scene) {
-            $out[$scene] = self::configFor($scene);
+            $cfg = self::configFor($scene);
+            // enabled 存成 '1'/''（字符串）：前端用 === '1' 严格判断，布尔 true 会变成 false
+            $out["notify_{$scene}_enabled"] = $cfg['enabled'] ? '1' : '';
+            $out["notify_{$scene}_title"]   = $cfg['title'];
+            $out["notify_{$scene}_body"]    = $cfg['body'];
+            $out["notify_{$scene}_to"]      = $cfg['to'];
         }
 
-        $out['_settings'] = [
-            'traffic_almost_threshold' => (int) ($extra['notify_traffic_almost_threshold'] ?: 90),
-            'expiring_days'           => (int) ($extra['notify_expiring_days'] ?: 3),
-            'admin_email'             => $extra['notify_admin_email'],
-        ];
+        // 顶层扁平键：与前端 notify.notify_* 字段一一对应（原 _settings 折叠结构前端读不到）
+        $out['notify_traffic_almost_threshold'] = (int) ($extra['notify_traffic_almost_threshold'] ?: 90);
+        $out['notify_expiring_days']            = (int) ($extra['notify_expiring_days'] ?: 3);
+        $out['notify_admin_email']              = $extra['notify_admin_email'];
 
         return $out;
     }

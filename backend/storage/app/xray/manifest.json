@@ -1,0 +1,31 @@
+{
+  "default": "26.3.27",
+  "versions": {
+    "26.3.27": {
+      "assets": [
+        {
+          "arch": "linux-64",
+          "file": "Xray-linux-64.zip",
+          "sha256": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
+          "size": 21136402
+        }
+      ],
+      "released_at": "2026-09-18"
+    }
+  },
+  "upgrade_policy": {
+    "enabled": false,
+    "note": "P1 预留：P4 实现节点自动升级时置 enabled=true，节点 agent 拉取本 manifest 的 default 与本地对比"
+  },
+  "agent": {
+    "version": "1.0.0",
+    "assets": [
+      {
+        "arch": "linux-64",
+        "file": "controlhub-agent-linux-64",
+        "sha256": "8bc627ac97a30e1963356fbc50010af20dc48fb898a1d17fdee74b6a7d84052f",
+        "size": 6197432
+      }
+    ]
+  }
+}

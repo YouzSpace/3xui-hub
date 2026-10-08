@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'api.auth' => \App\Http\Middleware\ApiAuth::class,
             'admin.auth' => \App\Http\Middleware\AdminAuth::class,
+            'node.auth' => \App\Http\Middleware\NodeAuth::class,
         ]);
 
         $middleware->web(append: [\App\Http\Middleware\RecordOperationLog::class]);

@@ -4,6 +4,7 @@ namespace App\Drivers;
 
 use App\Drivers\Contracts\PanelDriverInterface;
 use App\Drivers\ThreeXUi\ThreeXUiDriver;
+use App\Drivers\Xray\XrayDriver;
 use App\Models\Node;
 use App\Services\ThreeXUiClientFactory;
 use RuntimeException;
@@ -27,6 +28,7 @@ class NodeDriverFactory
 
         return match ($type) {
             '3x-ui' => new ThreeXUiDriver($this->clientFactory->forNode($node)),
+            'xray'   => new XrayDriver($node),
             default  => throw new RuntimeException("Unsupported node driver: {$type}"),
         };
     }
