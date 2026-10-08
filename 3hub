@@ -366,6 +366,7 @@ CMDS=(
     "restart"
     "ssl"
     "domain"
+    "fix-nginx"
 )
 
 CMD_LABELS=(
@@ -381,6 +382,7 @@ CMD_LABELS=(
     "重启 PHP-FPM、Nginx 和队列 Worker"
     "配置域名和 SSL 证书"
     "多域名管理 (add/renew/remove/status)"
+    "补全 nginx 节点资产 location（老版本升级后用）"
 )
 
 # 显示帮助
@@ -597,7 +599,49 @@ cmd_update() {
     # 顺序上不能提到 config:clear 那类步骤之前，否则还会被后续步骤重新污染。详见函数注释。
     fix_storage_ownership
 
+    # 从旧版本升上来的机器：本次运行的仍是旧脚本（bash 启动时已读入内存），
+    # 所以本次新增/修改的自愈函数（如 ensure_nginx_node_ws）这一次跑不到。
+    # 落盘检查并明确提示，避免用户以为已经自愈、实际要等下一条命令。
+    if ! nginx_node_ws_applied; then
+        echo ""
+        echo -e "${YELLOW}⚠ 检测到 nginx 缺少节点资产 location（/node-ws、/node-install.sh）。${NC}"
+        echo -e "${YELLOW}  这是老版本升级的已知情况：自愈函数要到下一次运行才可用。${NC}"
+        echo -e "${YELLOW}  请执行一次：${NC} ${GREEN}3hub fix-nginx${NC}"
+    fi
+
     echo -e "${GREEN}更新完成！${NC}"
+}
+
+# nginx 反代是否已就位（只读判断，供提示与 fix-nginx 复用）
+nginx_conf_path() {
+    if [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
+        echo "/www/server/panel/vhost/nginx/3xui-hub.conf"
+    else
+        echo "/etc/nginx/conf.d/3xui-hub.conf"
+    fi
+}
+
+nginx_node_ws_applied() {
+    local CONF
+    CONF="$(nginx_conf_path)"
+    [ -f "$CONF" ] || return 0   # 没这份 conf 就不是本脚本该管的场景，视为无需处理
+    grep -q '/node-ws' "$CONF" 2>/dev/null && grep -q 'node-install' "$CONF" 2>/dev/null
+}
+
+# 补 nginx 反代（给老版本升级上来的机器用；幂等，可反复执行）
+cmd_fix_nginx() {
+    echo -e "${CYAN}检查 nginx 节点资产 location...${NC}"
+    if nginx_node_ws_applied; then
+        echo -e "Nginx 反代: ${GREEN}已就位${NC}（无需处理）"
+        return 0
+    fi
+    ensure_nginx_node_ws
+    if nginx_node_ws_applied; then
+        echo -e "Nginx 反代: ${GREEN}已补全${NC}"
+        return 0
+    fi
+    echo -e "${RED}Nginx 反代: 未能补全${NC}，请检查 $(nginx_conf_path) 的写入权限或手工添加"
+    return 1
 }
 
 # 修改管理员账号
@@ -1026,6 +1070,7 @@ run_cmd() {
         backup)       cmd_backup ;;
         log)          cmd_log ;;
         restart)      cmd_restart ;;
+        fix-nginx)    cmd_fix_nginx ;;
         ssl)          cmd_ssl ;;
         domain)       shift; cmd_domain "$@" ;;
         # 内部命令：只给 install.sh 安装期调用，让安装脚本和 3hub 复用同一份 cron 保障
