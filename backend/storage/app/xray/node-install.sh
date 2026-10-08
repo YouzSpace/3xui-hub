@@ -42,7 +42,9 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # ── 依赖检查 ──────────────────────────────────────────────
-for dep in curl unzip sha256sum; do
+# python3 必须在此检查：脚本有 4 处用它解析面板清单（下方 manifest 解析），
+# 缺失时不会报错退出，而是产出空值后继续跑，报出与真实原因无关的错。
+for dep in curl unzip sha256sum python3; do
   if ! command -v "$dep" >/dev/null 2>&1; then
     echo "缺依赖: $dep（Debian/Ubuntu: apt-get install -y $dep）"
     exit 1
