@@ -481,6 +481,9 @@ class PaymentService
 
         if (!$user || !$plan) return;
 
+        // 付费重置流量 → 恢复该用户所有自动通知（旧防重标记全部作废）
+        MailNotifyService::restoreReminders($user);
+
         // 加总流量（3x-ui 总流量 + 月流量额度）
         $addTraffic = $plan->monthly_traffic ?? 0;
         $user->forceFill([

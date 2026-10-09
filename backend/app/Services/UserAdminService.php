@@ -29,6 +29,10 @@ class UserAdminService
      */
     public function applyPlan(User $user): void
     {
+        // 购买/续费/管理员改套餐 → 恢复该用户所有自动通知：
+        // 递增时代号让旧的「已发过」标记全部作废，下个周期再触发条件会重新提醒。
+        MailNotifyService::restoreReminders($user);
+
         $plan = $user->plan;
 
         if (!$plan) {
@@ -302,6 +306,9 @@ class UserAdminService
      */
     public function renew(User $user): void
     {
+        // 续费 → 恢复该用户所有自动通知（旧防重标记全部作废）
+        MailNotifyService::restoreReminders($user);
+
         $user->forceFill([
             'traffic_used' => 0,
             'monthly_traffic_used' => 0,
@@ -317,6 +324,9 @@ class UserAdminService
      */
     public function resetTraffic(User $user): void
     {
+        // 重置流量 → 恢复该用户所有自动通知（旧防重标记全部作废）
+        MailNotifyService::restoreReminders($user);
+
         if ($user->isPeriodPlan()) {
             $addTraffic = $user->monthly_traffic_limit ?? 0;
             $user->forceFill([
