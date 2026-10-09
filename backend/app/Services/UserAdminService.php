@@ -110,7 +110,15 @@ class UserAdminService
             'enabled' => (bool) ($data['enabled'] ?? true),
         ]);
 
-        $this->provisionClient($user);
+        // 建号改为异步（与注册路径 AuthController 一致）：按「用户 × enabled 节点」派发 Job，
+        // 后台点「创建用户」不再等 3x-ui 面板的串行 HTTPS —— 同步版 provisionClient 会把
+        // 「节点数 × 入站数」次请求全压在这次 HTTP 请求里，3x-ui 节点越多越慢。
+        // 派发失败与原来同步失败同语义：只记日志，用户已经建出来了（可依赖失败重试/手动同步）。
+        try {
+            $this->dispatchProvisionClient($user);
+        } catch (\Throwable $e) {
+            report($e);
+        }
 
         return $user;
     }

@@ -6,6 +6,9 @@ use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\SiteConfig;
 use App\Models\User;
+use App\Services\ThreeXUi\ThreeXUiClient;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\Utils;
 use Illuminate\Support\Str;
 
 /**
@@ -15,8 +18,10 @@ use Illuminate\Support\Str;
  */
 class SubscriptionService
 {
-    public function __construct(private NodeDriverFactory $driverFactory)
-    {
+    public function __construct(
+        private NodeDriverFactory $driverFactory,
+        private ThreeXUiClientFactory $clientFactory,
+    ) {
     }
 
     /**
@@ -46,6 +51,10 @@ class SubscriptionService
     /**
      * 获取用户的所有链接 = 本地节点（按套餐「含本地」开关）+ 第三方节点（按套餐勾选 + 手动开通）。
      * 第三方链接已统一改名为「地区+序号」（保密，不暴露机场原名）。
+     *
+     * 性能：3x-ui 节点是「每个节点 2 次 HTTP」（一次 listInbounds 拿端口 + 一次取链接），
+     * Bearer 模式的节点整批并发发出（见 fetchNodeLinksConcurrently）；xray 节点本地拼链接零 HTTP；
+     * cookie 模式节点要维护登录会话，退回逐个串行（与拆分前一致）。
      */
     private function getLinks(User $user): array
     {
@@ -71,54 +80,48 @@ class SubscriptionService
                 })
                 ->get();
 
+            // 先分组，再按「能否无状态并发」决定走并发还是串行
+            $concurrent = [];
+            $sequential = [];
 
             foreach ($nodes as $node) {
+                if ($node->isXray()) {
+                    $sequential[] = ['node' => $node, 'inboundIds' => []];
+                    continue;
+                }
+
                 $inboundIds = $node->inbounds()
                     ->where('protocol', $user->protocol)
                     ->pluck('inbound_id')
                     ->toArray();
 
                 // 3x-ui 节点维持原逻辑：没有该协议入站就跳过
-                if (! $node->isXray() && empty($inboundIds)) {
+                if (empty($inboundIds)) {
                     continue;
                 }
 
-                try {
-                    $driver = $this->driverFactory->make($node);
+                $entry = ['node' => $node, 'inboundIds' => $inboundIds];
 
-                    if ($node->isXray()) {
-                        foreach ($driver->getClientLinks($email) as $link) {
-                            if (is_string($link) && $link !== '' && !in_array($link, $links, true)) {
-                                $links[] = $link;
-                            }
-                        }
+                if ($this->canFetchConcurrently($node)) {
+                    $concurrent[] = $entry;
+                } else {
+                    $sequential[] = $entry;
+                }
+            }
 
-                        continue;
+            foreach (array_chunk($concurrent, $this->concurrency()) as $batch) {
+                foreach ($this->fetchNodeLinksConcurrently($batch, $email) as $link) {
+                    if (! in_array($link, $links, true)) {
+                        $links[] = $link;
                     }
+                }
+            }
 
-                    // 取各配置入站的端口，用于过滤
-                    $configuredPorts = [];
-                    foreach ($inboundIds as $inboundId) {
-                        $inbound = $driver->getInbound($inboundId);
-                        if (is_array($inbound) && isset($inbound['port'])) {
-                            $configuredPorts[] = (int) $inbound['port'];
-                        }
+            foreach ($sequential as $entry) {
+                foreach ($this->fetchNodeLinks($entry['node'], $entry['inboundIds'], $email) as $link) {
+                    if (! in_array($link, $links, true)) {
+                        $links[] = $link;
                     }
-
-                    foreach ($driver->getClientLinks($email) as $link) {
-                        if (!is_string($link) || $link === '') {
-                            continue;
-                        }
-                        // 只保留配置了的入站端口
-                        if (!empty($configuredPorts) && !$this->linkMatchesAnyPort($link, $configuredPorts)) {
-                            continue;
-                        }
-                        if (!in_array($link, $links, true)) {
-                            $links[] = $link;
-                        }
-                    }
-                } catch (\Throwable $e) {
-                    report($e);
                 }
             }
         }
@@ -132,6 +135,177 @@ class SubscriptionService
         }
 
         return $links;
+    }
+
+    /**
+     * 单节点取链接（串行路径：xray 节点 + cookie 模式 3x-ui 节点）。
+     * 单节点失败只 report()，不影响其它节点（与拆分前一致）。
+     *
+     * @param  array  $inboundIds  该节点上协议匹配的入站 id（xray 传空）
+     */
+    private function fetchNodeLinks(Node $node, array $inboundIds, string $email): array
+    {
+        try {
+            $driver = $this->driverFactory->make($node);
+
+            if ($node->isXray()) {
+                return $this->sanitizeLinks($driver->getClientLinks($email));
+            }
+
+            // 一次 listInbounds() 拿回该节点全部入站，在内存里取端口过滤 —— 原来是「每个入站一次
+            // getInbound」，一个节点 1+M 次 HTTP。改成一次请求，且保持实时（面板改端口立即生效，
+            // 不引入 node_inbounds 端口缓存那样会与面板漂移的中间状态）。
+            return $this->filterNodeLinks($driver->getClientLinks($email), $inboundIds, $driver->listInbounds());
+        } catch (\Throwable $e) {
+            report($e);
+
+            return [];
+        }
+    }
+
+    /**
+     * 一批节点并发取链接（Bearer 模式）：整批先全部发出去，再统一等结果。
+     *
+     * 每节点两条请求（入站列表 + 该用户链接）用一个 promise 合并，节点之间共用一个传输层
+     * （同一个 curl_multi 事件循环），所以是「批次并发」而不是「逐节点等待」。
+     * 单节点失败只 report()，不影响同批其它节点。
+     *
+     * @param  list<array{node:Node,inboundIds:array}>  $batch
+     */
+    private function fetchNodeLinksConcurrently(array $batch, string $email): array
+    {
+        $promises = [];
+        // 整批共用一个传输层：各节点各建一个 client 就各有一个 curl_multi 句柄，
+        // 逐个 wait 会变成表面并发、实际串行（与 HealthCheckService 同因）
+        $transport = ThreeXUiClient::newSharedTransport();
+
+        foreach ($batch as $entry) {
+            $node = $entry['node'];
+
+            try {
+                $client = $this->clientFactory->forNode($node);
+                $client->useSharedTransport($transport);
+
+                $promises[$node->id] = Utils::all([
+                    $client->listInboundsAsync(),
+                    $client->clientLinksAsync($email),
+                ]);
+            } catch (\Throwable $e) {
+                // 连 client 都建不出来：该节点记一次，不影响本批其它节点
+                report($e);
+            }
+        }
+
+        if ($promises === []) {
+            return [];
+        }
+
+        $settled = Utils::settle($promises)->wait();
+        $out = [];
+
+        foreach ($batch as $entry) {
+            $node = $entry['node'];
+            $outcome = $settled[$node->id] ?? null;
+            if ($outcome === null) {
+                continue; // 上面 catch 里已经 report 过
+            }
+
+            if (($outcome['state'] ?? null) !== PromiseInterface::FULFILLED) {
+                $reason = $outcome['reason'] ?? null;
+                report($reason instanceof \Throwable ? $reason : new \RuntimeException('节点订阅拉取失败：node#' . $node->id));
+
+                continue;
+            }
+
+            [$inbounds, $rawLinks] = $outcome['value'];
+
+            foreach ($this->filterNodeLinks($rawLinks, $entry['inboundIds'], $inbounds) as $link) {
+                if (! in_array($link, $out, true)) {
+                    $out[] = $link;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * 按「套餐协议对应入站」过滤节点返回的链接（保留链接的端口过滤语义）。
+     *
+     * 端口来自一次性拉回的全量入站列表：与拆分前逐入站 getInbound() 同口径 ——
+     * 入站已被面板删除时该 id 取不到端口，与 getInbound() 返回 null 时一致。
+     *
+     * @param  array  $rawLinks  节点返回的原始链接
+     * @param  array  $inboundIds  该节点上协议匹配的入站 id
+     * @param  array  $inbounds  listInbounds() 的全量入站
+     */
+    private function filterNodeLinks(array $rawLinks, array $inboundIds, array $inbounds): array
+    {
+        $wanted = [];
+        foreach ($inboundIds as $id) {
+            $wanted[(string) $id] = true;
+        }
+
+        $configuredPorts = [];
+        foreach ($inbounds as $inbound) {
+            if (! is_array($inbound) || ! isset($inbound['id'], $inbound['port'])) {
+                continue;
+            }
+            if (! isset($wanted[(string) $inbound['id']])) {
+                continue;
+            }
+            $configuredPorts[] = (int) $inbound['port'];
+        }
+
+        $out = [];
+        foreach ($rawLinks as $link) {
+            if (! is_string($link) || $link === '') {
+                continue;
+            }
+            // 只保留配置了的入站端口
+            if (! empty($configuredPorts) && ! $this->linkMatchesAnyPort($link, $configuredPorts)) {
+                continue;
+            }
+            if (! in_array($link, $out, true)) {
+                $out[] = $link;
+            }
+        }
+
+        return $out;
+    }
+
+    /** 过滤空串、去重（xray 节点本地拼链接用）。 */
+    private function sanitizeLinks(array $rawLinks): array
+    {
+        $out = [];
+        foreach ($rawLinks as $link) {
+            if (is_string($link) && $link !== '' && ! in_array($link, $out, true)) {
+                $out[] = $link;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * 能否走并发组：3x-ui 节点 + api_key 非空（Bearer 无状态）。
+     * cookie 模式要维护登录会话（/login + CSRF），并发不安全，退回串行。
+     */
+    private function canFetchConcurrently(Node $node): bool
+    {
+        try {
+            return ! $node->isXray() && (string) ($node->api_key ?? '') !== '';
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /** 并发上限：config 缺省 10；<= 0 按 1 处理（退化为每批一个，仍分批但不并发）。 */
+    private function concurrency(): int
+    {
+        $concurrency = (int) config('panel.subscription_concurrency', 10);
+
+        return $concurrency > 0 ? $concurrency : 1;
     }
 
     /**

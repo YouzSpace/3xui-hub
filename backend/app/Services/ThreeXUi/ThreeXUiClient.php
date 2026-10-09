@@ -391,6 +391,95 @@ class ThreeXUiClient
     }
 
     /**
+     * listInbounds() 的异步版（resolve 出 inbound 数组）。
+     *
+     * 供订阅生成在同进程内并发拉取多个节点（见 SubscriptionService::fetchNodeLinksConcurrently）。
+     * **仅支持 api_key（Bearer）模式**：无状态、只加 Authorization 头，可安全并发；
+     * cookie 模式要维护登录会话（/login + CSRF），调用方应回退同步 listInbounds()。
+     * api_key 为空时返回 rejected promise。
+     */
+    public function listInboundsAsync(): PromiseInterface
+    {
+        return $this->getAsyncJson(
+            self::EP_INBOUNDS_LIST,
+            fn ($obj) => is_array($obj) ? $obj : [],
+        );
+    }
+
+    /**
+     * getClientLinks() 的异步版，语义与同步版逐条对齐：
+     * 「该 email 在此面板不存在」→ resolve 成空数组（不抛）；其它错误 reject。
+     */
+    public function clientLinksAsync(string $email): PromiseInterface
+    {
+        return $this->getAsyncJson(
+            self::EP_CLIENTS_LINKS . rawurlencode($email),
+            fn ($obj) => is_array($obj) ? array_values(array_filter($obj, 'is_string')) : [],
+            $email,
+        );
+    }
+
+    /**
+     * 异步 GET + {success,obj} 解包（Bearer 模式专用）。
+     *
+     * 判定口径与同步 request() 完全一致：非 JSON / 缺 success 键 / success=false 都算失败；
+     * 区别只是「等这一次往返」换成 promise，由调用方统一 settle，避免逐节点串行等待。
+     * 传输层异常统一包成 ThreeXUiException（文案与同步版一致），业务层只需认一种异常。
+     *
+     * @param  callable  $map  把 obj 映射成调用方要的值
+     * @param  ?string  $notFoundEmail  传入时，把该 email 的 not-found 降级为 []（同 getClientLinks）
+     */
+    private function getAsyncJson(string $path, callable $map, ?string $notFoundEmail = null): PromiseInterface
+    {
+        if (! $this->apiKey) {
+            return Create::rejectionFor(
+                new ThreeXUiException('异步请求仅支持 api_key（Bearer）模式，cookie 模式请用同步方法')
+            );
+        }
+
+        $promise = $this->client->getAsync($this->baseUrl . $path, [
+            'headers' => [
+                'Accept' => 'application/json',
+                'Authorization' => 'Bearer ' . $this->apiKey,
+            ],
+            'verify' => $this->verify,
+            'timeout' => self::panelConfig('api_timeout', 15.0),
+            'connect_timeout' => self::panelConfig('connect_timeout', 5.0),
+        ]);
+
+        return $promise->then(function ($response) use ($path, $map) {
+            $body = (string) $response->getBody();
+            $json = json_decode($body, true);
+
+            if (! is_array($json) || ! array_key_exists('success', $json)) {
+                throw new ThreeXUiException('invalid 3x-ui response: ' . substr($body, 0, 200));
+            }
+
+            if (! $json['success']) {
+                throw new ThreeXUiException($json['msg'] ?? '3x-ui request failed');
+            }
+
+            return $map($json['obj'] ?? null);
+        })->otherwise(function (\Throwable $e) use ($notFoundEmail) {
+            // not-found 是合法状态（节点重接 / 初始化未建号期间就是缺 client）：与同步版一样降级为空
+            if ($notFoundEmail !== null && $e instanceof ThreeXUiException && self::isClientNotFound($e)) {
+                self::debugLog('3x-ui client 不存在，跳过其订阅链接', [
+                    'email' => $notFoundEmail,
+                    'msg' => $e->getMessage(),
+                ]);
+
+                return [];
+            }
+
+            if ($e instanceof TransferException) {
+                throw new ThreeXUiException('3x-ui request failed: ' . $e->getMessage(), 0, $e);
+            }
+
+            throw $e;
+        });
+    }
+
+    /**
      * 一次拉取所有 inbound 的 client 流量统计。
      * 返回 [inboundId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
      *

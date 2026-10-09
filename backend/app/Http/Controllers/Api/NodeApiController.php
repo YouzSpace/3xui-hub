@@ -11,6 +11,8 @@ use App\Services\TrafficSyncService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 /**
  * xray 节点 API（/api/node-api/*，node.auth 中间件按节点密钥鉴权）。
@@ -27,6 +29,9 @@ class NodeApiController extends Controller
 {
     /** execute 长轮询挂起上限（秒）：保持在常见 PHP max_execution_time(30s) 之内。 */
     private const EXECUTE_WAIT_SECONDS = 20;
+
+    /** push 单次接受的流量用户数上限（与 NodeWsServer::MAX_STATS_PER_REPORT 一致）。 */
+    private const MAX_STATS_PER_PUSH = 2000;
 
     public function __construct(
         private readonly XrayConfigService $config,
@@ -116,8 +121,26 @@ class NodeApiController extends Controller
     {
         $node = $this->node($request);
 
+        // 超过单次上限时接口本来就会 422，但错误信息只是字段校验文案，看不懂「流量没落账」。
+        // 这里显式拦一道：写一条（节点级节流的）error 日志 + 返回人话错误，让问题可见。
+        $rawStats = $request->input('stats');
+        if (is_array($rawStats) && count($rawStats) > self::MAX_STATS_PER_PUSH) {
+            if (Cache::add('node-api-push-overflow:' . $node->id, 1, 60)) {
+                Log::error(
+                    '[node-api] node#' . $node->id . ' push 上报 ' . count($rawStats) . ' 条流量，超过单次上限 '
+                    . self::MAX_STATS_PER_PUSH . '，已拒绝：这些流量不会落账（需改为只上报有变化的用户）'
+                );
+            }
+
+            return response()->json([
+                'code' => 42201,
+                'msg' => 'stats 超过单次上限 ' . self::MAX_STATS_PER_PUSH . ' 条，请只上报有变化的用户',
+                'data' => null,
+            ], 422);
+        }
+
         $data = $request->validate([
-            'stats' => ['required', 'array', 'max:2000'],
+            'stats' => ['required', 'array', 'max:' . self::MAX_STATS_PER_PUSH],
             'stats.*.up' => ['nullable', 'integer', 'min:0'],
             'stats.*.down' => ['nullable', 'integer', 'min:0'],
         ]);

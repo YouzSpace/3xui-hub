@@ -127,12 +127,118 @@ check_port() {
     return 0
 }
 
+# 探测本机 php-fpm 池配置与服务名
+#
+# 必须能独立探测：install_php 在「PHP 8.4 已安装」时会早退，重跑安装脚本（更新流程）
+# 就走那条路 —— 不能因为 PHP 已装就跳过并发调优。
+detect_fpm_target() {
+    local pair conf service
+    for pair in \
+        "/etc/php/8.4/fpm/pool.d/www.conf:php8.4-fpm" \
+        "/etc/php-fpm.d/www.conf:php-fpm" \
+        "/etc/opt/remi/php84/php-fpm.d/www.conf:php84-php-fpm"
+    do
+        conf="${pair%%:*}"; service="${pair##*:}"
+        if [ -f "$conf" ]; then
+            FPM_CONF="$conf"
+            FPM_SERVICE="$service"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# 按机器规格设置 php-fpm 并发（pm.max_children）
+#
+# 为什么必须显式设：发行版默认 www.conf 是 pm.max_children=5（Debian/Ubuntu 的
+# /etc/php/8.4/fpm/pool.d/www.conf 就是 5），面板一有并发（拉订阅 + 后台操作 + 队列回调）
+# 请求就直接排队，这是用户量上来后第一个卡的环节。Docker 版 www.conf 里显式写了 50。
+#
+# 公式与后端 `php artisan fpm:tune` 保持一致：内存×50% ÷ 单进程 50MB，再与 核数×4 取小，
+# 夹到 10~100。改前备份，语法校验不过或 reload 失败立即回滚 —— 改错会让面板自己都打不开。
+tune_php_fpm() {
+    local conf="${1:-}" service="${2:-php-fpm}"
+
+    if [ -z "$conf" ] || [ ! -f "$conf" ]; then
+        warn "未找到 php-fpm 配置（${conf:-未指定}），跳过并发调优"
+        return 0
+    fi
+
+    # 单进程估算 50MB：安装时 php-fpm 刚起来量不到真实 RSS，用固定估值（与后端默认一致）
+    local mem_mb cpus by_mem by_cpu children
+    mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    cpus=$(nproc 2>/dev/null || echo 1)
+    by_mem=$(( mem_mb / 2 / 50 ))
+    by_cpu=$(( cpus * 4 ))
+    children=$by_mem
+    if [ "$by_cpu" -lt "$children" ]; then children=$by_cpu; fi
+    if [ "$children" -lt 10 ]; then children=10; fi
+    if [ "$children" -gt 100 ]; then children=100; fi
+
+    local start min_spare max_spare
+    start=$(( children / 4 )); if [ "$start" -lt 2 ]; then start=2; fi
+    min_spare=$(( children / 8 )); if [ "$min_spare" -lt 1 ]; then min_spare=1; fi
+    max_spare=$children
+
+    local bak="${conf}.bak.$(date +%Y%m%d%H%M%S)"
+    if ! cp -a "$conf" "$bak"; then
+        warn "备份 $conf 失败，跳过并发调优"
+        return 0
+    fi
+
+    # pm = dynamic 下各档位必须一起改：max_spare_servers 大于 max_children 会让 php-fpm 起不来
+    local kv k v
+    for kv in \
+        "pm = dynamic" \
+        "pm.max_children = ${children}" \
+        "pm.start_servers = ${start}" \
+        "pm.min_spare_servers = ${min_spare}" \
+        "pm.max_spare_servers = ${max_spare}"
+    do
+        k="${kv%%=*}"; k="${k% }"
+        v="${kv#*=}"; v="${v# }"
+        # 已存在（可能被注释）→ 改写；完全没有 → 追加到 [www] 段首
+        if grep -qE "^;?[[:space:]]*$(printf '%s' "$k" | sed 's/\./\\./g')[[:space:]]*=" "$conf"; then
+            sed -i -E "s|^;?[[:space:]]*$(printf '%s' "$k" | sed 's/\./\\./g')[[:space:]]*=.*|${k} = ${v}|" "$conf"
+        else
+            sed -i "/^\[www\]/a ${k} = ${v}" "$conf"
+        fi
+    done
+
+    # 语法校验：`php-fpm -t` 通过才 reload。校验不过立即回滚，保持原配置可用。
+    if command -v php-fpm >/dev/null 2>&1; then
+        if ! php-fpm -t -y "$conf" >/dev/null 2>&1; then
+            warn "php-fpm 配置校验失败，已回滚（保持原配置）"
+            cp -a "$bak" "$conf"
+            rm -f "$bak"
+            return 0
+        fi
+    fi
+
+    if systemctl reload "$service" >/dev/null 2>&1 || systemctl restart "$service" >/dev/null 2>&1; then
+        success "php-fpm 并发已设为 ${children}（内存 ${mem_mb}MB / ${cpus} 核，原配置备份：${bak}）"
+    else
+        warn "php-fpm 重载失败，已回滚到原配置"
+        cp -a "$bak" "$conf"
+        rm -f "$bak"
+        return 0
+    fi
+
+    # 只保留最近 3 份备份，避免反复执行 install/update 时无限堆积
+    ls -1t "${conf}".bak.* 2>/dev/null | tail -n +4 | xargs -r rm -f 2>/dev/null || true
+
+    return 0
+}
+
 # 安装 PHP 8.4
 install_php() {
     if command -v php &>/dev/null; then
         PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
         if [ "$PHP_VER" = "8.4" ]; then
             success "PHP 8.4 已安装"
+            # 已装机器也要调优：重跑 install.sh（更新流程）不能因为 PHP 已装就跳过
+            detect_fpm_target
+            tune_php_fpm "${FPM_CONF:-}" "${FPM_SERVICE:-php-fpm}"
             return 0
         else
             warn "当前 PHP 版本: $PHP_VER，需要 8.4，将重新安装"
@@ -216,8 +322,17 @@ install_php() {
                 warn "apt-get update 仍有源报错，继续尝试安装"
             fi
             apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl sudo cron
+            # Debian/Ubuntu 的 php-fpm 池配置在这里（发行版默认 pm.max_children=5，必须显式调优）
+            FPM_SERVICE="php8.4-fpm"
+            FPM_CONF="/etc/php/8.4/fpm/pool.d/www.conf"
             ;;
     esac
+
+    # php-fpm 并发调优（两种发行版共用；未找到配置时函数内部只告警不中断）
+    if [ -z "${FPM_CONF:-}" ]; then
+        detect_fpm_target   # 兜底探测：兼容重跑安装 / 其它发行版布局
+    fi
+    tune_php_fpm "${FPM_CONF:-}" "${FPM_SERVICE:-php-fpm}"
 
     # 配置 PHP（禁用 putenv）
     PHP_INI=$(php --ini | grep "Loaded Configuration" | awk '{print $NF}')

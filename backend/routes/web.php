@@ -86,6 +86,7 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::put('/nodes/{node}', [AdminNodeController::class, 'update']);
     Route::delete('/nodes/{node}', [AdminNodeController::class, 'destroy']);
     Route::post('/nodes/{node}/test', [AdminNodeController::class, 'test']);
+    Route::post('/nodes/{node}/upgrade-agent', [AdminNodeController::class, 'upgradeAgent']);
     Route::post('/nodes/probe-inbounds', [AdminNodeController::class, 'probeInbounds']);
 
     // xray 节点配置能力（入站 / 出站 / 路由 / WARP；仅 driver_type=xray 的节点可用，控制器内校验）

@@ -29,6 +29,9 @@ class NodeApiCommand extends Model
 
     public const ACTION_REMOVE_USER = 'rmu';
 
+    /** agent 自升级（面板入队 → 节点下载校验后替换自己，见 agent/upgrade.go）。 */
+    public const ACTION_UPGRADE_AGENT = 'upgrade';
+
     public const STATUS_PENDING = 'pending';
 
     public const STATUS_ACKNOWLEDGED = 'acknowledged';

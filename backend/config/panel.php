@@ -32,6 +32,57 @@ return [
     'healthcheck_concurrency' => (int) env('PANEL_HEALTHCHECK_CONCURRENCY', 10),
 
     /*
+     | 订阅生成的并发数：同时拉取的 3x-ui 节点数上限（同进程 Guzzle 并发，默认 10）。
+     |
+     | 每个节点固定 2 次请求（listInbounds 拿端口 + 取该用户链接），之前是逐节点串行、
+     | 且每个入站再单独 getInbound 一次 —— 节点一多，用户等订阅的时间就是各节点耗时之和。
+     | 只有 api_key（Bearer）节点走并发；cookie 模式要维护登录会话，仍逐个串行。
+     | <= 0 视为 1（退化成每批一个，不并发）。
+     */
+    'subscription_concurrency' => (int) env('PANEL_SUBSCRIPTION_CONCURRENCY', 10),
+
+    /*
+     | agent 资产清单（manifest.json）路径。
+     |
+     | 空 = 用面板自带的 storage/app/xray/manifest.json（随仓库分发，含 agent 版本 + sha256）。
+     | 只有需要把清单放到别处（多面板共用一份资产 / 测试）时才覆盖。
+     */
+    'agent_manifest_path' => (string) env('PANEL_AGENT_MANIFEST_PATH', ''),
+
+    /*
+     | php-fpm 并发（pm.max_children）调优参数。
+     |
+     | 用途：`php artisan fpm:tune`（已装机器一键调，不重装）+ install.sh 的 tune_php_fpm（新装机器）。
+     | 发行版默认 www.conf 是 pm.max_children=5，面板一有并发就排队，是用户量上来后第一个卡的环节。
+     |
+     | 公式：内存 × memory_ratio ÷ process_memory_mb，与 核数 × cpu_multiplier 取小，夹到 [min,max]。
+     | 单进程内存用固定估值：安装时 php-fpm 刚起来量不到真实 RSS，且这个值只用于定一个安全起点。
+     |
+     | ⚠️ install.sh 里有一份等价的 shell 实现（安装早期 artisan 还不可用），改公式时两边一起改。
+     */
+    'fpm' => [
+        'process_memory_mb' => (int) env('PANEL_FPM_PROCESS_MEMORY_MB', 50),
+        'memory_ratio'      => (float) env('PANEL_FPM_MEMORY_RATIO', 0.5),
+        'cpu_multiplier'    => (int) env('PANEL_FPM_CPU_MULTIPLIER', 4),
+        'min_children'      => (int) env('PANEL_FPM_MIN_CHILDREN', 10),
+        'max_children'      => (int) env('PANEL_FPM_MAX_CHILDREN', 100),
+
+        // 预制档位：后台若做「档位」按钮，只允许执行这些固定值（不做自由输入）
+        'presets' => [
+            'small'  => 10,
+            'medium' => 40,
+            'large'  => 100,
+        ],
+
+        // 池配置 ↔ systemd 服务名（按顺序探测，取第一个存在的）
+        'targets' => [
+            ['conf' => '/etc/php/8.4/fpm/pool.d/www.conf', 'service' => 'php8.4-fpm'],
+            ['conf' => '/etc/php-fpm.d/www.conf', 'service' => 'php-fpm'],
+            ['conf' => '/etc/opt/remi/php84/php-fpm.d/www.conf', 'service' => 'php84-php-fpm'],
+        ],
+    ],
+
+    /*
      | cookie 模式登录态缓存（秒）。
      |
      | 未配 api_key 的节点每次操作都要先 POST /login + GET /csrf-token；Web 请求与队列

@@ -8,6 +8,7 @@ use App\Models\AsyncTask;
 use App\Models\Node;
 use App\Models\NodeInbound;
 use App\Models\SiteConfig;
+use App\Services\AgentUpgradeService;
 use App\Services\NodeCleanupService;
 use App\Services\NodeInboundSyncService;
 use App\Services\TrafficSyncService;
@@ -242,6 +243,34 @@ class NodeController extends Controller
             'mem' => $health['mem'] ?? null,
             'xray_state' => $health['xrayState'] ?? null,
         ]);
+    }
+
+    /**
+     * 下发 agent 自升级指令（节点侧下载 → sha256 校验 → 原子替换 → 重启 agent）。
+     *
+     * 走现成的指令通道（WS 主通道 / HTTP 长轮询）；节点离线也会入队，等它上线取走即执行。
+     *
+     * 这里是**管理员显式点击**，所以强制下发（force）：面板上换了二进制但忘了改版本号时，
+     * 只靠版本比对会漏掉这台节点，人工按钮是兜底入口。不会白折腾 —— agent 收到指令后先比
+     * 本地二进制的 sha256，与面板给的相同就直接回「已是同一份」，不下载、不替换、不重启。
+     * 自动路径（3hub update / node:upgrade-agent）不带 force：没改过就不下发。
+     */
+    public function upgradeAgent(Node $node, AgentUpgradeService $upgrades): \Illuminate\Http\JsonResponse
+    {
+        if (! $node->isXray()) {
+            return $this->error('该节点不是 xray 节点（没有 agent）', 400);
+        }
+
+        $result = $upgrades->enqueue($node, true);
+        if (! $result['queued']) {
+            return $this->error($result['reason'], 400);
+        }
+
+        return $this->success([
+            'queued' => true,
+            'version' => $result['version'],
+            'reported_version' => $upgrades->reportedVersion($node),
+        ], '已下发升级指令（节点取走后自动下载校验替换并重启）');
     }
 
     /**
@@ -505,6 +534,11 @@ class NodeController extends Controller
             $data['agent'] = is_array($agent) ? $agent : null;
             $data['ws_connected'] = (bool) ($n->driver_config['ws']['connected'] ?? false);
             $data['install_command'] = $n->installCommand((string) config('app.url'));
+            // agent 自升级：节点上报的版本 vs 面板上这份（manifest），以及是否有在途升级指令
+            $upgrades = app(AgentUpgradeService::class);
+            $data['agent_version'] = $upgrades->reportedVersion($n);
+            $data['agent_latest'] = $upgrades->latestVersion();
+            $data['agent_upgrade_pending'] = $upgrades->hasInFlight($n);
         }
 
         return $data;

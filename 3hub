@@ -513,6 +513,19 @@ cmd_check_update() {
     fi
 }
 
+# php-fpm 并发调优（pm.max_children）
+#
+# 发行版默认 www.conf 是 5（Debian/Ubuntu），面板一有并发就排队，是用户量上来后第一个卡的环节。
+# 必须 root：要改 /etc/php/*/fpm/pool.d/www.conf 并 reload 系统服务，不能走 run_artisan 的降权
+#（那个是给「会写 storage/ 属主」的 artisan 命令用的）。
+# 幂等：当前值已等于推荐值时不改配置、不 reload。
+cmd_fpm_tune() {
+    check_install
+    cd "$BACKEND_DIR" || return 1
+
+    php artisan fpm:tune "$@"
+}
+
 # 更新系统
 cmd_update() {
     check_install
@@ -573,6 +586,22 @@ cmd_update() {
 
     # 复制前端文件
     cp -r "$INSTALL_DIR/frontend/dist/"* "$BACKEND_DIR/public/" 2>/dev/null || true
+
+    # php-fpm 并发（pm.max_children）：发行版默认 5，用户量上来就排队，是第一个卡的地方。
+    # 必须走子进程调「刚更新到盘上」的脚本：bash 启动时已把旧函数读进内存，直接调函数
+    # 在老版本升级的那一次跑不到（同 ensure_nginx_node_ws 那个坑）。
+    echo -e "${CYAN}检查 php-fpm 并发...${NC}"
+    if ! bash "$INSTALL_DIR/3hub" __fpm-tune; then
+        echo -e "${YELLOW}php-fpm 并发未调整（可手动执行: cd $BACKEND_DIR && php artisan fpm:tune）${NC}"
+    fi
+
+    # agent 自升级：把面板上这份 agent 二进制推给节点（节点自己下载 → sha256 校验 → 原子替换 →
+    # 重启 agent）。离线节点也会入队，等它上线取走即执行 —— 不用登录每台 VPS。
+    # 幂等：节点已上报同版本 / 已有在途指令 → 跳过，不会每次 update 都重启节点。
+    echo -e "${CYAN}检查节点 agent 版本...${NC}"
+    if ! run_artisan node:upgrade-agent; then
+        echo -e "${YELLOW}agent 升级指令未下发（可手动执行: cd $BACKEND_DIR && php artisan node:upgrade-agent）${NC}"
+    fi
 
     # 重启 PHP-FPM
     systemctl reload php8.4-fpm 2>/dev/null || pkill -USR2 php-fpm 2>/dev/null || true
@@ -1076,6 +1105,7 @@ run_cmd() {
         # 内部命令：只给 install.sh 安装期调用，让安装脚本和 3hub 复用同一份 cron 保障
         # 逻辑（旧版两处各写一份，更新路径那份没人管，线上丢过条目）。不列进帮助菜单。
         __ensure-cron) ensure_artisan_cron ;;
+        __fpm-tune)    shift; cmd_fpm_tune "$@" ;;
         help|--help|-h) show_help ;;
         *)
             echo -e "${RED}未知命令: $CMD${NC}"

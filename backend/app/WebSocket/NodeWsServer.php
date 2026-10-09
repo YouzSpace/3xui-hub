@@ -50,6 +50,12 @@ class NodeWsServer
     /** 单次推送的指令条数上限（与 HTTP execute 一致）。 */
     private const MAX_COMMANDS_PER_PUSH = 5;
 
+    /** 单次上报的流量用户数上限（与 HTTP /push 的 max 校验一致）。 */
+    private const MAX_STATS_PER_REPORT = 2000;
+
+    /** 超限告警的节流间隔（秒）：agent 每 5s 推一轮，不节流会把日志刷爆。 */
+    private const OVERFLOW_LOG_INTERVAL = 60;
+
     private Worker $worker;
 
     public function __construct(string $listen)
@@ -257,19 +263,33 @@ class NodeWsServer
 
         // 1) 用户流量落账
         $stats = $data['stats'] ?? null;
-        if (is_array($stats) && $stats !== [] && count($stats) <= 2000) {
-            $clean = [];
-            foreach ($stats as $email => $pair) {
-                if (! is_string($email) || ! is_array($pair)) {
-                    continue;
+        if (is_array($stats) && $stats !== []) {
+            if (count($stats) > self::MAX_STATS_PER_REPORT) {
+                // 超限整包丢弃是既有的防护（避免一条消息把进程内存吃爆），但绝不能静默：
+                // 用户数超过上限后该节点流量完全不落账，没有日志就无从察觉。
+                // agent 每 5s 推一轮，这里按连接节流，避免刷爆日志。
+                $lastLoggedAt = (int) ($conn->context->statsOverflowLoggedAt ?? 0);
+                if (time() - $lastLoggedAt >= self::OVERFLOW_LOG_INTERVAL) {
+                    Log::error(
+                        '[node-ws] node#' . $nodeId . ' 上报流量 ' . count($stats) . ' 条，超过单次上限 '
+                        . self::MAX_STATS_PER_REPORT . '，整包已丢弃：该节点流量不会落账（需改为只上报有变化的用户）'
+                    );
+                    $conn->context->statsOverflowLoggedAt = time();
                 }
-                $clean[$email] = [
-                    'up' => (int) ($pair['up'] ?? 0),
-                    'down' => (int) ($pair['down'] ?? 0),
-                ];
-            }
-            if ($clean !== []) {
-                app(TrafficSyncService::class)->syncNodeFromSource($node, fn () => $clean);
+            } else {
+                $clean = [];
+                foreach ($stats as $email => $pair) {
+                    if (! is_string($email) || ! is_array($pair)) {
+                        continue;
+                    }
+                    $clean[$email] = [
+                        'up' => (int) ($pair['up'] ?? 0),
+                        'down' => (int) ($pair['down'] ?? 0),
+                    ];
+                }
+                if ($clean !== []) {
+                    app(TrafficSyncService::class)->syncNodeFromSource($node, fn () => $clean);
+                }
             }
         }
 
