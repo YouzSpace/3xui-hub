@@ -32,6 +32,12 @@ class NodeApiCommand extends Model
     /** agent 自升级（面板入队 → 节点下载校验后替换自己，见 agent/upgrade.go）。 */
     public const ACTION_UPGRADE_AGENT = 'upgrade';
 
+    /**
+     * Reality 目标探测（入站表单「检测目标」→ 节点侧真实 TLS 握手），
+     * payload = {"targets":["host:port", ...]}，result 存结果 JSON 数组。
+     */
+    public const ACTION_REALITY_SCAN = 'reality_scan';
+
     public const STATUS_PENDING = 'pending';
 
     public const STATUS_ACKNOWLEDGED = 'acknowledged';

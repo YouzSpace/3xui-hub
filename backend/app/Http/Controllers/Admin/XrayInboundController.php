@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Drivers\Xray\RealityKeyService;
+use App\Drivers\Xray\RealityTargetCatalog;
 use App\Drivers\Xray\XrayConfigService;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
+use App\Models\NodeApiCommand;
 use App\Models\User;
 use App\Models\XrayInbound;
 use App\Traits\ApiResponse;
@@ -110,6 +112,70 @@ class XrayInboundController extends Controller
             'short_id' => RealityKeyService::shortId(),
             'dest' => XrayConfigService::DEFAULT_DEST,
             'server_name' => XrayConfigService::DEFAULT_SNI,
+        ]);
+    }
+
+    /**
+     * POST /admin-api/nodes/{node}/xray-inbounds/reality-scan
+     * body: {targets?: string[]} —— 留空用面板内置候选（RealityTargetCatalog::defaults）。
+     *
+     * 探测在**节点**侧跑：REALITY 的伪装回源是节点去连 dest，只有节点视角的延迟才有意义
+     * （面板视角在国内/跨区场景会完全失真）。复用 node_api_commands 指令通道，
+     * 节点在线时秒级回执，离线/超时返回 pending。
+     */
+    public function realityScan(Request $request, Node $node): JsonResponse
+    {
+        $this->ensureXray($node);
+
+        $data = $request->validate([
+            'targets' => ['nullable', 'array', 'max:20'],
+            // nullable：空串会被 ConvertEmptyStringsToNull 变成 null（前端已过滤，这里兜底）
+            'targets.*' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $targets = RealityTargetCatalog::sanitize($data['targets'] ?? []);
+        if ($targets === []) {
+            $targets = RealityTargetCatalog::defaults();
+        }
+
+        $command = NodeApiCommand::create([
+            'node_id' => $node->id,
+            'user_id' => null,
+            'action' => NodeApiCommand::ACTION_REALITY_SCAN,
+            'payload' => ['targets' => $targets],
+            'status' => NodeApiCommand::STATUS_PENDING,
+        ]);
+
+        // 同步等待回执（默认 ≤18s：节点侧并发探测，正常 5s 内出结果；离线节点返回 pending）
+        $wait = max(0.0, (float) config('panel.reality_scan_wait', 18));
+        $deadline = microtime(true) + $wait;
+        while (microtime(true) < $deadline) {
+            $fresh = $command->fresh();
+            if ($fresh->status === NodeApiCommand::STATUS_FAILED) {
+                $output = (string) $fresh->result;
+
+                return $this->success([
+                    'results' => [],
+                    // 旧版 agent 不认这个 action，直说怎么修，别把 "unknown action" 甩给管理员
+                    'error' => str_contains($output, 'unknown action')
+                        ? '该节点的 agent 版本过旧，请先在「节点」页升级 agent 后重试'
+                        : ($output !== '' ? $output : '节点执行失败'),
+                ]);
+            }
+            if ($fresh->status === NodeApiCommand::STATUS_SUCCESS) {
+                $results = json_decode((string) $fresh->result, true);
+                if (! is_array($results)) {
+                    return $this->success(['results' => [], 'error' => '节点回执解析失败']);
+                }
+
+                return $this->success(['results' => $results]);
+            }
+            usleep(300_000);
+        }
+
+        return $this->success([
+            'pending' => true,
+            'message' => sprintf('节点未在 %d 秒内回执（可能离线），稍后可重试', (int) ceil($wait)),
         ]);
     }
 

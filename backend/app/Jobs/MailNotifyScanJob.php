@@ -23,7 +23,8 @@ use Illuminate\Queue\SerializesModels;
  *
  * 防重复发信：靠 Cache 标记（入队那一刻就落），不用 mail_logs ——后者要等
  * 真正发出才写入，而本任务每 5 分钟一轮，队列未跑完时会重复发信。
- * 同一自然月同一场景同一收件人只发一封，口径统一在 MailNotifyService::claimMonthly()。
+ * 同一用户同一场景**只发一次**（不再按自然月跨月重发）；重新购买/续费/重置流量
+ * 会递增时代号解锁下一封，口径统一在 MailNotifyService::claimOnce()。
  */
 class MailNotifyScanJob implements ShouldQueue
 {
@@ -81,9 +82,10 @@ class MailNotifyScanJob implements ShouldQueue
     /**
      * 已到期。
      *
-     * 扫描窗口是到期后 7 天，7 天之后不再扫到这个用户。配合月度去重，窗口内
-     * 最多发一封（窗口跨月时最多两封）；改前没有月度去重，窗口内是每天一封、
-     * 最多 7 封。要「一直提醒到续费为止」得同时放开这个窗口，当前按既定行为保留。
+     * 扫描窗口是到期后 7 天，7 天之后不再扫到这个用户。配合「每状态一次」
+     * 去重，窗口内最多发一封；改前（月度去重）窗口跨月时会发两封，
+     * 更早之前没有去重，窗口内是每天一封、最多 7 封。
+     * 续费后 expired_at 更新，配合 restoreReminders 解锁，下个周期照常提醒。
      */
     private function scanExpired(): void
     {
@@ -101,7 +103,7 @@ class MailNotifyScanJob implements ShouldQueue
     }
 
     /**
-     * 同一自然月、同一场景、同一收件人只发一次（口径见 MailNotifyService::claimMonthly）。
+     * 同一用户、同一场景**只发一次**（口径见 MailNotifyService::claimOnce）。
      *
      * 防重靠 Cache 而不是 mail_logs：mail_logs 是真正发出后才写的，
      * 而本任务是每 5 分钟一轮 —— 两轮之间队列还没跑完的话，
@@ -113,7 +115,7 @@ class MailNotifyScanJob implements ShouldQueue
 
         // 先渲染 + 解析收件人，确认这封真的能发，再落防重标记。
         // 顺序反过来的话：管理员没配收件邮箱时标记已经写进 Cache，
-        // 之后补上邮箱这一整月都不会再发了。
+        // 之后补上邮箱这一代（直到续购/重置）都不会再发了。
         $rendered = MailNotifyService::render($scene, $user->loadMissing('plan'));
         if ($rendered === []) return;
 
@@ -123,8 +125,8 @@ class MailNotifyScanJob implements ShouldQueue
 
         if (empty($to)) return;
 
-        // 本月已给这个收件人发过该场景 → 跳过
-        if (!MailNotifyService::claimMonthly($scene, $user, $rendered['to_type'], $to)) {
+        // 这个时代已给这个收件人发过该场景 → 跳过
+        if (!MailNotifyService::claimOnce($scene, $user, $rendered['to_type'], $to)) {
             return;
         }
 
@@ -135,6 +137,8 @@ class MailNotifyScanJob implements ShouldQueue
             type: MailLog::TYPE_NOTIFY,
             userId: $user->id,
             scene: $scene,
+            // 交给 Job：真发失败时释放这条标记，下一轮扫描补发
+            claimKey: MailNotifyService::claimKey($scene, $user, $rendered['to_type'], $to),
         );
     }
 }

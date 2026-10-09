@@ -254,7 +254,8 @@ class NodeApiController extends Controller
             'results' => ['required', 'array', 'max:50'],
             'results.*.id' => ['required', 'integer'],
             'results.*.success' => ['required', 'boolean'],
-            'results.*.output' => ['nullable', 'string', 'max:5000'],
+            // 放宽到 40000：reality_scan 的 output 是一整份结果 JSON（落库侧另按 action 截断）
+            'results.*.output' => ['nullable', 'string', 'max:40000'],
         ]);
 
         // 与 WS 通道共用同一回执实现（防两条通道状态口径漂移）

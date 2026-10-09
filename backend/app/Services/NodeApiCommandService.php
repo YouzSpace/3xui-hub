@@ -15,6 +15,18 @@ use Illuminate\Support\Facades\Log;
 class NodeApiCommandService
 {
     /**
+     * 回执输出落库上限（按 action 放宽）。
+     *
+     * reality_scan 的回执是一整份结果 JSON（多目标 × 证书/ALPN/延迟等字段），
+     * 按默认 2000 字截断会把 JSON 砍成非法串直接丢结果，故单独放宽。
+     */
+    private const OUTPUT_LIMITS = [
+        NodeApiCommand::ACTION_REALITY_SCAN => 30000,
+    ];
+
+    private const OUTPUT_LIMIT_DEFAULT = 2000;
+
+    /**
      * 原子认领某节点的 pending 指令（pending → acknowledged）。
      *
      * @return array<int, array{id:int, action:string, payload:mixed}>
@@ -58,9 +70,10 @@ class NodeApiCommandService
             }
 
             $ok = (bool) ($row['success'] ?? false);
+            $limit = self::OUTPUT_LIMITS[$command->action] ?? self::OUTPUT_LIMIT_DEFAULT;
             $command->complete(
                 $ok,
-                isset($row['output']) ? mb_substr((string) $row['output'], 0, 2000) : null
+                isset($row['output']) ? mb_substr((string) $row['output'], 0, $limit) : null
             );
             $updated++;
 

@@ -173,32 +173,89 @@ class MailNotifyService
     }
 
     /**
-     * 本自然月是否还能给这个收件人发该场景的通知。
+     * 该用户当前的通知「时代号」。
      *
-     * 返回 true = 本月第一封（继续发），false = 本月已发过（跳过）。
-     * 所有自动通知的防重口径只有这一处（扫描类 4 个场景 + 流量用尽），
-     * 要改通知周期只改这里。
+     * 防重 key 里带上它：时代号一变，该用户所有场景的旧防重标记全部自动作废
+     * （旧 key 永远不会再被读到），不需要逐场景去清标记。
+     * 时代号只会被 restoreReminders() 递增；Cache 丢失时回落 0，代价仅是
+     * 「极端情况下多收一封」，不会漏发。
+     */
+    private static function claimGenerationKey(User $user): string
+    {
+        return "mail_notify_gen:{$user->id}";
+    }
+
+    private static function generationOf(User $user): int
+    {
+        return (int) Cache::get(self::claimGenerationKey($user), 0);
+    }
+
+    /**
+     * 恢复该用户的所有自动通知（重新购买 / 续费 / 重置流量后调用）。
+     *
+     * 原理：递增时代号 → 该用户所有场景的「已发过」标记立即全部失效，
+     * 之后任何场景再次触发条件都会重新提醒一次。
+     * 调用方：applyPlan（购买/续费/管理员改套餐）、renew（总量续费）、
+     * resetTraffic（管理员重置）、completeResetOrder（付费重置订单）。
+     */
+    public static function restoreReminders(User $user): void
+    {
+        $key = self::claimGenerationKey($user);
+
+        Cache::put($key, self::generationOf($user) + 1, now()->addDays(400));
+    }
+
+    /**
+     * 该用户该场景是否还能发通知 —— **同一时代只发一次**，与自然月无关。
+     *
+     * 返回 true = 该时代第一封（继续发），false = 已发过（跳过）。
+     * 所有自动通知的防重口径只有这一处（扫描类 3 个场景 + 流量用尽）。
+     *
+     * 与原月度去重的差异：不再按 Ym 月历格过期（跨月重发刷屏），
+     * 而是跟着「用户状态时代」走 —— 只有重新购买/续费/重置（restoreReminders
+     * 递增时代号）才会解锁下一封。用户一直不续费就永远只收一封。
      *
      * 去重维度跟着「收件人」走，不跟着被通知的用户：
-     * - 发给用户本人 → 按邮箱（同一邮箱的多个账号本月只收一封，不把人刷屏；
+     * - 发给用户本人 → 按邮箱（同一邮箱的多个账号只收一封，不把人刷屏；
      *   邮箱统一小写去空白，避免换大小写绕开计数）
      * - 发给管理员 → 按触发用户（管理员的通知不能被先到的用户占掉坑，否则
      *   N 个用户到期只会收到 1 封，看起来像只有 1 个人有问题）
      *
      * **调用时机必须在「渲染 + 解析出收件地址」之后**：渲染早就落标记的话，
-     * 管理员还没配收件邮箱时这一整月都发不出去（补上邮箱也要等下个月）。
+     * 管理员还没配收件邮箱时这一代都发不出去（补上邮箱也要等恢复提醒才重发）。
      * 落标记而不是查 mail_logs，是因为日志要等队列真正发出才写，
      * 而扫描每 5 分钟一轮，队列没跑完时靠日志判断会把同一封发两遍。
+     *
+     * TTL 取 365 天（覆盖一次套餐周期绰绰有余）：标记过期=回到「未发过」，
+     * 极端闲置一年多的用户最多多收一封，可接受。
      */
-    public static function claimMonthly(string $scene, User $user, string $toType, string $to): bool
+    public static function claimOnce(string $scene, User $user, string $toType, string $to): bool
+    {
+        return Cache::add(self::claimKey($scene, $user, $toType, $to), 1, now()->addDays(365));
+    }
+
+    /**
+     * 该场景 / 该收件人在当前时代的防重 key（口径只有这一处）。
+     *
+     * 单独暴露出来是给「发送失败要补发」用：入队时把这个 key 一并交给 SendMailJob，
+     * 真发失败就 forget 掉它，下一轮扫描（5 分钟一轮）会自动补发；
+     * 否则 SMTP 抖一下这一封就永久丢了 —— 标记已落、触发条件仍在，却永远不会再发。
+     */
+    public static function claimKey(string $scene, User $user, string $toType, string $to): string
     {
         $who = $toType === 'admin'
             ? 'admin:' . $user->id
             : 'email:' . strtolower(trim($to));
 
-        $key = "mail_notify:{$scene}:{$who}:" . now()->format('Ym');
+        return "mail_notify:{$scene}:{$who}:g" . self::generationOf($user);
+    }
 
-        return Cache::add($key, 1, now()->endOfMonth());
+    /** 释放防重标记（发送失败时调用，让下一轮扫描补发）。 */
+    public static function releaseClaim(?string $key): void
+    {
+        if ($key !== null && $key !== '') {
+            Cache::forget($key);
+        }
     }
 
     /** 字节转可读文本（用于 {{used}} {{limit}} 展示） */

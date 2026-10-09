@@ -94,6 +94,8 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::post('/nodes/{node}/xray-inbounds', [AdminXrayInboundController::class, 'store']);
     // 密钥生成必须排在 {inbound} 参数路由之前（同 third-party 的先例）
     Route::post('/nodes/{node}/xray-inbounds/reality-keypair', [AdminXrayInboundController::class, 'realityKeypair']);
+    // Reality 目标探测（节点侧真实 TLS 握手，结果 JSON 回执；留空用内置候选）
+    Route::post('/nodes/{node}/xray-inbounds/reality-scan', [AdminXrayInboundController::class, 'realityScan']);
     Route::put('/nodes/{node}/xray-inbounds/{inbound}', [AdminXrayInboundController::class, 'update']);
     Route::delete('/nodes/{node}/xray-inbounds/{inbound}', [AdminXrayInboundController::class, 'destroy']);
 

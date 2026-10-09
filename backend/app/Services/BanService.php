@@ -208,7 +208,7 @@ class BanService
 
             // 流量用尽通知。注意：本分支每 ban.recheck_after_hours 小时会被重关一次
             // （isRecentlyDisabled 时效到期后重新校验），所以这里并不是天然的单次
-            // 触发点——防重靠 notifyTrafficExhausted 里的月度标记。
+            // 触发点——防重靠 notifyTrafficExhausted 里的时代标记。
             $this->notifyTrafficExhausted($user);
         }
 
@@ -219,9 +219,10 @@ class BanService
      * 流量用尽通知（默认关闭，管理员在「设置-邮箱」里自行开启）。
      * 开关未开时这里只读一次 SiteConfig，无队列、无 SMTP 请求。
      *
-     * 同一自然月同一收件人只发一封（口径见 MailNotifyService::claimMonthly）：
+     * 同一时代同一收件人只发一封（口径见 MailNotifyService::claimOnce）：
      * 本方法挂在「关闭成功」这个动作上，而扫描器每 ban.recheck_after_hours
      * 小时会把同一个超量用户重关一遍，没有这道标记就会一直重发。
+     * 重置/续费后由 restoreReminders 解锁，下次用尽再发一封。
      */
     private function notifyTrafficExhausted(User $user): void
     {
@@ -242,8 +243,8 @@ class BanService
             return;
         }
 
-        // 本月已给这个收件人发过 → 跳过（重关、状态漂移都不会再发一封）
-        if (!MailNotifyService::claimMonthly('traffic_exhausted', $user, $rendered['to_type'], $to)) {
+        // 这个时代已给这个收件人发过 → 跳过（重关、状态漂移都不会再发一封）
+        if (!MailNotifyService::claimOnce('traffic_exhausted', $user, $rendered['to_type'], $to)) {
             return;
         }
 
@@ -254,6 +255,8 @@ class BanService
             type: MailLog::TYPE_NOTIFY,
             userId: $user->id,
             scene: 'traffic_exhausted',
+            // 交给 Job：真发失败时释放这条标记，下一轮扫描补发
+            claimKey: MailNotifyService::claimKey('traffic_exhausted', $user, $rendered['to_type'], $to),
         );
     }
 

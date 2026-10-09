@@ -928,6 +928,69 @@ EOF
     success "节点任务 Worker 已启动（node-ops 队列，2 实例）"
 }
 
+# 配置邮件专用队列 Worker（mail，1 实例）
+#
+# 为什么要有第三条队列：
+#   邮件任务（自动通知 / 批量群发 / 每月定时）和控制类定时任务（封禁检查、健康检查、
+#   通知扫描）共用 default 队列时，一条 queue:work 是单线程 —— 一次 500 人群发
+#  （限速默认关闭）会把 worker 连续占住十几分钟，期间 5 分钟定时任务只能排队，
+#   结果是到期/超量用户没有及时被关掉 3x-ui 流量。邮件挪到 mail 队列后堵不到控制类任务。
+#
+# 与 node-ops 同一套规矩「两边都到位才算装好」：.env 写 PANEL_MAIL_QUEUE=mail
+# （面板据此把邮件派过去）+ 起一个 --queue=mail 的 worker。缺任一边都会静默坏掉
+#（Job 进了一条没人消费的队列），所以第 3 段自检不过就中断安装。
+setup_mail_worker() {
+    info "配置邮件 Worker (mail)..."
+
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    # ---------- 1. 先写 .env：让 SendMailJob 派到 mail ----------
+    # 与 node-ops 同款幂等写法（dotenv 同名变量以最后一行为准，重复追加会让旧值残留）
+    if grep -q '^PANEL_MAIL_QUEUE=' "${INSTALL_DIR}/backend/.env"; then
+        sed -i 's/^PANEL_MAIL_QUEUE=.*/PANEL_MAIL_QUEUE=mail/' "${INSTALL_DIR}/backend/.env"
+    else
+        echo 'PANEL_MAIL_QUEUE=mail' >> "${INSTALL_DIR}/backend/.env"
+    fi
+
+    # ---------- 2. 安装并启动 mail worker ----------
+    # 单实例够用：发信是 IO 等待型（每封 1~3 秒都在等 SMTP），一条 worker 的吞吐
+    # 已经超过常见 SMTP 服务商的限速，多开只会互相抢同一个发信账号。
+    cat > /etc/systemd/system/3xui-hub-queue-mail.service << EOF
+[Unit]
+Description=3xui-hub Mail Queue Worker
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${INSTALL_DIR}/backend
+ExecStart=/usr/bin/php artisan queue:work database --queue=mail --sleep=2 --tries=5 --timeout=120 --max-time=3600
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=130
+# 与 node-ops 同款：小机器上让队列任务给 Web 请求让路（只用优先级，不设内存硬上限）
+Nice=10
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    # enable --now 失败不在这里中断：交给第 3 段自检统一报错（带系统信息与日志尾巴）
+    systemctl enable --now 3xui-hub-queue-mail.service || true
+
+    # ---------- 3. 启动后自检 ----------
+    systemctl is-active --quiet 3xui-hub-queue-mail.service || \
+        error_exit "邮件 Worker 未在运行，请查看: systemctl status 3xui-hub-queue-mail.service"
+    systemctl is-enabled --quiet 3xui-hub-queue-mail.service || \
+        error_exit "邮件 Worker 未设置开机自启，请执行: systemctl enable 3xui-hub-queue-mail.service"
+    success "邮件 Worker 已启动（mail 队列，1 实例）"
+}
+
 # 配置 xray 节点 WS 长连接服务（agent 主通道；nginx 反代 /node-ws → 127.0.0.1:8091）
 #
 # 为什么单开一个服务：xray 节点 agent 与面板之间用 WebSocket 长连接做实时通道
@@ -1216,6 +1279,11 @@ main() {
     # 必须排在 setup_env（写 .env）之后：它要先确认 .env 里的 PANEL_NODE_OPS_QUEUE
     # 已生效再起 worker，顺序反了就成了「worker 监听一条没人投递的队列」
     setup_node_ops_worker
+
+    # 配置邮件 Worker（mail 队列）
+    # 同样必须排在 setup_env（写 .env）之后：先确认 PANEL_MAIL_QUEUE 生效再起 worker，
+    # 顺序反了会先出现「worker 监听 mail、邮件仍往 default 派」的空转窗口。
+    setup_mail_worker
 
     # 配置节点 WS 长连接服务（xray 节点 agent 实时通道）
     setup_node_ws

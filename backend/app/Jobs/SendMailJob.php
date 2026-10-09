@@ -31,7 +31,13 @@ class SendMailJob implements ShouldQueue
         public ?int $userId = null,
         public ?string $scene = null,
         public ?int $batchId = null,
+        public ?string $claimKey = null,
     ) {
+        // 邮件走哪条队列（默认 'default' = 不拆）。邮件与控制类定时任务（封禁检查、
+        // 健康检查、通知扫描）挤同一条 default 队列时，一条单线程 worker 会被一次群发
+        // 独占十几分钟，期间 5 分钟定时任务只能排队。部署侧设 PANEL_MAIL_QUEUE 并另起
+        // 一个 worker 监听该队列才会真正分开（config/panel.php 有同款说明）。
+        $this->onQueue((string) config('panel.mail_queue', 'default'));
     }
 
     public function handle(SimpleMailerService $mailer): void
@@ -64,6 +70,11 @@ class SendMailJob implements ShouldQueue
                 'scene'      => $this->scene,
                 'batch_id'   => $this->batchId,
             ]);
+
+            // 自动通知的防重标记在「入队那一刻」就落了，真发失败要把它释放掉，
+            // 否则这一封永久丢失（标记已落、触发条件仍在，却永远不会再发）。
+            // 下一轮扫描（5 分钟）会重新发一封。批量/定时发信没有这类标记，$claimKey 为 null。
+            MailNotifyService::releaseClaim($this->claimKey);
         }
     }
 }

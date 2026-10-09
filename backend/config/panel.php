@@ -118,6 +118,28 @@ return [
     'node_ops_queue' => env('PANEL_NODE_OPS_QUEUE') ?: 'default',
 
     /*
+     | 邮件 Job（SendMailJob）的队列名。**默认值必须是 'default'**，与引入本开关之前
+     | 的行为逐字一致；只有部署侧两件事都到位才生效：.env 设 PANEL_MAIL_QUEUE=mail，
+     | 且另起一个 worker 监听该队列（install.sh 会一并装好 3xui-hub-queue-mail.service）。
+     |
+     | 为什么需要：邮件任务（自动通知 / 批量群发 / 每月定时）与控制类定时任务
+     | （封禁检查、健康检查、通知扫描）共用 default 队列时，一条 queue:work 进程
+     | 同一时刻只跑一个 Job —— 一次 500 人群发（限速默认关闭）会让 worker 连续忙
+     | 十几分钟，期间所有 5 分钟定时任务只能排队，封禁/健康检查随之延迟。
+     | 拆成两条队列后各排各的，与 node_ops_queue 同一套规矩。
+     */
+    'mail_queue' => env('PANEL_MAIL_QUEUE') ?: 'default',
+
+    /*
+     | Reality 目标探测（入站表单「检测目标」）同步等待节点回执的上限（秒）。
+     |
+     | 面板入队 reality_scan 指令后轮询等回执；节点侧并发探测，正常 5 秒内出结果。
+     | 必须留在 PHP max_execution_time（常见 30s）之内，故默认 18。
+     | <= 0 表示不等待（直接返回 pending），仅供测试。
+     */
+    'reality_scan_wait' => (float) env('PANEL_REALITY_SCAN_WAIT', 18),
+
+    /*
      | 用户端接口限流（防刷）。
      |
      | 这几个值管理员可以在后台「邮箱配置 → 安全限制」页自己调：改的是 SiteConfig 里的同名
