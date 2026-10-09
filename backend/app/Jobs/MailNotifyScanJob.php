@@ -11,17 +11,19 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Cache;
 
 /**
- * 扫描类通知：流量即将用尽 / 套餐即将到期 / 已到期 / 无套餐。
+ * 扫描类通知：流量即将用尽 / 套餐即将到期 / 已到期。
  *
- * 这几类不能挂在某个同步动作上（流量用尽能挂BanService，但「即将」是阈值判断，
- * 「无套餐」没有事件），所以由定时任务扫描。
+ * 这几类不能挂在某个同步动作上（流量用尽能挂BanService，但「即将」是阈值判断），
+ * 所以由定时任务扫描。
+ *
+ * 「无套餐」场景已下线：按产品规则套餐到期即变无套餐，这类账号会长期存在，
+ * 反复提醒没有意义（该提醒的是到期那一刻，由 expired 负责）。
  *
  * 防重复发信：靠 Cache 标记（入队那一刻就落），不用 mail_logs ——后者要等
  * 真正发出才写入，而本任务每 5 分钟一轮，队列未跑完时会重复发信。
- * 同一天同一场景只发一次，避免把用户刷屏。
+ * 同一自然月同一场景同一收件人只发一封，口径统一在 MailNotifyService::claimMonthly()。
  */
 class MailNotifyScanJob implements ShouldQueue
 {
@@ -32,7 +34,6 @@ class MailNotifyScanJob implements ShouldQueue
         $this->scanTrafficAlmost();
         $this->scanExpiring();
         $this->scanExpired();
-        $this->scanNoPlan();
     }
 
     /** 流量即将用尽（默认 90%，管理员可调） */
@@ -77,7 +78,13 @@ class MailNotifyScanJob implements ShouldQueue
             });
     }
 
-    /** 已到期（过期后的 7 天内提醒一次） */
+    /**
+     * 已到期。
+     *
+     * 扫描窗口是到期后 7 天，7 天之后不再扫到这个用户。配合月度去重，窗口内
+     * 最多发一封（窗口跨月时最多两封）；改前没有月度去重，窗口内是每天一封、
+     * 最多 7 封。要「一直提醒到续费为止」得同时放开这个窗口，当前按既定行为保留。
+     */
     private function scanExpired(): void
     {
         if (!MailNotifyService::isEnabled('expired')) return;
@@ -93,21 +100,8 @@ class MailNotifyScanJob implements ShouldQueue
             });
     }
 
-    /** 无套餐 */
-    private function scanNoPlan(): void
-    {
-        if (!MailNotifyService::isEnabled('no_plan')) return;
-
-        User::where('enabled', true)->whereNull('plan_id')
-            ->chunkById(200, function ($users) {
-                foreach ($users as $user) {
-                    $this->dispatchOnce('no_plan', $user);
-                }
-            });
-    }
-
     /**
-     * 同一天同一场景对同一用户只发一次。
+     * 同一自然月、同一场景、同一收件人只发一次（口径见 MailNotifyService::claimMonthly）。
      *
      * 防重靠 Cache 而不是 mail_logs：mail_logs 是真正发出后才写的，
      * 而本任务是每 5 分钟一轮 —— 两轮之间队列还没跑完的话，
@@ -119,7 +113,7 @@ class MailNotifyScanJob implements ShouldQueue
 
         // 先渲染 + 解析收件人，确认这封真的能发，再落防重标记。
         // 顺序反过来的话：管理员没配收件邮箱时标记已经写进 Cache，
-        // 之后补上邮箱这一整天都不会再发了。
+        // 之后补上邮箱这一整月都不会再发了。
         $rendered = MailNotifyService::render($scene, $user->loadMissing('plan'));
         if ($rendered === []) return;
 
@@ -129,10 +123,8 @@ class MailNotifyScanJob implements ShouldQueue
 
         if (empty($to)) return;
 
-        // Cache::add 返回 true = 本次是首次写入（标记新建成功），继续发；
-        // 返回 false = 标记已存在（今天已入队过），跳过。
-        $key = "mail_notify:{$scene}:{$user->id}:" . today()->toDateString();
-        if (!Cache::add($key, 1, now()->endOfDay())) {
+        // 本月已给这个收件人发过该场景 → 跳过
+        if (!MailNotifyService::claimMonthly($scene, $user, $rendered['to_type'], $to)) {
             return;
         }
 

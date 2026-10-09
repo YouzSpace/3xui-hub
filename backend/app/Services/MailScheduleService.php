@@ -19,8 +19,9 @@ use App\Models\SiteConfig;
  * - schedule_mail_armed_at  最近一次「关→开」的开启时刻（HH:MM 判定用：
  *                           开启晚于当月到点则当月不补发）
  *
- * 去重：一个自然月只发一轮。判断依据是「当月有没有成功发过」（看发信日志），
- * 所以同一轮扫描跑 N 次、或隔了几天才上线，都不会重发。
+ * 去重：一个自然月只发一轮。两道闸——入队那一刻落的 Cache 标记（mail_schedule:Ym，
+ * 不看最终发送成败，队列还挂着也不会再入队），以及发信日志当月是否已有 type=schedule
+ * 记录。所以同一轮扫描跑 N 次、或隔了几天才上线，都不会重发。
  */
 class MailScheduleService
 {

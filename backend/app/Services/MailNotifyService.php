@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\SiteConfig;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * 邮件自动通知配置与渲染。
@@ -42,12 +43,6 @@ class MailNotifyService
             'body'   => '<p>您好，</p><p>您的套餐已于 {{expire_date}} 到期，流量已关闭。续费后可继续使用。</p>',
             'to'     => 'user',
         ],
-        'no_plan' => [
-            'label'  => '无套餐',
-            'title'  => '您当前没有有效套餐',
-            'body'   => '<p>您好，</p><p>您当前没有有效套餐，请选择套餐后使用。</p>',
-            'to'     => 'user',
-        ],
     ];
 
     /** 配置键：通知开关 + 可调参数 */
@@ -73,11 +68,6 @@ class MailNotifyService
         'notify_expired_title',
         'notify_expired_body',
         'notify_expired_to',
-
-        'notify_no_plan_enabled',
-        'notify_no_plan_title',
-        'notify_no_plan_body',
-        'notify_no_plan_to',
 
         'notify_admin_email',
     ];
@@ -180,6 +170,35 @@ class MailNotifyService
             'body'    => strtr($cfg['body'], $vars),
             'to_type' => $cfg['to'],
         ];
+    }
+
+    /**
+     * 本自然月是否还能给这个收件人发该场景的通知。
+     *
+     * 返回 true = 本月第一封（继续发），false = 本月已发过（跳过）。
+     * 所有自动通知的防重口径只有这一处（扫描类 4 个场景 + 流量用尽），
+     * 要改通知周期只改这里。
+     *
+     * 去重维度跟着「收件人」走，不跟着被通知的用户：
+     * - 发给用户本人 → 按邮箱（同一邮箱的多个账号本月只收一封，不把人刷屏；
+     *   邮箱统一小写去空白，避免换大小写绕开计数）
+     * - 发给管理员 → 按触发用户（管理员的通知不能被先到的用户占掉坑，否则
+     *   N 个用户到期只会收到 1 封，看起来像只有 1 个人有问题）
+     *
+     * **调用时机必须在「渲染 + 解析出收件地址」之后**：渲染早就落标记的话，
+     * 管理员还没配收件邮箱时这一整月都发不出去（补上邮箱也要等下个月）。
+     * 落标记而不是查 mail_logs，是因为日志要等队列真正发出才写，
+     * 而扫描每 5 分钟一轮，队列没跑完时靠日志判断会把同一封发两遍。
+     */
+    public static function claimMonthly(string $scene, User $user, string $toType, string $to): bool
+    {
+        $who = $toType === 'admin'
+            ? 'admin:' . $user->id
+            : 'email:' . strtolower(trim($to));
+
+        $key = "mail_notify:{$scene}:{$who}:" . now()->format('Ym');
+
+        return Cache::add($key, 1, now()->endOfMonth());
     }
 
     /** 字节转可读文本（用于 {{used}} {{limit}} 展示） */

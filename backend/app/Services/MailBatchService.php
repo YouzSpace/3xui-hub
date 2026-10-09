@@ -77,8 +77,11 @@ class MailBatchService
                 break;
             case 'normal':
             default:
-                // 正常：未禁用、未过期、未超量
-                $q->where('enabled', true)
+                // 正常：有套餐、未禁用、未过期、未超量。
+                // 必须有套餐：按产品规则套餐到期即变「无套餐」，这类账号 expired_at
+                // 为空、traffic_limit 为 0，不显式排除就会落进「正常」里，月月收到群发。
+                $q->whereNotNull('plan_id')
+                  ->where('enabled', true)
                   ->where(function ($x) {
                       $x->whereNull('expired_at')->orWhere('expired_at', '>', now());
                   })

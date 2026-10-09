@@ -12,7 +12,8 @@ use App\Models\User;
 /**
  * 封禁服务（M8 + 套餐适配）。
  *
- * 到期/超限/无套餐：不禁用用户，只关闭 3x-ui 流量。
+ * 到期 / 流量超限：不禁用用户，只关闭 3x-ui 流量。
+ * 「无套餐」不在这里处理——它既不触发关流量，也不发通知（见 MailNotifyScanJob）。
  * 仅管理员手动封禁才设置 enabled=false。
  */
 class BanService
@@ -205,8 +206,9 @@ class BanService
         if ($applied) {
             $user->forceFill(['traffic_disabled_at' => now()])->save();
 
-            // 流量用尽通知：落库这一刻是天然的单次触发点（traffic_disabled_at 之前为 null），
-            // 不受 ban.recheck_after_hours 重关影响，不会重复发信。
+            // 流量用尽通知。注意：本分支每 ban.recheck_after_hours 小时会被重关一次
+            // （isRecentlyDisabled 时效到期后重新校验），所以这里并不是天然的单次
+            // 触发点——防重靠 notifyTrafficExhausted 里的月度标记。
             $this->notifyTrafficExhausted($user);
         }
 
@@ -216,6 +218,10 @@ class BanService
     /**
      * 流量用尽通知（默认关闭，管理员在「设置-邮箱」里自行开启）。
      * 开关未开时这里只读一次 SiteConfig，无队列、无 SMTP 请求。
+     *
+     * 同一自然月同一收件人只发一封（口径见 MailNotifyService::claimMonthly）：
+     * 本方法挂在「关闭成功」这个动作上，而扫描器每 ban.recheck_after_hours
+     * 小时会把同一个超量用户重关一遍，没有这道标记就会一直重发。
      */
     private function notifyTrafficExhausted(User $user): void
     {
@@ -233,6 +239,11 @@ class BanService
             : $user->email;
 
         if (empty($to)) {
+            return;
+        }
+
+        // 本月已给这个收件人发过 → 跳过（重关、状态漂移都不会再发一封）
+        if (!MailNotifyService::claimMonthly('traffic_exhausted', $user, $rendered['to_type'], $to)) {
             return;
         }
 
