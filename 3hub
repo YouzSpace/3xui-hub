@@ -667,6 +667,7 @@ CMDS=(
     "ssl"
     "domain"
     "fix-nginx"
+    "uninstall"
 )
 
 CMD_LABELS=(
@@ -683,6 +684,7 @@ CMD_LABELS=(
     "配置域名和 SSL 证书"
     "多域名管理 (add/renew/remove/status)"
     "补全 nginx 节点资产 location（老版本升级后用）"
+    "卸载面板（交互模式，也可带 --panel/--app/--all）"
 )
 
 # 显示帮助
@@ -1695,6 +1697,34 @@ cmd_domain() {
     fi
 }
 
+# 卸载面板
+#
+# 转发到项目自带的 uninstall.sh（三种模式：--panel / --app / --all）。
+# 不在 3hub 里重复实现卸载逻辑：uninstall.sh 是独立可单独执行的脚本，
+# 安装文档里也是这么教的；3hub 只做「路径探查 + 转发」，避免两处漂移。
+cmd_uninstall() {
+    local SCRIPT="${INSTALL_DIR}/uninstall.sh"
+
+    if [ ! -f "$SCRIPT" ]; then
+        echo -e "${RED}未找到卸载脚本: ${SCRIPT}${NC}"
+        echo -e "请确认安装目录完整，或重新运行安装脚本。"
+        return 1
+    fi
+
+    # 无参数时先给一眼模式说明再转发（uninstall.sh 自己会弹交互菜单）
+    if [ $# -eq 0 ]; then
+        echo -e "${YELLOW}即将进入卸载流程，三种模式：${NC}"
+        echo -e "  ${BLUE}--panel${NC}  仅删面板文件（保留环境+数据库，适合重装）"
+        echo -e "  ${BLUE}--app${NC}    删面板+数据库（保留运行环境）"
+        echo -e "  ${BLUE}--all${NC}    完全卸载（面板+数据库+PHP/Nginx/MySQL）"
+        echo ""
+        echo -e "${YELLOW}非交互请带模式参数，如: 3hub uninstall --panel${NC}"
+        echo ""
+    fi
+
+    bash "$SCRIPT" "$@"
+}
+
 # 执行命令
 run_cmd() {
     local CMD="$1"
@@ -1722,6 +1752,7 @@ run_cmd() {
         fix-nginx)    cmd_fix_nginx ;;
         ssl)          cmd_ssl ;;
         domain)       shift; cmd_domain "$@" ;;
+        uninstall)    shift; cmd_uninstall "$@" ;;
         # 内部命令：只给 install.sh 安装期调用，让安装脚本和 3hub 复用同一份 cron 保障
         # 逻辑（旧版两处各写一份，更新路径那份没人管，线上丢过条目）。不列进帮助菜单。
         # 保底：v1.26.x 及更老版本的 update 会以子进程方式调用前三个内部命令，
