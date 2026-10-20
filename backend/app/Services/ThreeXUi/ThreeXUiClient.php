@@ -429,7 +429,8 @@ class ThreeXUiClient
     /**
      * getClient() 的异步版（Bearer 模式）。
      * resolve 值为规范化后的 client 数组（与同步版一样剥掉 client 包装）；失败 reject。
-     * 「client 不存在」在 3x-ui 上同样是 success=false，这里和同步版一样交给调用方按失败处理。
+     * 「client 不存在」reject 的是 ClientNotFoundException（isClientNotFound 可辨），
+     * 与网络/鉴权失败区分开 —— 调用方需要知道「这台节点没有这个人」≠「这台节点连不上」。
      */
     public function getClientAsync(string $email): PromiseInterface
     {
@@ -438,7 +439,13 @@ class ThreeXUiClient
             static fn ($obj) => is_array($obj)
                 ? (is_array($obj['client'] ?? null) ? $obj['client'] : $obj)
                 : null,
-        );
+        )->otherwise(static function (\Throwable $e) {
+            if ($e instanceof ThreeXUiException && self::isClientNotFound($e)) {
+                throw new ClientNotFoundException($e->getMessage(), 0, $e);
+            }
+
+            throw $e;
+        });
     }
 
     /**

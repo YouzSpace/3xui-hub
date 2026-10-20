@@ -7,11 +7,13 @@ use App\Jobs\ProvisionClientJob;
 use App\Models\Node;
 use App\Models\Plan;
 use App\Models\User;
-use App\Services\ThreeXUi\ThreeXUiClient;
+use App\Services\ThreeXui\ClientNotFoundException;
+use App\Services\ThreeXui\ThreeXUiClient;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
@@ -240,8 +242,24 @@ class UserAdminService
 
                 return $chain;
             },
-            // 取不到 client（不存在 / 网络 / 鉴权失败）：同步版 requestNullable 也是返回 null → 走创建
-            fn () => $create(),
+            // 只有【确认不存在】才建号。网络/鉴权失败按「本节点本次跳过」处理：
+            // 之前一律走 $create()，等于节点连不上就凭面板数据凭空建号，
+            // 既可能建出重复 client，也会把一次网络抖动放大成一次误建。
+            function (\Throwable $e) use ($create, $email, $node) {
+                if ($e instanceof ClientNotFoundException) {
+                    return $create();
+                }
+
+                report($e);
+
+                Log::warning('provisionClient 取 client 失败，本节点跳过建号', [
+                    'email' => $email,
+                    'node_id' => $node->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return null;
+            },
         );
     }
 

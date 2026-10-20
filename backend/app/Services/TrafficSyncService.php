@@ -236,8 +236,21 @@ class TrafficSyncService
         $multiplier = self::multiplierFor($node);
 
         foreach ($emailToUserId as $email => $userId) {
-            if (!isset($clientStats[$email])) continue;
             if (!isset($users[$userId])) continue; // 无套餐用户跳过
+
+            // 节点上根本没有这个 client（被人工误删 / 从未建号）：
+            // 面板认为该用户正常时记为漂移，由人工点「同步流量」重建（repairDrift → provisionClient）。
+            // 这里必须 continue，下面按 $stat 记账的代码拿不到数据。
+            if (!isset($clientStats[$email])) {
+                $candidate = $users[$userId];
+                if ($candidate->enabled
+                    && $candidate->traffic_disabled_at === null
+                    && app(\App\Services\BanService::class)->banReason($candidate) === false) {
+                    $driftUserIds[] = $userId;
+                }
+
+                continue;
+            }
 
             $stat = $clientStats[$email];
             $nowUp = (int) ($stat['up'] ?? 0);

@@ -8,7 +8,8 @@ use App\Models\MailLog;
 use App\Models\Node;
 use App\Models\SiteConfig;
 use App\Models\User;
-use App\Services\ThreeXUi\ThreeXUiClient;
+use App\Services\ThreeXui\ClientNotFoundException;
+use App\Services\ThreeXui\ThreeXUiClient;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
@@ -414,7 +415,17 @@ class BanService
                         ->otherwise(static fn () => false);
                 });
             },
-            $unconfirmed,
+            // client 不存在 = 这台节点本来就没有这个用户（过期后被清理、从未建号），
+            // 没有东西可关，算【已确认】；否则该用户永远差一台确认不了，
+            // traffic_disabled_at 永远写不进去，扫描器每轮白跑一次。
+            // 网络/鉴权失败仍走 $unconfirmed 判未确认，不能混为一谈。
+            static function (\Throwable $e) use ($inboundIds, $unconfirmed) {
+                if ($e instanceof ClientNotFoundException) {
+                    return true;
+                }
+
+                return $unconfirmed($e);
+            },
         );
     }
 
@@ -426,9 +437,12 @@ class BanService
      *              getClient 返回 null 既可能是 client 不存在，也可能是节点不可达 /
      *              鉴权失败（ThreeXUiClient::requestNullable 对两类失败一律返回 null），
      *              无法区分，故一律按「未确认」处理，交给下一轮重试。
-     *              例外：该节点本来就没有该协议的入站（provisionClient 同样会跳过这类节点，
+     *              例外一：该节点本来就没有该协议的入站（provisionClient 同样会跳过这类节点，
      *              用户在本节点无挂载点可关）→ 视为「无需操作」而非失败，否则这类用户
      *              永远确认不了、每轮都要被重发一遍请求，优化对他们等于失效。
+     *              例外二：3x-ui 节点上 client 确实不存在（过期后被清理 / 从未建号）→
+     *              同样视为「无需操作」。这类节点没有东西可关，若判未确认，该用户就
+     *              永远差一台、traffic_disabled_at 永远写不进去，扫描器每轮白跑。
      */
     private function applyEnableOnNode(Node $node, string $protocol, string $email, bool $enable): bool
     {
@@ -439,7 +453,7 @@ class BanService
             // 每节点只取一次 client 数据，入站循环与兜底共用
             $resp = $driver->getClient($email);
             if ($resp === null) {
-                return $inboundIds === [];
+                return $inboundIds === [] || $this->clientMissingOnNode($node, $email);
             }
 
             $clientData = $this->normalizeForUpdate($resp['client'] ?? $resp);
@@ -470,5 +484,32 @@ class BanService
 
             return false;
         }
+    }
+
+    /**
+     * getClient 返回 null 时，判定该节点是否【确实没有这个 client】。
+     *
+     * requestNullable 把「不存在」和「不可达/鉴权失败」都折叠成 null，直接当已确认会把
+     * 网络故障误判成「关好了」——那是比现在更糟的漏关。所以这里重新走一次能区分两者的
+     * 调用：3x-ui 的 getClientAsync 会把 not-found 包成 ClientNotFoundException 上抛，
+     * 只有它才算「本节点无需操作」。
+     *
+     * xray 节点读的是面板自己的库，不存在返回 null 的情况（getClient 永远拿到用户行）。
+     */
+    private function clientMissingOnNode(Node $node, string $email): bool
+    {
+        if (! NodeConcurrency::eligible($node)) {
+            return false; // cookie 模式没有异步入口，保守按未确认处理
+        }
+
+        try {
+            $this->clientFactory->forNode($node)->getClientAsync($email)->wait();
+        } catch (ClientNotFoundException) {
+            return true;
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return false;
     }
 }
