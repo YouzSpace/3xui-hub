@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
 # ControlHub xray 节点安装脚本（M0：全程只连面板，GitHub 零依赖）
-# 用法：
-#   curl -fsSL {HUB}/node-install.sh | sudo bash -s -- \
-#       --hub https://hub.example.com --node my-node --secret xxxx
+# 用法（root 直登 / 普通用户都行，脚本自己按身份提权：root 直跑 → sudo → su）：
+#   curl -fsSL {HUB}/node-install.sh -o /tmp/controlhub-node-install.sh \
+#     && bash /tmp/controlhub-node-install.sh \
+#          --hub https://hub.example.com --node my-node --secret xxxx
 # 动作：
 #   1. 检测 CPU 架构 → 映射面板资产 arch
 #   2. 从面板取 default 版本清单 → 下载对应 xray zip + sha256 自校验
@@ -35,10 +36,32 @@ if [ -z "$HUB" ] || [ -z "$NODE_NAME" ] || [ -z "$SECRET" ]; then
 fi
 HUB="${HUB%/}"   # 只去掉结尾斜杠，不动协议里的 //
 
-# ── 需要 root ────────────────────────────────────────────
+# ── 提权：root 直跑 → sudo → su，每一档都有下一步可走 ──────
+# 不在面板命令里写死 sudo：Debian 基础镜像常是「root 直登 + 根本没装 sudo」
+# （sudo 是 optional 包，连 /etc/sudoers 都不存在），写死 sudo 会死在
+# `bash: sudo: command not found` —— 那是 shell 解析阶段的错，脚本一行都跑不到。
+# 本脚本以 bash 运行（用到 declare -A），故可用 BASH_SOURCE 自我重跑。
 if [ "$(id -u)" != "0" ]; then
-  echo "请用 sudo 运行（需要 root 写 /opt、装 systemd）"
-  exit 1
+  SELF="${BASH_SOURCE[0]:-}"
+  if [ -z "$SELF" ] || [ ! -f "$SELF" ]; then
+    # 被管道喂给 bash（curl … | bash -s --）时取不到文件路径，无法自我提权
+    echo "无法自我提权：脚本是被管道喂给 bash 的（取不到文件路径）。请改用落盘方式重跑："
+    echo "  curl -fsSL ${HUB}/node-install.sh -o /tmp/controlhub-node-install.sh \\"
+    echo "    && bash /tmp/controlhub-node-install.sh --hub ${HUB} --node ${NODE_NAME} --secret <把面板上那条命令里的 secret 粘到这里>"
+    exit 1
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    echo "==> 当前非 root，用 sudo 重新执行"
+    exec sudo bash "$SELF" "$@"
+  elif command -v su >/dev/null 2>&1; then
+    echo "==> 未检测到 sudo，改用 su 提权（需要输入 root 密码）"
+    exec su -c "$(printf '%q ' bash "$SELF" "$@")"
+  else
+    echo "==> 当前非 root，且 sudo / su 都不可用。请二选一："
+    echo "    1) 改用 root 登录后重跑同一条命令；"
+    echo "    2) 先以 root 执行：apt-get install -y sudo（Debian/Ubuntu）或 yum install -y sudo（RHEL 系）"
+    exit 1
+  fi
 fi
 
 # ── 依赖检查 ──────────────────────────────────────────────
@@ -51,12 +74,19 @@ for dep in curl unzip sha256sum python3; do
   command -v "$dep" >/dev/null 2>&1 || MISSING+=("${DEP_PKG[$dep]}")
 done
 if [ ${#MISSING[@]} -gt 0 ]; then
+  echo "==> 缺少依赖: ${MISSING[*]}"
   if command -v apt-get >/dev/null 2>&1; then
-    echo "==> 自动安装缺失依赖: ${MISSING[*]}"
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING[@]}"
+    echo "==> 自动安装缺失依赖"
+    # set -e 下裸跑这两条，一旦失败（源不可达 / 无网）脚本会静默退出，
+    # 只剩上面半句话，用户看不出是网络还是脚本的问题 —— 这里显式兜错并给出可复制的命令。
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+      || { echo "apt-get update 失败：请检查网络或软件源（/etc/apt/sources.list）后重跑"; exit 1; }
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING[@]}" \
+      || { echo "依赖安装失败，请手动执行：apt-get install -y ${MISSING[*]}"; exit 1; }
   else
-    echo "缺依赖: ${MISSING[*]}（本机无 apt-get，请手动安装后重跑）"
+    echo "本机没有 apt-get，请手动安装后重跑，例如："
+    echo "  Debian/Ubuntu: apt-get update && apt-get install -y ${MISSING[*]}"
+    echo "  RHEL/CentOS:   yum install -y ${MISSING[*]}"
     exit 1
   fi
 fi

@@ -251,6 +251,10 @@ class Node extends Model
             $this->save();
         }
         // 先落盘再执行，不用 curl|bash 流式：脚本较长，管道中断会执行到半截。
-        return "curl -fsSL {$panelBase}/node-install.sh -o /tmp/controlhub-node-install.sh && sudo bash /tmp/controlhub-node-install.sh --hub {$panelBase} --node {$name} --secret {$secret}";
+        // 命令里不提权：脚本自己按身份决定（root 直跑 → sudo → su）。
+        // 写死 sudo 会让「root 直登但没装 sudo」的机器（Debian 基础镜像常见：sudo 是
+        // optional 包、连 /etc/sudoers 都没有）死在 `bash: sudo: command not found`；
+        // 错在 shell 解析阶段，脚本一行都跑不到，脚本内也兜不住。
+        return "curl -fsSL {$panelBase}/node-install.sh -o /tmp/controlhub-node-install.sh && bash /tmp/controlhub-node-install.sh --hub {$panelBase} --node {$name} --secret {$secret}";
     }
 }
