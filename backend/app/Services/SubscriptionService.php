@@ -8,6 +8,7 @@ use App\Models\SiteConfig;
 use App\Models\User;
 use App\Support\NodeRegion;
 use App\Services\ThreeXUi\ThreeXUiClient;
+use App\Services\TrafficSyncService;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
 use Illuminate\Support\Str;
@@ -165,13 +166,16 @@ class SubscriptionService
             $driver = $this->driverFactory->make($node);
 
             if ($node->isXray()) {
-                return $this->sanitizeLinks($driver->getClientLinks($email));
+                return $this->withMultiplierSuffix($node, $this->sanitizeLinks($driver->getClientLinks($email)));
             }
 
             // 一次 listInbounds() 拿回该节点全部入站，在内存里取端口过滤 —— 原来是「每个入站一次
             // getInbound」，一个节点 1+M 次 HTTP。改成一次请求，且保持实时（面板改端口立即生效，
             // 不引入 node_inbounds 端口缓存那样会与面板漂移的中间状态）。
-            return $this->filterNodeLinks($driver->getClientLinks($email), $inboundIds, $driver->listInbounds());
+            return $this->withMultiplierSuffix(
+                $node,
+                $this->filterNodeLinks($driver->getClientLinks($email), $inboundIds, $driver->listInbounds())
+            );
         } catch (\Throwable $e) {
             report($e);
 
@@ -235,7 +239,7 @@ class SubscriptionService
 
             [$inbounds, $rawLinks] = $outcome['value'];
 
-            foreach ($this->filterNodeLinks($rawLinks, $entry['inboundIds'], $inbounds) as $link) {
+            foreach ($this->withMultiplierSuffix($node, $this->filterNodeLinks($rawLinks, $entry['inboundIds'], $inbounds)) as $link) {
                 if (! in_array($link, $out, true)) {
                     $out[] = $link;
                 }
@@ -303,6 +307,60 @@ class SubscriptionService
         return $out;
     }
 
+    /** 倍率后缀的正则（一个「-」+ 数值 + x，挂在节点名末尾）。 */
+    private const MULTIPLIER_SUFFIX_PATTERN = '/-(\d+(?:\.\d+)?)x$/u';
+
+    /**
+     * 用户端展示开关（site_configs.show_node_multiplier）开着时，给该节点订阅链接的
+     * 名称末尾追加倍率后缀（如 「香港-01-2.0x」）。展示值与计费值同源，统一走
+     * TrafficSyncService::multiplierFor()。开关关着（默认，无配置行）时原样返回。
+     */
+    private function withMultiplierSuffix(Node $node, array $links): array
+    {
+        if (! in_array(SiteConfig::getValue('show_node_multiplier', ''), ['1', 'true', 'on'], true)) {
+            return $links;
+        }
+
+        // 1.0x 也照样展示：用户需要从名称上一眼区分这条线路是不是 1 倍，
+        // 与节点列表接口（Api\NodeController 同开关）的行为保持一致。
+        $suffix = '-' . rtrim(rtrim(number_format((float) TrafficSyncService::multiplierFor($node), 1, '.', ''), '0'), '.') . 'x';
+
+        $out = [];
+        foreach ($links as $link) {
+            if (! is_string($link) || $link === '') {
+                $out[] = $link;
+                continue;
+            }
+
+            $out[] = $this->appendMultiplierToName($link, $suffix);
+        }
+
+        return $out;
+    }
+
+    /**
+     * 把倍率后缀挂到链接 #fragment（名称段）末尾。
+     * 后缀追加在名称处理链的最末端：先摘掉旧后缀，名字（用户 ID 清理 / 正则改名 /
+     * 旗帜重建）全部处理完后再放回 —— 不管用户 ID 显不显示、旗帜开不开，倍率永远排最后。
+     */
+    private function appendMultiplierToName(string $link, string $suffix): string
+    {
+        $hashPos = strrpos($link, '#');
+        if ($hashPos === false) {
+            return $link;
+        }
+
+        $name = urldecode(substr($link, $hashPos + 1));
+        // 防重复追加：上次订阅已带后缀的名称先摘掉
+        $name = preg_replace(self::MULTIPLIER_SUFFIX_PATTERN, '', $name) ?? $name;
+
+        if (trim($name) === '') {
+            return $link;
+        }
+
+        return substr($link, 0, $hashPos) . '#' . urlencode($name . $suffix);
+    }
+
     /**
      * 能否走并发组：3x-ui 节点 + api_key 非空（Bearer 无状态）。
      * cookie 模式要维护登录会话（/login + CSRF），并发不安全，退回串行。
@@ -367,9 +425,17 @@ class SubscriptionService
 
     /**
      * 统一节点名称处理：用户 ID 清理 → 正则重命名 → 旗帜。
+     * 倍率后缀（-2.0x）先摘下来，全部处理完后再放回名称末尾 ——
+     * 旗帜模式会整体重建名称、用户 ID 可能在中间，倍率必须永远排在最后。
      */
     private function processNodeName(string $name, array &$regionCounters): string
     {
+        $multiplierSuffix = '';
+        if (preg_match(self::MULTIPLIER_SUFFIX_PATTERN, $name, $m)) {
+            $multiplierSuffix = $m[0];
+            $name = preg_replace(self::MULTIPLIER_SUFFIX_PATTERN, '', $name) ?? $name;
+        }
+
         if (SiteConfig::getValue('sub_show_userid', '0') !== '1') {
             $name = $this->stripUserIdFromName($name);
         }
@@ -381,7 +447,7 @@ class SubscriptionService
             $name = $this->addFlagToName($name, $regionCounters);
         }
 
-        return $name;
+        return $name . $multiplierSuffix;
     }
 
     /**
