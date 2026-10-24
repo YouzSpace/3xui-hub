@@ -42,6 +42,40 @@ class WarpService
     }
 
     /**
+     * 出站握手端点：优先用 CF 返回的 IPv4 字面量，避免端点域名在 A/AAAA 间解析。
+     *
+     * 端点写域名时 xray 要做 DNS 解析；CF 的 endpoint 自带 v4 + ports，拼出来即可直连
+     * （与 wgcf 的 WireGuardEndpoint 同口径）。取不到合法 v4 才退回 host 域名。
+     */
+    private static function endpointOf(array $peer): string
+    {
+        $endpoint = is_array($peer['endpoint'] ?? null) ? $peer['endpoint'] : [];
+        $port = (int) ($endpoint['ports'][0] ?? 0);
+        if ($port <= 0) {
+            $port = 2408;
+        }
+
+        return self::literalEndpoint((string) ($endpoint['v4'] ?? ''), $port)
+            ?: (string) ($endpoint['host'] ?? '');
+    }
+
+    /** 把 CF 的 endpoint.v4（形如 `162.159.192.5:0`，冒号后是占位 0）转成可直连的 host:port。 */
+    private static function literalEndpoint(string $v4, int $port): string
+    {
+        $host = trim($v4);
+        if ($host === '') {
+            return '';
+        }
+        if (str_contains($host, ':')) {
+            $host = (string) strstr($host, ':', true);
+        }
+
+        return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            ? $host . ':' . $port
+            : '';
+    }
+
+    /**
      * 注册（或重新注册）WARP 设备并覆盖写入账户；原 license 自动保留并尝试回挂。
      */
     public function register(): NodeWarpAccount
@@ -108,7 +142,7 @@ class WarpService
         $account->setPrivateKey($privateKey);
         $account->public_key = $publicKey;
         $account->peer_public_key = (string) ($peer['public_key'] ?? '');
-        $account->peer_endpoint = (string) ($peer['endpoint']['host'] ?? '');
+        $account->peer_endpoint = self::endpointOf($peer);
         $account->addresses = $addresses;
         $account->reserved = $reserved;
         $account->client_id = $clientId;
@@ -144,17 +178,33 @@ class WarpService
             throw new \RuntimeException('WARP 账户缺少私钥，请重新注册');
         }
 
-        $settings = array_filter([
+        $outbound = $this->node->xrayOutbounds()->where('tag', 'warp')->first();
+
+        // 换 IP 时保留已有 settings，只覆盖账号相关字段（对齐 3x-ui 的 mergeWarpRotation）。
+        // 整体重写会把管理员在高级 JSON 里改过的参数冲掉，且每次轮换都重置一次。
+        $previous = [];
+        if ($outbound !== null && is_array($outbound->settings)) {
+            $previous = $outbound->settings;
+            unset($previous['secretKey']);
+        }
+        $previousPeers = is_array($previous['peers'][0] ?? null) ? $previous['peers'][0] : [];
+        unset($previous['peers']);
+
+        $settings = array_filter(array_merge($previous, [
             'address' => array_values((array) ($account->addresses ?? [])),
-            'peers' => [[
+            'peers' => [array_merge($previousPeers, [
                 'publicKey' => (string) $account->peer_public_key,
                 'endpoint' => (string) $account->peer_endpoint,
-            ]],
+            ])],
             'reserved' => array_values((array) ($account->reserved ?? [])),
-            'mtu' => 1280,
-        ], fn ($v) => $v !== [] && $v !== [''] && $v !== null);
+            'mtu' => $previous['mtu'] ?? 1280,
+            // 不写即 FORCE_IP：v4/v6 同时启用，隧道内目标解析会随机落在两族之一。
+            'domainStrategy' => $previous['domainStrategy'] ?? 'ForceIPv4v6',
+            // 与面板连通性测试走同一条数据路径：该测试固定 noKernelTun=true，
+            // 否则会出现「测试通过、实际流量不通」。kernel TUN 失败也不打日志。
+            'noKernelTun' => $previous['noKernelTun'] ?? true,
+        ]), fn ($v) => $v !== [] && $v !== [''] && $v !== null);
 
-        $outbound = $this->node->xrayOutbounds()->where('tag', 'warp')->first();
         if ($outbound === null) {
             $outbound = new XrayOutbound([
                 'node_id' => $this->node->id,
