@@ -252,16 +252,23 @@ build_go() {
 }
 
 # 下载预编译 Go 后端二进制（默认路径，避免小服务器 go build 占满 CPU/内存 OOM）。
-# 版本号来源：frontend/package.json 的 version（与 release tag 对齐），
+# 版本号来源：**git tag**（git describe --tags），保证「代码 commit ↔ Release 二进制」严格对应；
+# 无 tag（浅克隆等）时才回退 frontend/package.json 的 version，并告警。
 # 架构由 uname -m 检测（amd64/arm64），二进制下载到 server/controlhub-server。
 # 下载源按序回退：GitHub Release → gh-proxy → ghfast.top（国内镜像加速）。
+# 下载后用 Release 的 checksums.txt 校验 sha256（镜像站是第三方中转，校验可排除坏包）。
 download_binary() {
     info "下载 Go 后端二进制（预编译，免编译）..."
 
     local VER
-    VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null \
-        | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    [ -n "$VER" ] || error_exit "无法从 frontend/package.json 读取版本号"
+    # 以 git tag 为准：git reset --hard 到某 commit 后，tag 天然对应那个发布版本
+    VER=$(git -C "$INSTALL_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+    if [ -z "$VER" ]; then
+        VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null \
+            | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        [ -n "$VER" ] || error_exit "无法确定版本号（无 git tag，也读不到 frontend/package.json）"
+        warn "未找到 git tag，回退用 package.json 版本 ${VER}（可能与代码不一致）"
+    fi
 
     local ARCH
     case "$(uname -m)" in
@@ -292,6 +299,24 @@ download_binary() {
     done
 
     [ -n "$downloaded" ] || error_exit "二进制下载失败（已尝试所有镜像）"
+
+    # sha256 校验（Release 里带 checksums.txt）：排除镜像站中转造成的坏包/串味
+    local SUM_URL="https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/checksums.txt"
+    local SUM_FILE="/tmp/.controlhub-checksums.$$"
+    if curl -fsSL --connect-timeout 10 --max-time 60 -o "$SUM_FILE" "$SUM_URL" 2>/dev/null; then
+        local EXPECT ACTUAL
+        EXPECT=$(grep -E "controlhub-server-linux-${ARCH}\$" "$SUM_FILE" 2>/dev/null | awk '{print $1}' | head -1)
+        ACTUAL=$(sha256sum "$TMP" 2>/dev/null | awk '{print $1}')
+        if [ -n "$EXPECT" ] && [ -n "$ACTUAL" ] && [ "$EXPECT" != "$ACTUAL" ]; then
+            rm -f "$SUM_FILE" "$TMP"
+            error_exit "二进制校验失败（期望 ${EXPECT}，实际 ${ACTUAL}），已中止"
+        fi
+        [ -n "$EXPECT" ] && info "二进制 sha256 校验通过"
+    else
+        warn "未取到 checksums.txt，跳过校验"
+    fi
+    rm -f "$SUM_FILE"
+
     chmod +x "$TMP"
     # 原子替换：curl 直写运行中的二进制会 Text file busy（内核拒绝覆盖正在执行的文件），
     # 所以先下到临时文件，再停服务 + mv（mv 换新 inode，Linux 允许覆盖）。全新装时

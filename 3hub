@@ -513,34 +513,89 @@ cmd_status() {
     fi
 }
 
-# 检测更新
+# 取当前代码所在的发布 tag（去掉 v 前缀）。
+# 顺序：describe → 补拉 tags 后再 describe → 最后回退 package.json（并告警）。
+current_tag() {
+    local t
+    t=$(git -C "$INSTALL_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+    if [ -z "$t" ]; then
+        # 常见原因：克隆时没拉 tag（浅克隆 / fetch 只取 main）
+        git -C "$INSTALL_DIR" fetch --tags --quiet origin 2>/dev/null || true
+        t=$(git -C "$INSTALL_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+    fi
+    if [ -z "$t" ]; then
+        t=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null \
+            | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        [ -n "$t" ] && echo -e "${YELLOW}提示：本地无 git tag，暂用 package.json 版本 ${t} 代替${NC}" >&2
+    fi
+    printf '%s' "$t"
+}
+
+# 取远程最新的发布 tag（去掉 v 前缀）。用 tag 而不是 origin/main 的 commit：
+# 只有作者正式打了 tag（= 发了 Release 二进制）才算「有新版本」，
+# 否则用户会拉到「有新代码、却没有对应二进制」的中间态。
+remote_latest_tag() {
+    local url out
+    # 先问 origin（正常安装时它就是作者仓库）
+    out=$(git -C "$INSTALL_DIR" ls-remote --tags --refs origin 'v*' 2>/dev/null \
+        | awk -F/ '{print $NF}' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -V | tail -1)
+    # origin 是 fork / 没打 tag 时，直接问上游（镜像优先，直连兜底）
+    if [ -z "$out" ]; then
+        for url in "https://ghfast.top/https://github.com/YouzSpace/3xui-hub.git" \
+                   "https://github.com/YouzSpace/3xui-hub.git"; do
+            out=$(git ls-remote --tags --refs "$url" 'v*' 2>/dev/null \
+                | awk -F/ '{print $NF}' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sort -V | tail -1)
+            [ -n "$out" ] && break
+        done
+    fi
+    printf '%s' "$out"
+}
+
+# 检测更新（以 git tag 为准；commit 哈希仅作版本对应关系的参考）
 cmd_check_update() {
     check_install
     cd "$INSTALL_DIR"
 
     echo -e "${CYAN}检查更新...${NC}"
-    git fetch origin 2>/dev/null
+    git fetch origin --tags 2>/dev/null
 
-    LOCAL=$(git rev-parse HEAD)
-    REMOTE=$(git rev-parse origin/main 2>/dev/null)
+    local CUR_TAG NEW_TAG CUR_SHA NEW_SHA COUNT FROM
+    CUR_TAG=$(current_tag)
+    NEW_TAG=$(remote_latest_tag)
+    CUR_SHA=$(git rev-parse --short HEAD 2>/dev/null)
 
-    if [ "$LOCAL" = "$REMOTE" ]; then
-        echo -e "${GREEN}已是最新版本${NC}"
-    else
-        # 检查是否落后于远程（而不是领先）
-        BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null)
-        if [ "$BEHIND" -gt 0 ] 2>/dev/null; then
-            echo -e "${YELLOW}有新版本可用！${NC}（落后 ${BEHIND} 个提交）"
-            echo ""
-            git log --oneline HEAD..origin/main 2>/dev/null | head -10
-            echo ""
-            echo -e "运行 ${BLUE}3hub update${NC} 更新"
-        else
-            echo -e "${GREEN}已是最新版本${NC}（本地领先远程）"
-        fi
+    echo -e "当前版本:  ${GREEN}v${CUR_TAG:-未知}${NC}  (commit ${CUR_SHA})"
+
+    if [ -z "$NEW_TAG" ]; then
+        echo -e "${YELLOW}未能获取远程 tag（网络问题或仓库无 tag）${NC}"
+        return 1
     fi
-}
 
+    NEW_SHA=$(git rev-list -n1 "v${NEW_TAG}" 2>/dev/null | cut -c1-9)
+    echo -e "最新版本:  ${GREEN}v${NEW_TAG}${NC}  (commit ${NEW_SHA:-未知})"
+
+    if [ "$CUR_TAG" = "$NEW_TAG" ]; then
+        echo -e "${GREEN}已是最新版本${NC}"
+        return 0
+    fi
+
+    # 只列「当前所在 tag → 最新 tag」之间的提交 = 这一版包含的改动
+    FROM="${CUR_TAG:+v${CUR_TAG}}"
+    [ -n "$FROM" ] || FROM=$(git rev-parse HEAD 2>/dev/null)
+    COUNT=$(git rev-list --count "$FROM..v${NEW_TAG}" 2>/dev/null || echo 0)
+
+    echo ""
+    echo -e "${YELLOW}有新版本可用！${NC}（v${CUR_TAG:-未知} → v${NEW_TAG}，共 ${COUNT} 个提交）"
+    echo ""
+    echo -e "${CYAN}更新内容:${NC}"
+    git log --oneline --no-decorate "$FROM..v${NEW_TAG}" 2>/dev/null \
+        | head -10 | sed 's/^[0-9a-f]\{7,9\} /  · /'
+    [ "${COUNT:-0}" -gt 10 ] 2>/dev/null && echo "  ...（共 ${COUNT} 条）"
+    echo ""
+    echo -e "运行 ${BLUE}3hub update${NC} 更新（将下载 v${NEW_TAG} 的预编译二进制）"
+}
 # php-fpm 并发调优（pm.max_children）
 #
 # 发行版默认 www.conf 是 5（Debian/Ubuntu），面板一有并发就排队，是用户量上来后第一个卡的环节。
