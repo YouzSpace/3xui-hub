@@ -245,7 +245,7 @@ func (o *RealNodeOps) RelayTestTarget(ctx context.Context, nodeID uint64, host s
 }
 
 // WarpRegister 注册 WARP 设备（保留已有 license）。
-func (o *RealNodeOps) WarpRegister(ctx context.Context, nodeName string, existing *WarpAccountRecord) (*WarpAccountRecord, error) {
+func (o *RealNodeOps) WarpRegister(ctx context.Context, nodeID uint64, nodeName string, existing *WarpAccountRecord) (*WarpAccountRecord, error) {
 	var warpExisting *xray.WarpAccount
 	if existing != nil {
 		warpExisting = &xray.WarpAccount{
@@ -266,6 +266,7 @@ func (o *RealNodeOps) WarpRegister(ctx context.Context, nodeName string, existin
 		return nil, err
 	}
 	result := &WarpAccountRecord{
+		NodeID:        nodeID,
 		DeviceID:      warpResult.DeviceID,
 		AccessToken:   warpResult.AccessToken,
 		PrivateKey:    warpResult.PrivateKey,

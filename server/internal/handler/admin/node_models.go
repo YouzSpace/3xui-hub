@@ -575,8 +575,9 @@ type NodeOps interface {
 	// RelayTestTarget 下发 test_outbound 指令并同步等待回执（≤8s）。
 	RelayTestTarget(ctx context.Context, nodeID uint64, host string, port int64) (status string, output string, pending bool)
 
-	// WarpRegister 注册 WARP 设备（保留已有 license）。
-	WarpRegister(ctx context.Context, nodeName string, existing *WarpAccountRecord) (*WarpAccountRecord, error)
+	// WarpRegister 注册 WARP 设备（保留已有 license）。nodeID 由调用方给：首次注册时
+	// existing 为 nil，返回的账户没有 node_id 会撞外键约束。
+	WarpRegister(ctx context.Context, nodeID uint64, nodeName string, existing *WarpAccountRecord) (*WarpAccountRecord, error)
 	// WarpSetLicense 设置 WARP+ license。
 	WarpSetLicense(ctx context.Context, account *WarpAccountRecord, license string) error
 

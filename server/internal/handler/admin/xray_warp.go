@@ -35,7 +35,7 @@ func (d *NodeDomain) warpRegister(c *gin.Context) {
 		d.failServer(c, "查询 WARP 账户", err)
 		return
 	}
-	account, err := d.ops.WarpRegister(ctxOf(c), node.Name, existing)
+	account, err := d.ops.WarpRegister(ctxOf(c), node.ID, node.Name, existing)
 	if err != nil {
 		d.fail(c, "WARP 注册失败："+err.Error(), 400)
 		return
@@ -119,7 +119,7 @@ func (d *NodeDomain) warpRotate(c *gin.Context) {
 	}
 	wasEnabled := existing != nil && existing.Enabled
 
-	account, err := d.ops.WarpRegister(ctxOf(c), node.Name, existing)
+	account, err := d.ops.WarpRegister(ctxOf(c), node.ID, node.Name, existing)
 	if err != nil {
 		d.fail(c, "换 IP 失败："+err.Error(), 400)
 		return

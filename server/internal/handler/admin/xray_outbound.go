@@ -812,7 +812,7 @@ func (d *NodeDomain) storeWarpOutbound(c *gin.Context, node *NodeRecord) {
 		d.failServer(c, "查询 WARP 账户", err)
 		return
 	}
-	newAccount, err := d.ops.WarpRegister(ctxOf(c), node.Name, account)
+	newAccount, err := d.ops.WarpRegister(ctxOf(c), node.ID, node.Name, account)
 	if err != nil {
 		d.fail(c, "WARP 注册失败："+err.Error(), 400)
 		return

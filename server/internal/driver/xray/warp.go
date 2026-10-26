@@ -338,7 +338,7 @@ func firstObject(v any) map[string]any {
 
 // endpointOf 复刻 PHP WarpService::endpointOf()：出站握手端点优先用 CF 返回的 IPv4 字面量，
 // 避免端点域名在 A/AAAA 间解析（IPv4-only 节点约一半概率抽到 IPv6 导致 network is unreachable）。
-// 取不到合法 v4 才退回 host 域名。入参是 peer["endpoint"]。
+// 没有 v4 才退 v6 字面量，最后才退 host 域名。入参是 peer["endpoint"]。
 func endpointOf(endpoint map[string]any) string {
 	port := 0
 	if ports, ok := endpoint["ports"].([]any); ok && len(ports) > 0 {
@@ -348,6 +348,10 @@ func endpointOf(endpoint map[string]any) string {
 		port = 2408
 	}
 	if lit := literalEndpoint(phpval.String(endpoint["v4"]), port); lit != "" {
+		return lit
+	}
+	// 纯 IPv6 节点：写域名同样会抽到不可用的 A 记录，这里直接给 v6 字面量。
+	if lit := literalEndpointV6(phpval.String(endpoint["v6"]), port); lit != "" {
 		return lit
 	}
 	return phpval.String(endpoint["host"])
@@ -366,6 +370,23 @@ func literalEndpoint(v4 string, port int) string {
 		return ""
 	}
 	return host + ":" + phpval.Itoa(int64(port))
+}
+
+// literalEndpointV6 把 CF 的 endpoint.v6（形如 "[2606:4700:d0::a29f:c009]:0"）转成 [v6]:port。
+func literalEndpointV6(v6 string, port int) string {
+	host := strings.TrimSpace(v6)
+	if host == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() != nil {
+		return ""
+	}
+	return "[" + host + "]:" + phpval.Itoa(int64(port))
 }
 
 // stringArrayValue 把 []string 转成保序 Array（与 routing.go 的 stringArray 区分：
