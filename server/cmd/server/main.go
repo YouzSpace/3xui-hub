@@ -161,6 +161,15 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 	// 节点 store（BumpConfigVersion 复用 Node::bumpXrayConfigVersion 语义）
 	nodeStore := admin.NewNodeSQLStore(db, cfg.AppKey)
 
+	// 节点域：定时任务里的 WARP 换 IP（xray:warp-rotate）需要它。
+	// 只用到库操作与 CF 注册，不注册路由，故与 routes.go 各建一份（都是无状态包装）。
+	nodeDomain := admin.NewNodeDomain(admin.NodeDeps{
+		Store:  nodeStore,
+		Ops:    admin.NewRealNodeOps(admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")}, nodeStore, logger),
+		Config: admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")},
+		Logger: logger,
+	})
+
 	// Geo 数据服务（geodata:update 命令用）。
 	// 目录必须与 assets.go 的 geoRoot 同一个（../backend/storage/app/xray/geo），
 	// 否则更新写到 server/storage、分发却从 backend/storage 读 → 节点侧 sha256 校验必失败。
@@ -186,6 +195,8 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		BumpConfigVersion: nodeStore.BumpConfigVersion,
 		Geodata:           &geodataAdapter{inner: geoService},
 		MailQueue:         &taskMailSender{q: mailDomain.MailQueue()},
+		RotateWarp:        nodeDomain.RotateWarp,
+		ToggleClient:      col.ToggleClient,
 	})
 
 	// 调度器（DB 用于写 scheduled_task_runs 运行记录与 worker 心跳）

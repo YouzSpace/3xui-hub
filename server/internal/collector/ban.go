@@ -124,6 +124,13 @@ type toggleOutcome struct {
 	Applied bool
 }
 
+// ToggleClient 是 toggleClient 的导出入口（对账命令 users:reconcile-enable 复用，
+// 避免 task 层再写一份只会处理 3x-ui 的残缺实现）。
+func (c *Collector) ToggleClient(ctx context.Context, userID int64, enable bool) (bool, error) {
+	out, err := c.toggleClient(ctx, userID, enable)
+	return out.Applied, err
+}
+
 // toggleClient 复刻 BanService::toggleClient()：在所有 enabled 节点上把 client 的 enable 改成 enable。
 //
 // 判定口径（与 PHP 逐条一致）：

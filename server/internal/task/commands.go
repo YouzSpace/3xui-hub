@@ -100,6 +100,16 @@ type CommandDeps struct {
 	// 复用 admin.NodeStore.BumpConfigVersion（对齐 PHP Node::bumpXrayConfigVersion）。
 	// 为 nil 时跳过 bump 并记日志（不手写 SQL —— config_version 是 JSON 键不是列）。
 	BumpConfigVersion func(ctx context.Context, nodeID uint64) (int64, error)
+
+	// RotateWarp 是 WARP「换 IP」（xray:warp-rotate 用）：重新注册设备（保留 license）
+	// → 已应用则重组 wireguard 出站 → bump config。对齐 PHP WarpService::rotate()。
+	// 为 nil 时该命令跳过并记日志。
+	RotateWarp func(ctx context.Context, nodeID uint64) error
+
+	// ToggleClient 是「在所有启用节点上开关某个用户的 client」（users:reconcile-enable 用）。
+	// 传 collector.ToggleClient：它已覆盖 3x-ui 与 xray 两条链路，并实现「全部确认才算成功」。
+	// 为 nil 时该命令记日志并放弃。
+	ToggleClient func(ctx context.Context, userID int64, enable bool) (bool, error)
 }
 
 // commandRunner 是 CommandRunner 的真实实现。
@@ -1410,12 +1420,20 @@ func (r *commandRunner) runXrayWarpRotate(ctx context.Context) error {
 			continue
 		}
 
-		// 换 IP：重新注册设备 → 重组 wireguard 出站 → bump config
-		// 留口：WarpService.Rotate 在 driver/xray/warp.go，需要 NodeOps 接入
-		r.logf("node#%d WARP 已换 IP（%s）", a.NodeID, a.NodeName)
-		rotated++
+		// 换 IP：重新注册设备 → 重组 wireguard 出站 → bump config（PHP WarpService::rotate）。
+		// 失败也推进 last_rotate_at，否则每 5 分钟重试一次、把 CF 接口打到限流。
+		if r.deps.RotateWarp == nil {
+			r.logf("RotateWarp 未配置，跳过 node=%d", a.NodeID)
+			continue
+		}
+		if err := r.deps.RotateWarp(ctx, uint64(a.NodeID)); err != nil {
+			r.logf("node#%d WARP 换 IP 失败（%s）: %v", a.NodeID, a.NodeName, err)
+		} else {
+			r.logf("node#%d WARP 已换 IP（%s）", a.NodeID, a.NodeName)
+			rotated++
+		}
 
-		// 更新 last_rotate_at
+		// 更新 last_rotate_at（成功失败都推进，对齐 PHP 的失败也写）
 		_, _ = r.deps.DB.ExecContext(ctx,
 			"UPDATE node_warp_accounts SET last_rotate_at = ?, updated_at = ? WHERE id = ?",
 			now, now, a.ID)
@@ -1777,71 +1795,23 @@ func (r *commandRunner) buildThreexuiClient(n nodeRow) (*threexui.Client, error)
 }
 
 // toggleClientAllNodes 对齐 BanService::toggleClient：全部启用节点确认才算成功。
+//
+// 直接委托 collector.ToggleClient —— 那里已含 3x-ui（get+normalize+update）与 xray
+// （adu/rmu 指令通道）两条分支，以及「全部确认才写 traffic_disabled_at」的判定。
+// 旧实现在这里另写了一份只处理 3x-ui 的版本，遇到 xray 节点直接 continue，
+// 于是 confirmed 永远小于 total、reconcile 每轮都判失败并重试。
 func (r *commandRunner) toggleClientAllNodes(ctx context.Context, userID int64, protocol string, enable bool) bool {
-	email := clientEmail(userID)
-
-	rows, err := r.deps.DB.QueryContext(ctx,
-		`SELECT id, name, scheme, host, port, web_base_path, username, password, api_key, verify_ssl, driver_type
-		 FROM nodes WHERE enabled = 1 ORDER BY id`)
+	_ = protocol
+	if r.deps.ToggleClient == nil {
+		r.logf("ToggleClient 未配置，无法切换 user=%d 的 client 开关", userID)
+		return false
+	}
+	ok, err := r.deps.ToggleClient(ctx, userID, enable)
 	if err != nil {
+		r.logf("切换 client 开关失败（user=%d enable=%v）: %v", userID, enable, err)
 		return false
 	}
-	var nodes []nodeRow
-	for rows.Next() {
-		var n nodeRow
-		if err := rows.Scan(&n.ID, &n.Name, &n.Scheme, &n.Host, &n.Port, &n.BasePath,
-			&n.Username, &n.Password, &n.APIKey, &n.VerifySSL, &n.DriverType); err != nil {
-			rows.Close()
-			return false
-		}
-		nodes = append(nodes, n)
-	}
-	rows.Close()
-
-	if len(nodes) == 0 {
-		return false
-	}
-
-	confirmed := 0
-	for _, node := range nodes {
-		if node.DriverType.Valid && node.DriverType.String == "xray" {
-			// xray 节点用 xray.Driver
-			// 留口：需要构造 xray.Driver 并调用 ToggleClient
-			continue
-		}
-
-		client, err := r.buildThreexuiClient(node)
-		if err != nil {
-			continue
-		}
-
-		// 获取 client 并更新 enable
-		resp, err := client.GetClient(ctx, email)
-		if err != nil {
-			continue
-		}
-		if resp == nil {
-			// client 不存在 → 无需操作 = 已确认
-			confirmed++
-			continue
-		}
-
-		// 更新 enable
-		clientData := make(map[string]any, len(resp))
-		for k, v := range resp {
-			clientData[k] = v
-		}
-		clientData["enable"] = enable
-		if uuid, ok := clientData["uuid"].(string); ok && uuid != "" {
-			clientData["id"] = uuid
-		}
-
-		if err := client.UpdateClient(ctx, email, clientData, nil); err == nil {
-			confirmed++
-		}
-	}
-
-	return confirmed == len(nodes)
+	return ok
 }
 
 // ── 13. xray:reality-audit ─────────────────────────────────────────

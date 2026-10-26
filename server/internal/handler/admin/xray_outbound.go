@@ -11,6 +11,8 @@ package admin
 // - 列表附出站流量（agent 上报的快照）
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -841,6 +843,11 @@ func (d *NodeDomain) storeWarpOutbound(c *gin.Context, node *NodeRecord) {
 
 // applyWarp 组装 wireguard 出站并 upsert（tag=warp），bump 版本。
 func (d *NodeDomain) applyWarp(c *gin.Context, node *NodeRecord, account *WarpAccountRecord) (*XrayOutboundRecord, error) {
+	return d.applyWarpContext(ctxOf(c), node, account)
+}
+
+// applyWarpContext 是 applyWarp 的无 HTTP 版本：定时换 IP 的调用方没有 gin.Context。
+func (d *NodeDomain) applyWarpContext(ctx context.Context, node *NodeRecord, account *WarpAccountRecord) (*XrayOutboundRecord, error) {
 	if account == nil {
 		return nil, errRelay("尚未注册 WARP，请先注册")
 	}
@@ -851,7 +858,7 @@ func (d *NodeDomain) applyWarp(c *gin.Context, node *NodeRecord, account *WarpAc
 	// 读已有 warp 出站的 settings，保留管理员在高级 JSON 里改过的参数（对齐 PHP mergeWarpRotation）。
 	// 整体重写会把 mtu/domainStrategy/noKernelTun 等冲掉，且每次轮换都重置一次。
 	previous := jo()
-	if existing, err := d.store.XrayOutboundByTag(ctxOf(c), node.ID, "warp"); err == nil && existing != nil && len(existing.Settings) > 0 {
+	if existing, err := d.store.XrayOutboundByTag(ctx, node.ID, "warp"); err == nil && existing != nil && len(existing.Settings) > 0 {
 		previous = decodeScheduleConfig(string(existing.Settings))
 	}
 
@@ -915,19 +922,56 @@ func (d *NodeDomain) applyWarp(c *gin.Context, node *NodeRecord, account *WarpAc
 		Remark:       ptrStringOf("Cloudflare WARP"),
 		Enabled:      ptrBoolOf(true),
 	}
-	ob, err := d.store.UpsertRelayOutbound(ctxOf(c), in)
+	ob, err := d.store.UpsertRelayOutbound(ctx, in)
 	if err != nil {
 		return nil, err
 	}
 
 	enabled := true
-	if err := d.store.PatchWarpAccount(ctxOf(c), node.ID, nil, nil, nil, &enabled); err != nil {
+	if err := d.store.PatchWarpAccount(ctx, node.ID, nil, nil, nil, &enabled); err != nil {
 		return nil, err
 	}
-	if _, err := d.store.BumpConfigVersion(ctxOf(c), node.ID); err != nil {
+	if _, err := d.store.BumpConfigVersion(ctx, node.ID); err != nil {
 		return nil, err
 	}
 	return ob, nil
+}
+
+// RotateWarp 是「换 IP」的无 HTTP 入口：重新注册设备（保留 license）→ 已应用则重组出站。
+// 定时任务 xray:warp-rotate 走这里（PHP 的 WarpService::rotate()）。
+func (d *NodeDomain) RotateWarp(ctx context.Context, nodeID uint64) error {
+	node, err := d.store.NodeByID(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	if node == nil {
+		return fmt.Errorf("节点 #%d 不存在", nodeID)
+	}
+	if !node.IsXray() {
+		return fmt.Errorf("节点 #%d 不是 xray 节点", nodeID)
+	}
+
+	existing, err := d.store.WarpAccountByNode(ctx, nodeID)
+	if err != nil && !d.noRowsToNotFoundSilent(err) {
+		return err
+	}
+	wasEnabled := existing != nil && existing.Enabled
+
+	account, err := d.ops.WarpRegister(ctx, node.ID, node.Name, existing)
+	if err != nil {
+		return err
+	}
+	if err := d.store.SaveWarpAccount(ctx, *account); err != nil {
+		return err
+	}
+	if wasEnabled {
+		if _, err := d.applyWarpContext(ctx, node, account); err != nil {
+			return err
+		}
+	}
+
+	now := d.now().UTC()
+	return d.store.PatchWarpAccount(ctx, nodeID, nil, nil, &now, nil)
 }
 
 // deleteRelayOutbound 对齐 deleteRelayOutbound()：清理对方凭据 + 删本地出站。
