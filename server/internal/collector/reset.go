@@ -112,7 +112,8 @@ func (c *Collector) resetMonthly(ctx context.Context, userID int64, now time.Tim
 	}
 
 	// 3. 打开 3x-ui 流量（周期套餐月超被关的用户在新周期恢复）。
-	if _, err := c.toggleClient(ctx, userID, true); err != nil {
+	//    计费动作 → 流量级（bookkeep=true）：全部节点确认后清 traffic_disabled_at。
+	if _, err := c.toggleClient(ctx, userID, true, true); err != nil {
 		return fmt.Errorf("恢复用户流量失败: %w", err)
 	}
 	return nil

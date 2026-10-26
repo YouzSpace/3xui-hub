@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 
+	"controlhub-server/internal/collector"
 	"controlhub-server/internal/crypto"
 	"controlhub-server/internal/driver/threexui"
 	"controlhub-server/internal/handler/admin"
@@ -170,16 +171,25 @@ func handleProvisionClient(ctx context.Context, db *sql.DB, appKey []byte, logge
 
 	existing, getErr := client.GetClient(ctx, clientEmail)
 	if getErr != nil || existing == nil {
-		addPayload := map[string]any{
-			"client":     clientData,
-			"inboundIds": inboundIDs,
-		}
-		if _, err := client.AddClient(ctx, addPayload, inboundIDs); err != nil {
+		// ⚠️ AddClient 内部已经按 {"client": …, "inboundIds": …} 包了一层；这里再包一次
+		// 会让 3x-ui 解析出的 client.email 为空，节点直接回
+		// `Something went wrong (client email is required…)` —— 线上 23:18 user=251
+		// 在 node 25/33/36 三条就是这个：注册/续费派发的建号 Job 在全部 3x-ui 节点上白跑，
+		// 用户付了钱但节点上根本没有他。
+		if _, err := client.AddClient(ctx, clientData, inboundIDs); err != nil {
 			logger.Printf("[provision] AddClient 失败 user=%d node=%d: %v", userID, job.NodeID, err)
 			return nil
 		}
 	} else {
-		if err := client.UpdateClient(ctx, clientEmail, clientData, nil); err != nil {
+		// 3x-ui 的 clients/update 是整条替换：只发上面那 5 个字段会把 uuid/flow/subId
+		// 等按零值写掉。取回节点上的完整对象，归一化后只覆盖我们要改的字段。
+		payload := collector.NormalizeForUpdate(existing)
+		payload["email"] = clientEmail
+		payload["enable"] = enable
+		payload["totalGB"] = totalGB
+		payload["expiryTime"] = expiryMs
+		payload["limitIp"] = 0
+		if err := client.UpdateClient(ctx, clientEmail, payload, nil); err != nil {
 			logger.Printf("[provision] UpdateClient 失败 user=%d node=%d: %v", userID, job.NodeID, err)
 			return nil
 		}

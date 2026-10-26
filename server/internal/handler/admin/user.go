@@ -377,6 +377,12 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 		return
 	}
 
+	full, err := d.users.UserByID(ctxOf(c), u.ID)
+	if err != nil {
+		d.failServer(c, "读取用户", err)
+		return
+	}
+
 	planChanged := !samePlanID(oldPlanID, newPlanID)
 	if planChanged {
 		// 切换套餐：重算流量/到期（同步），节点侧 client 同步（PHP 走后台 Job，
@@ -385,20 +391,30 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 			d.failServer(c, "切换套餐", err)
 			return
 		}
-		if err := d.ops.ProvisionUser(ctxOf(c), &UserRow{ID: u.ID, Email: u.Email, UUID: u.UUID, Protocol: u.Protocol}); err != nil {
+		after, err := d.users.UserByID(ctxOf(c), u.ID)
+		if err == nil && after != nil {
+			full = after
+		}
+		// ⚠️ 必须下发「重读出来的完整行」。这里以前手搓 UserRow{ID,Email,UUID,Protocol}，
+		// PlanID=nil、Enabled=false、TrafficLimit=0 全是零值，provision 于是把每台
+		// 3x-ui 节点上的 client 写成 enable=false + totalGB=0 —— 后台给人换套餐，
+		// 反而把已经连不上的人写得更死（线上 ch_user_84 在 JP1/US1/US3/MYKL1 四台全中）。
+		if err := d.ops.ProvisionUser(ctxOf(c), full); err != nil {
 			d.logger.Printf("admin 切换套餐后 provision 失败: %v", err)
 		}
+		// 兜底：换套餐本身就是「让这个人重新可用」的明确动作，顺手按面板意图开一次。
+		// collector 语义会做 3x-ui 整条替换前的归一化，并在全部节点确认后清掉
+		// users.traffic_disabled_at —— 标记不清，xray 节点的配置渲染和对账任务
+		// 都还把他当「已因流量关闭」，等于白开。
+		if full.Enabled && full.PlanID != nil {
+			_ = d.ops.SetClientEnabled(ctxOf(c), full, true)
+		}
 	}
-	if enabledTouched && !planChanged {
+	if enabledTouched {
 		// 手动改 enabled 时同步到节点（BanService::toggleClient）。
-		_ = d.ops.SetClientEnabled(ctxOf(c), &UserRow{ID: u.ID, Email: u.Email, UUID: u.UUID, Protocol: u.Protocol}, *patch.Enabled)
+		_ = d.ops.SetClientEnabled(ctxOf(c), full, *patch.Enabled)
 	}
 
-	full, err := d.users.UserByID(ctxOf(c), u.ID)
-	if err != nil {
-		d.failServer(c, "读取用户", err)
-		return
-	}
 	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
 	d.success(c, presentUser(full, true, presentProxies(proxies, now)), "更新成功")
 }

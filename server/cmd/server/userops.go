@@ -73,26 +73,25 @@ func (o *userPanelOps) ResetClientTraffic(ctx context.Context, user *admin.UserR
 	return nil
 }
 
-// SetClientEnabled 遍历节点开关 client（封禁/解封：关流量不封号）。
+// SetClientEnabled 是**账号级**开关（后台 users.enabled，封号/解封用）。
+//
+// 账号级与流量级是两件事，别混（用户定稿）：
+//   - 封禁（enable=false）= 全部关闭、连套餐一起停 → 只把各节点 client 关到位，
+//     **不碰** users.traffic_disabled_at（那是「流量用尽/到期」的记账，账号开关无权替
+//     一个超量用户施加或解除它）；
+//   - 解封（enable=true）→ 交给 collector.EnableAccount：**流量能否用由套餐判据定论**
+//     （到期 / 周期额度用尽 / 总量用尽 → 仍按流量级关闭并写标记；无套餐 → 只关不记；
+//     判据干净 → 打开并在全部节点确认后清标记）。
+//
+// 两条分支都复用 collector 的节点下发实现，所以 3x-ui 整条替换前的 NormalizeForUpdate、
+// 以及 5.6 的判定矩阵（没端口/没 client 等同关闭、未知不算确认）都在。
 func (o *userPanelOps) SetClientEnabled(ctx context.Context, user *admin.UserRow, enable bool) error {
-	drivers, err := o.col.NodeDrivers(ctx)
-	if err != nil {
+	if enable {
+		_, err := o.col.EnableAccount(ctx, int64(user.ID))
 		return err
 	}
-	email := user.ClientEmail()
-	for _, nd := range drivers {
-		switch {
-		case nd.ThreeX != nil:
-			if err := o.toggleThreeX(ctx, nd.ThreeX, email, enable); err != nil {
-				o.logger.Printf("[userops] toggle 3x-ui 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
-			}
-		case nd.Xray != nil:
-			if err := nd.Xray.ToggleClient(ctx, email, enable); err != nil {
-				o.logger.Printf("[userops] toggle xray 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
-			}
-		}
-	}
-	return nil
+	_, err := o.col.SetNodesEnabled(ctx, int64(user.ID), false)
+	return err
 }
 
 // DeleteUserClients 遍历节点删除用户的 client（3x-ui DeleteClient，xray rmu 指令）。
@@ -158,6 +157,10 @@ func (o *userPanelOps) SwitchProtocol(ctx context.Context, user *admin.UserRow, 
 }
 
 // provisionThreeX 给 3x-ui 节点建 client（对齐 PHP prepareClientData + 存在则更新）。
+//
+// ⚠️ 更新分支必须「先取回节点上的完整 client，归一化后只覆盖我们要改的字段」：
+// 3x-ui 的 clients/update 是整条替换语义，只发 email/enable/totalGB/expiryTime/limitIp
+// 会把没带上的一串字段（uuid、flow、limitIp、subId…）按零值写掉。
 func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Client, nodeID int64, user *admin.UserRow, email string) error {
 	inboundIDs, err := o.col.InboundIDs(ctx, nodeID, user.Protocol)
 	if err != nil {
@@ -167,24 +170,37 @@ func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Cli
 		return nil // 没有该协议入站，跳过（对齐 PHP）
 	}
 
-	clientData := map[string]any{
-		"email":    email,
-		"enable":   user.PlanID != nil && user.Enabled,
-		"totalGB":  user.TrafficLimit,
-		"limitIp":  0,
-	}
+	enable := user.PlanID != nil && user.Enabled
+	totalGB := user.TrafficLimit
+	var expiryMs int64
 	if user.ExpiredAt != nil {
-		clientData["expiryTime"] = user.ExpiredAt.UnixMilli()
+		expiryMs = user.ExpiredAt.UnixMilli()
 	}
 
 	existing, getErr := client.GetClient(ctx, email)
 	if getErr != nil || existing == nil {
+		clientData := map[string]any{
+			"email":   email,
+			"enable":  enable,
+			"totalGB": totalGB,
+			"limitIp": 0,
+		}
+		if expiryMs > 0 {
+			clientData["expiryTime"] = expiryMs
+		}
 		if _, err := client.AddClient(ctx, clientData, inboundIDs); err != nil {
 			return fmt.Errorf("AddClient: %w", err)
 		}
 		return nil
 	}
-	if err := client.UpdateClient(ctx, email, clientData, nil); err != nil {
+
+	payload := collector.NormalizeForUpdate(existing)
+	payload["email"] = email
+	payload["enable"] = enable
+	payload["totalGB"] = totalGB
+	payload["expiryTime"] = expiryMs
+	payload["limitIp"] = 0
+	if err := client.UpdateClient(ctx, email, payload, nil); err != nil {
 		return fmt.Errorf("UpdateClient: %w", err)
 	}
 	return nil
@@ -195,18 +211,4 @@ func (o *userPanelOps) provisionXray(ctx context.Context, d *xray.Driver, user *
 	// xray CreateClient 只需 email + uuid；Source 会从 users 表补齐其余字段
 	_, err := d.CreateClient(ctx, map[string]any{"email": email, "uuid": user.UUID}, nil)
 	return err
-}
-
-// toggleThreeX 开关 3x-ui client：先 GetClient 拿完整对象再改 enable，
-// 避免 3x-ui update 的整条替换语义清空 uuid/limit/expiry。
-func (o *userPanelOps) toggleThreeX(ctx context.Context, client *threexui.Client, email string, enable bool) error {
-	existing, err := client.GetClient(ctx, email)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return nil // client 不存在（可能从未建号），跳过
-	}
-	existing["enable"] = enable
-	return client.UpdateClient(ctx, email, existing, nil)
 }

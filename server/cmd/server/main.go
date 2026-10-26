@@ -177,26 +177,27 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 
 	// 命令运行器（13 个 artisan 命令）
 	cmdRunner := task.NewCommandRunner(task.CommandDeps{
-		DB:         db,
-		AppKey:     cfg.AppKey,
-		Logf:       logger.Printf,
-		Now:        time.Now,
-		BackupBin:  envOr("BACKUP_MYSQLDUMP_BIN", "mysqldump"),
-		BackupDir:  envOr("BACKUP_DIR", "/var/backups/3xui-hub"),
-		BackupKeep: 7,
+		DB:            db,
+		AppKey:        cfg.AppKey,
+		Logf:          logger.Printf,
+		Now:           time.Now,
+		BackupBin:     envOr("BACKUP_MYSQLDUMP_BIN", "mysqldump"),
+		BackupDir:     envOr("BACKUP_DIR", "/var/backups/3xui-hub"),
+		BackupKeep:    7,
 		BackupTimeout: backupTimeoutMinutes(),
 		TGSender:      tgSender,
-		DBHost:     cfg.DB.Host,
-		DBPort:     cfg.DB.Port,
-		DBName:     cfg.DB.Database,
-		DBUser:     cfg.DB.Username,
-		DBPassword: cfg.DB.Password,
+		DBHost:        cfg.DB.Host,
+		DBPort:        cfg.DB.Port,
+		DBName:        cfg.DB.Database,
+		DBUser:        cfg.DB.Username,
+		DBPassword:    cfg.DB.Password,
 
 		BumpConfigVersion: nodeStore.BumpConfigVersion,
 		Geodata:           &geodataAdapter{inner: geoService},
 		MailQueue:         &taskMailSender{q: mailDomain.MailQueue()},
 		RotateWarp:        nodeDomain.RotateWarp,
 		ToggleClient:      col.ToggleClient,
+		ReconcileNodes:    reconcileAdapter(col),
 	})
 
 	// 调度器（DB 用于写 scheduled_task_runs 运行记录与 worker 心跳）

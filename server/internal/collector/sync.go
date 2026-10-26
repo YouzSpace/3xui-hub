@@ -118,7 +118,7 @@ func (c *Collector) RunTrafficSync(ctx context.Context) (TrafficSyncResult, erro
 		if isRecentlyDisabled(*user, c.now()) {
 			continue
 		}
-		if _, err := c.toggleClient(ctx, userID, false); err != nil {
+		if _, err := c.toggleClient(ctx, userID, false, true); err != nil {
 			c.logf_("关闭用户流量失败（user=%d）: %v", userID, err)
 			continue
 		}
