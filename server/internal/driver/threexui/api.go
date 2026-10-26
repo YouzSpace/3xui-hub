@@ -48,6 +48,34 @@ func (c *Client) GetClient(ctx context.Context, email string) (map[string]any, e
 	return cli, nil
 }
 
+// GetClientStrict 与 GetClient 读同一条 GET，但**不吞业务错误**，把三种含义分开：
+//   - (client, nil)              节点上确实有这条 client；
+//   - (nil, ClientNotFoundError)  节点明确说没有（200 + record not found / data:null）；
+//   - (nil, err)                  传输失败或其它业务失败 = **未知**。
+//
+// 为什么必须有这条：GetClient 走 requestNullable，按 PHP 口径把「真没有」和
+// 「面板回了 success=false 的其它业务错（登录态被顶掉、被限流、SQL 异常…）」一起
+// 折叠成 (nil, nil)。对账语义里这两件事相反：前者可以判定「等同关闭 / 确实缺人」，
+// 后者只能算未知 —— 拿未知去清标记或补注册，就是二次事故。
+func (c *Client) GetClientStrict(ctx context.Context, email string) (map[string]any, error) {
+	obj, err := c.request(ctx, http.MethodGet, EPClientsGet+escapeEmail(email), nil, c.apiTimeout)
+	if err != nil {
+		if IsClientNotFound(err) {
+			return nil, asNotFound(err)
+		}
+		return nil, err
+	}
+	cli, ok := obj.(map[string]any)
+	if !ok {
+		// success:true 但没有对象（data:null）→ 面板上没有这条 client。
+		return nil, &ClientNotFoundError{Message: "client " + email + " not found"}
+	}
+	if inner, ok := cli["client"].(map[string]any); ok {
+		return inner, nil
+	}
+	return cli, nil
+}
+
 // AddClient 对应 addClient()：POST {client, inboundIds}；uuid/password 由面板生成。
 //
 // 部分 3x-ui 版本成功建 client 但不回传 obj（返回 null）。此时回查一次确认 client

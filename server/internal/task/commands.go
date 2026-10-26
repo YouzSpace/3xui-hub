@@ -110,6 +110,23 @@ type CommandDeps struct {
 	// 传 collector.ToggleClient：它已覆盖 3x-ui 与 xray 两条链路，并实现「全部确认才算成功」。
 	// 为 nil 时该命令记日志并放弃。
 	ToggleClient func(ctx context.Context, userID int64, enable bool) (bool, error)
+
+	// ReconcileNodes 是「节点用户全量比对 + 兜底修复」（users:reconcile-enable 用）。
+	// 传 collector.ReconcileNodes 的适配：读节点全量快照 → 按面板意图比对 → 缺人补注册 /
+	// enable 开合 / 内容对不上删除重建 / 未知不动；只处理我们自己建的 ch_user_{id}。
+	// 为 nil 时该命令记日志并跳过（不影响其它调度）。
+	ReconcileNodes func(ctx context.Context, dry bool, maxWritesPerNode int) (ReconcileSummary, error)
+}
+
+// ReconcileSummary 是对账命令需要的最小统计（刻意不引用 collector 的类型，避免包耦合）。
+type ReconcileSummary struct {
+	Nodes, Users, Probed       int
+	Registered, Fixed, Drift   int
+	Opened, Closed, Unchanged  int
+	Unknown, Deferred, Foreign int
+	ForeignNames, OfflineNodes []string
+	SnapshotBy                 string
+	ElapsedMs                  int64
 }
 
 // commandRunner 是 CommandRunner 的真实实现。
@@ -1647,129 +1664,40 @@ type nodeRow struct {
 	DriverType sql.NullString
 }
 
-// runUsersReconcileEnable 对齐 ReconcileClientEnableCommand::handle()。
-// Re-enable clients disabled on nodes while the panel still allows them.
+// runUsersReconcileEnable 是「节点用户全量比对 + 兜底修复」的调度入口。
+//
+// 实现委托 collector.ReconcileNodes（cmd/server 注入）：
+//   - 读法：每台 3x-ui 节点一次 clients/list 拿全量快照（旧实现是每用户一次 getClient，
+//     94 人 × 4 台 ≈ 376 次往返，还用了恒失败的 GetClientTraffic → 12 小时 143 轮 checked=0）；
+//   - 修法：缺人→补注册、enable 该开该关→兜底执行、totalGB/expiry 对不上（含残留旧记录）
+//     →删除重建（keepTraffic=1 保住流量统计基线）；超时/未知→本轮不动；
+//   - 范围：只处理我们自己建的 ch_user_{id}，面板上自建的远程用户只报告、绝不动手。
+//
+// 旧版在这里另写了一份「只会把 enable=false 重开」的实现，候选 SQL 还带
+// `traffic_disabled_at IS NULL`，把真正卡住的人全筛掉 —— 线上 84 就是这么被漏掉的。
 func (r *commandRunner) runUsersReconcileEnable(ctx context.Context, args map[string]string) error {
 	dry := args["--dry-run"] == "1" || args["--dry-run"] == "true"
-	nodeFilter := int64(0)
-	if v, ok := args["--node"]; ok {
-		fmt.Sscanf(v, "%d", &nodeFilter)
+	if r.deps.ReconcileNodes == nil {
+		r.logf("ReconcileNodes 未配置，跳过对账")
+		return nil
 	}
-
-	nowMs := r.now().UnixMilli()
-	checked, fixed, failed, skipped := 0, 0, 0, 0
-
-	// 查启用的非 xray 节点
-	rows, err := r.deps.DB.QueryContext(ctx,
-		`SELECT id, name, scheme, host, port, web_base_path, username, password, api_key, verify_ssl, driver_type
-		 FROM nodes WHERE enabled = 1 ORDER BY id`)
+	sum, err := r.deps.ReconcileNodes(ctx, dry, 50)
 	if err != nil {
 		return err
 	}
-	var nodes []nodeRow
-	for rows.Next() {
-		var n nodeRow
-		if err := rows.Scan(&n.ID, &n.Name, &n.Scheme, &n.Host, &n.Port, &n.BasePath,
-			&n.Username, &n.Password, &n.APIKey, &n.VerifySSL, &n.DriverType); err != nil {
-			rows.Close()
-			return err
-		}
-		// 跳过 xray 节点（PHP: filter(fn ($n) => ! $n->isXray())）
-		if n.DriverType.Valid && n.DriverType.String == "xray" {
-			continue
-		}
-		if nodeFilter > 0 && n.ID != nodeFilter {
-			continue
-		}
-		nodes = append(nodes, n)
-	}
-	rows.Close()
-
-	// 查符合条件的用户
-	userRows, err := r.deps.DB.QueryContext(ctx,
-		`SELECT id, protocol FROM users
-		 WHERE plan_id IS NOT NULL AND enabled = 1 AND traffic_disabled_at IS NULL
-		   AND (expired_at IS NULL OR expired_at > ?)
-		   AND (traffic_limit = 0 OR traffic_used < traffic_limit)
-		 ORDER BY id LIMIT 10000`, r.now().UTC())
-	if err != nil {
-		return err
-	}
-	type userRow struct {
-		ID       int64
-		Protocol string
-	}
-	var users []userRow
-	for userRows.Next() {
-		var u userRow
-		if err := userRows.Scan(&u.ID, &u.Protocol); err != nil {
-			userRows.Close()
-			return err
-		}
-		users = append(users, u)
-	}
-	userRows.Close()
-
-	for _, node := range nodes {
-		client, err := r.buildThreexuiClient(node)
-		if err != nil {
-			r.logf("构造节点 #%d 客户端失败: %v", node.ID, err)
-			continue
-		}
-
-		for _, user := range users {
-			email := clientEmail(user.ID)
-			traffic, err := client.GetClientTraffic(ctx, email)
-			if err != nil {
-				continue
-			}
-			if traffic == nil {
-				continue
-			}
-			checked++
-
-			enable, _ := traffic["enable"].(bool)
-			if enable {
-				continue
-			}
-
-			up := toInt64(traffic["up"])
-			down := toInt64(traffic["down"])
-			total := toInt64(traffic["total"])
-			expiry := toInt64(traffic["expiryTime"])
-
-			used := up + down
-			if total > 0 && used >= total {
-				skipped++
-				continue
-			}
-			if expiry > 0 && expiry <= nowMs {
-				skipped++
-				continue
-			}
-
-			if dry {
-				r.logf("[dry] %s(#%d) %s disabled on node -> re-enable", node.Name, node.ID, email)
-				fixed++
-				continue
-			}
-
-			// toggleClient：全部启用节点确认才算成功
-			if r.toggleClientAllNodes(ctx, user.ID, user.Protocol, true) {
-				fixed++
-			} else {
-				failed++
-				r.logf("%s %s: 未全部节点确认，下一轮重试", node.Name, email)
-			}
-		}
-	}
-
 	prefix := ""
 	if dry {
 		prefix = "[dry-run] "
 	}
-	r.logf("%schecked=%d re-enabled=%d failed=%d skipped_over_or_expired=%d",
-		prefix, checked, fixed, failed, skipped)
+	r.logf("%snodes=%d users=%d probed=%d registered=%d fixed=%d drift=%d opened=%d closed=%d unchanged=%d unknown=%d deferred=%d foreign=%d snap=%s ms=%d",
+		prefix, sum.Nodes, sum.Users, sum.Probed, sum.Registered, sum.Fixed, sum.Drift, sum.Opened,
+		sum.Closed, sum.Unchanged, sum.Unknown, sum.Deferred, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs)
+	if len(sum.ForeignNames) > 0 {
+		r.logf("  非本站 client（只报告，未动手）: %s", strings.Join(sum.ForeignNames, ", "))
+	}
+	if len(sum.OfflineNodes) > 0 {
+		r.logf("  本轮跳过（读不到快照，不判失败）: %s", strings.Join(sum.OfflineNodes, ", "))
+	}
 	return nil
 }
 

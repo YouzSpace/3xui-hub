@@ -66,6 +66,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// 支付（P7：独立 RegisterPayment，公开 + 鉴权两段）
 	payStore := api.NewPaymentSQLStore(db)
 	paySvc := api.NewPaymentService(payStore, api.PaymentServiceOptions{
+		Panel:       NewPaymentPanelSyncer(col, admin.NewAdminUserSQLStore(db), logger),
 		ProxyOrders: api.NewProxyCompleter(db, logger),
 		TGSender:    tgSender,
 	}, logger)
