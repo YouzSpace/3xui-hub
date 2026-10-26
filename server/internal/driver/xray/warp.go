@@ -373,15 +373,19 @@ func literalEndpoint(v4 string, port int) string {
 }
 
 // literalEndpointV6 把 CF 的 endpoint.v6（形如 "[2606:4700:d0::a29f:c009]:0"）转成 [v6]:port。
+// 只按方括号剥端口：裸 v6 的末段自己就可能是十六进制数字，按冒号硬切会切坏地址。
 func literalEndpointV6(v6 string, port int) string {
 	host := strings.TrimSpace(v6)
 	if host == "" {
 		return ""
 	}
-	if i := strings.LastIndexByte(host, ':'); i >= 0 {
-		host = host[:i]
+	if strings.HasPrefix(host, "[") {
+		end := strings.IndexByte(host, ']')
+		if end < 0 {
+			return ""
+		}
+		host = host[1:end]
 	}
-	host = strings.Trim(host, "[]")
 	ip := net.ParseIP(host)
 	if ip == nil || ip.To4() != nil {
 		return ""
