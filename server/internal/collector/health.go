@@ -416,11 +416,24 @@ func (c *Collector) monitorValues(ctx context.Context, node nodeRow, health *mon
 	if health == nil {
 		return nil, nil
 	}
-	sent, recv := nonNegativeInt(health.Sent), nonNegativeInt(health.Recv)
+	// health.Sent/Recv 是驱动层已经归一化好的 *int64（panel.Health.NetSent 类型），
+	// 不能再过一遍 nonNegativeInt —— 它只认基础数值与 Float64() 接口，收到 *int64 会返回 nil，
+	// 于是 3x-ui 节点的机器流量采样被整段跳过（monitor_samples 永不写入、前端 24h 流量图无数据）。
+	// 驱动层 netValue 已保证「非负数值」才转成指针，这里只需挡掉 nil 与负数。
+	sent := nonNegativeIntPtr(health.Sent)
+	recv := nonNegativeIntPtr(health.Recv)
 	if sent == nil || recv == nil {
 		return nil, nil
 	}
 	return &monitorSample{Sent: sent, Recv: recv, CPU: health.CPU, Mem: health.Mem}, nil
+}
+
+// nonNegativeIntPtr 校验驱动层已归一化的 *int64：nil 或负数 → nil，否则原样返回。
+func nonNegativeIntPtr(p *int64) *int64 {
+	if p == nil || *p < 0 {
+		return nil
+	}
+	return p
 }
 
 // xrayAgentSnapshot 读 driver_config.agent 的 net_total_up/down + cpu/mem（同一份快照）。
