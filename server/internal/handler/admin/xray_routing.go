@@ -847,6 +847,9 @@ func (d *NodeDomain) targetTags(c *gin.Context, node *NodeRecord) (jsArr, error)
 }
 
 // inboundCandidates 对齐 inboundCandidates()：本节点启用入站的 {value,tag,port,protocol,label}。
+//
+// label = 「端口-tag」，入站有备注时再追加「-备注」（前端下拉直接展示该字段，
+// 备注为空/未填则保持原样）。
 func (d *NodeDomain) inboundCandidates(c *gin.Context, node *NodeRecord) (jsArr, error) {
 	inbounds, err := d.store.XrayInboundsByNode(ctxOf(c), node.ID)
 	if err != nil {
@@ -858,12 +861,18 @@ func (d *NodeDomain) inboundCandidates(c *gin.Context, node *NodeRecord) (jsArr,
 		if !in.Enabled {
 			continue
 		}
+		label := uInt64String(uint64(in.Port)) + "-" + in.Tag
+		if in.Remark != nil {
+			if remark := strings.TrimSpace(*in.Remark); remark != "" {
+				label += "-" + remark
+			}
+		}
 		out = append(out, jo(
 			"value", in.Tag,
 			"tag", in.Tag,
 			"port", in.Port,
 			"protocol", in.Protocol,
-			"label", uInt64String(uint64(in.Port))+"-"+in.Tag,
+			"label", label,
 		))
 	}
 	return out, nil
