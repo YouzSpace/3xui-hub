@@ -99,8 +99,13 @@ func (c *Collector) SyncNode(ctx context.Context, nodeID int64, source statSourc
 }
 
 // snapshotRow 是一行待写快照（存原始累计值）。
+//
+// NodeID 必须带上：upsertSnapshots 的 INSERT 写了 (user_id, node_id, upload, download)
+// 四个占位符，缺 NodeID 会让参数少一个 → 整批 node 的流量同步全部报
+// "sql: expected N arguments, got M" 而回滚，流量记不上账。
 type snapshotRow struct {
 	UserID   int64
+	NodeID   int64
 	Upload   int64
 	Download int64
 }
@@ -254,7 +259,7 @@ func (c *Collector) syncNodeBatch(ctx context.Context, node nodeRow, clientStats
 				c.logf_("流量计数倒退（批量同步），本轮计费增量记 0（node=%d user=%d last=%d now=%d）",
 					node.ID, userID, lastTotal, nowTotal)
 				out.Snapshots = append(out.Snapshots, snapshotRow{
-					UserID: userID, Upload: nowUp, Download: nowDown,
+					UserID: userID, NodeID: node.ID, Upload: nowUp, Download: nowDown,
 				})
 				continue
 			}
@@ -265,7 +270,7 @@ func (c *Collector) syncNodeBatch(ctx context.Context, node nodeRow, clientStats
 				if upDelta != 0 || downDelta != 0 {
 					out.DeltaMap[userID] = Delta{Up: upDelta, Down: downDelta, Weighted: 0}
 					out.Snapshots = append(out.Snapshots, snapshotRow{
-						UserID: userID, Upload: nowUp, Download: nowDown,
+						UserID: userID, NodeID: node.ID, Upload: nowUp, Download: nowDown,
 					})
 				}
 				continue
@@ -285,7 +290,7 @@ func (c *Collector) syncNodeBatch(ctx context.Context, node nodeRow, clientStats
 		}
 
 		out.Snapshots = append(out.Snapshots, snapshotRow{
-			UserID: userID, Upload: nowUp, Download: nowDown,
+			UserID: userID, NodeID: node.ID, Upload: nowUp, Download: nowDown,
 		})
 	}
 
@@ -437,7 +442,7 @@ func upsertSnapshots(ctx context.Context, tx *sql.Tx, rows []snapshotRow) error 
 				sb.WriteString(", ")
 			}
 			sb.WriteString("(?, ?, ?, ?, NOW(), NOW())")
-			args = append(args, r.UserID, r.Upload, r.Download)
+			args = append(args, r.UserID, r.NodeID, r.Upload, r.Download)
 		}
 		sb.WriteString(" ON DUPLICATE KEY UPDATE upload = VALUES(upload), download = VALUES(download), updated_at = NOW()")
 

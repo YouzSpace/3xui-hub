@@ -213,7 +213,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	backupDomain.Register(adminGroup)
 
 	// 系统域
-	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("storage", "app", "xray", "geo")), nil)
+	// geo 目录必须与上面 assetHandler 的 geoRoot 同一个，否则「更新写 A、分发读 B」，
+	// 节点下载到的文件与指令里的 sha256 对不上，每次同步都失败。
+	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "backend", "storage", "app", "xray", "geo")), nil)
 	systemDomain := admin.NewSystemDomain(admin.SystemDeps{
 		Store:  admin.NewSystemSQLStore(db),
 		Geo:    geoService,
