@@ -161,8 +161,10 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 	// 节点 store（BumpConfigVersion 复用 Node::bumpXrayConfigVersion 语义）
 	nodeStore := admin.NewNodeSQLStore(db, cfg.AppKey)
 
-	// Geo 数据服务（geodata:update 命令用）
-	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("storage", "app", "xray", "geo")), nil)
+	// Geo 数据服务（geodata:update 命令用）。
+	// 目录必须与 assets.go 的 geoRoot 同一个（../backend/storage/app/xray/geo），
+	// 否则更新写到 server/storage、分发却从 backend/storage 读 → 节点侧 sha256 校验必失败。
+	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "backend", "storage", "app", "xray", "geo")), nil)
 
 	// 命令运行器（13 个 artisan 命令）
 	cmdRunner := task.NewCommandRunner(task.CommandDeps{
