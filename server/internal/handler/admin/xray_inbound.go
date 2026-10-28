@@ -666,7 +666,10 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	return in, true
 }
 
-// guardServerNames 对齐 guardServerNames()：REALITY serverNames 与 dest 的静态一致性拦截。
+// guardServerNames 校验 REALITY serverNames 是否被 dest 出示的证书覆盖。
+//
+// 判据是 dest 的真实证书 SAN，而不是注册域：同一张证书常跨注册域
+// （www.samsung.com 的证书含 samsung.cn 的两个域名），按注册域判会把正确配置拦下。
 func (d *NodeDomain) guardServerNames(c *gin.Context, node *NodeRecord, input map[string]any, existing *XrayInboundRecord) bool {
 	var prevStream any
 	if existing != nil {
@@ -692,7 +695,7 @@ func (d *NodeDomain) guardServerNames(c *gin.Context, node *NodeRecord, input ma
 	names := usableServerNames(stringListInput(input["server_names"], nil))
 	suspect := []string{}
 	for _, name := range names {
-		if !xray.SameSite(name, host) {
+		if covered, _ := xray.CoveredByCert(name, dest); !covered {
 			suspect = append(suspect, name)
 		}
 	}
@@ -701,7 +704,7 @@ func (d *NodeDomain) guardServerNames(c *gin.Context, node *NodeRecord, input ma
 		return true
 	}
 
-	d.abort422(c, "这些 serverNames 与 dest（"+host+"）不是同一站点的域名："+
+	d.abort422(c, "这些 serverNames 不在 dest（"+host+"）出示的证书里："+
 		strings.Join(suspect, "、")+
 		"。REALITY 会按客户端 SNI 向 dest 取证书，dest 给不出证书的域名会让被分到的用户全部连不上。"+
 		"若确认这些域名由 dest 的同一张证书覆盖（CDN 多 SAN），请确认后再保存。")
