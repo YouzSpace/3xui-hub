@@ -124,6 +124,28 @@ type MailRecipientFilter struct {
 	UserStatus string // normal|over|expired，空按 normal
 }
 
+// MailBatchProgress 是一个批次的发送进度（GET /admin-api/email/batch-progress）。
+//
+// 分母没法从库里反推得完全准确（收件人集合会随用户状态变化），所以两套都给：
+// Sent+Failed 是库里的既成事实，Total/Remaining 是本批入队时的 total 与队列内存水位。
+type MailBatchProgress struct {
+	BatchID int64
+	// Total 是入队时算出的总封数（前端发 batch-send 时拿到的 total，可传回来做分母）。
+	Total int64
+	// Sent / Failed 是库里该批次已落库的封数。
+	Sent   int64
+	Failed int64
+	// FirstAt / LastAt 是该批次首/末封的落库时刻。
+	FirstAt *time.Time
+	LastAt  *time.Time
+	// Queued 是队列里还没取出的封数（进程内存水位，重启归零）。
+	Queued int64
+	// Sending 是正在发的那封（0/1）。
+	Sending int64
+	// QueueFailed 是本次进程启动以来发信失败的封数（含非本批）。
+	QueueFailed int64
+}
+
 // MailStore 是邮件域对数据库的全部依赖。
 type MailStore interface {
 	// SiteConfig 读写（键值表；缺失键读出空串，与 SiteConfig::getMany 一致）
@@ -137,6 +159,8 @@ type MailStore interface {
 	// 发信日志
 	MailLogPage(ctx context.Context, f MailLogFilter, page, perPage int64) ([]MailLogRow, int64, error)
 	CreateMailLog(ctx context.Context, row MailLogRow) error
+	// MailBatchProgress 按 batch_id 聚合已发/失败（批量发信进度条用）。
+	MailBatchProgress(ctx context.Context, batchID int64) (*MailBatchProgress, error)
 
 	// SMTP 账号池
 	SMTPAccountStore
@@ -169,12 +193,23 @@ type MailJob struct {
 	UserID       *uint64
 	BatchID      *int64
 	Scene        *string
+	// DelaySeconds 是「相对入队时刻的最早可发偏移」（秒），不是每封之间要睡的秒数。
 	DelaySeconds int
+	// EnqueuedAt 是入队时刻，worker 用它把 DelaySeconds 换算成绝对时刻，避免延迟逐封累加。
+	// 由队列在 Enqueue 时补（调用方零值即可）。
+	EnqueuedAt time.Time
 }
 
 // MailQueue 是队列接缝（PHP 的 SendMailJob::dispatch）。
 type MailQueue interface {
 	Enqueue(job MailJob) error
+}
+
+// MailQueueStater 是可选接口：队列若能报实时水位就实现它（系统监控页用）。
+//
+// goroutine 队列不落库（jobs 表恒 0 行），所以监控页的数字只能由队列自己报。
+type MailQueueStater interface {
+	Stats() MailQueueStats
 }
 
 // MailDeps 是邮件域的依赖清单。
@@ -238,3 +273,13 @@ func NewMailDomain(d MailDeps) *MailDomain {
 // MailQueue 暴露邮件队列（单 goroutine 串行），供 commandRunner 的定时通知邮件
 // （mail:notify-scan / mail:schedule-scan）复用同一队列，避免各自起 worker 并发发信。
 func (m *MailDomain) MailQueue() MailQueue { return m.queue }
+
+// QueueStats 报告邮件队列实时水位（实现 MailQueueCounter，供系统监控页显示）。
+//
+// 队列不是 goroutine 实现（测试注入的 mock）时返回零值 + false，调用方可回退到库表口径。
+func (m *MailDomain) QueueStats() (MailQueueStats, bool) {
+	if stater, ok := m.queue.(MailQueueStater); ok {
+		return stater.Stats(), true
+	}
+	return MailQueueStats{}, false
+}

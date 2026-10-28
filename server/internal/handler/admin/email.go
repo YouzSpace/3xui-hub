@@ -42,6 +42,8 @@ func (d *MailDomain) Register(r gin.IRouter) {
 	r.GET("/email/schedule-mail", d.mailScheduleConfig)
 	r.PUT("/email/schedule-mail", d.mailSaveScheduleConfig)
 	r.GET("/email/logs", d.mailLogs)
+	// 批量发信进度（goroutine 队列不落库，进度由队列水位+mail_logs 聚合得出）
+	r.GET("/email/batch-progress", d.mailBatchProgress)
 	// 多 SMTP 账号池（列表/新增/修改/删除/状态切换）
 	d.registerSMTPAccountRoutes(r)
 }
@@ -544,11 +546,67 @@ func (d *MailDomain) mailBatchSend(c *gin.Context) {
 	if rateEnabled {
 		rateLimited = ratePerMinute
 	}
+	// 预计总时长：限速开启时按 ratePerMinute 推，否则按队列间隔（mail_send_interval_ms）推。
+	// 给前端「预计 X 分钟发完」用；实际以 batch-progress 为准。
+	intervalMs := int64(d.mailSendInterval() / time.Millisecond)
+	var estimateSeconds int64
+	if rateEnabled && ratePerMinute > 0 {
+		estimateSeconds = int64(math.Ceil(float64(total) / float64(ratePerMinute) * 60))
+	} else {
+		estimateSeconds = int64(total) * intervalMs / 1000
+	}
 	d.success(c, jo(
 		"batch_id", batchIDInt,
 		"total", total,
 		"rate_limited", rateLimited,
+		"send_interval_ms", intervalMs,
+		"estimate_seconds", estimateSeconds,
 	), fmt.Sprintf("已加入发送队列，共 %d 封", total))
+}
+
+// mailBatchProgress 对齐 GET /admin-api/email/batch-progress?batch_id=xxx。
+//
+// goroutine 队列不落库，所以「还剩几封」只能由队列内存水位 + 库里的既成事实拼出来：
+// sent/failed 数库，queued/sending 读队列。重启进程后 queued 归零、sent/failed 保留。
+func (d *MailDomain) mailBatchProgress(c *gin.Context) {
+	raw := ""
+	if s := queryString(c, "batch_id"); s != nil {
+		raw = strings.TrimSpace(*s)
+	}
+	batchID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || batchID <= 0 {
+		d.failValidation(c, "batch_id 无效")
+		return
+	}
+
+	p, err := d.store.MailBatchProgress(ctxOf(c), batchID)
+	if err != nil {
+		d.failServer(c, "查询批次进度", err)
+		return
+	}
+
+	var queued, sending, qfailed int64
+	if stater, ok := d.queue.(MailQueueStater); ok {
+		st := stater.Stats()
+		queued, sending, qfailed = st.Pending, st.Running, st.Failed
+	}
+
+	// total 取「库里已发 + 队列里还排着的」：两者相加就是本批还没发完的量，
+	// 比复算用户表更贴近实际（用户状态会变）。done 到位时 total == sent+failed。
+	total := p.Sent + p.Failed + queued + sending
+	d.success(c, jo(
+		"batch_id", p.BatchID,
+		"total", total,
+		"sent", p.Sent,
+		"failed", p.Failed,
+		"remaining", queued+sending,
+		"queued", queued,
+		"sending", sending,
+		"queue_failed", qfailed,
+		"done", queued == 0 && sending == 0,
+		"first_at", nullableEloq(p.FirstAt),
+		"last_at", nullableEloq(p.LastAt),
+	))
 }
 
 // resolveRecipients 对齐 MailBatchService::resolveRecipients（找不到人返回 error）。

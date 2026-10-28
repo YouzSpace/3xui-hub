@@ -81,9 +81,21 @@ type SystemStore interface {
 	// WorkerHeartbeat 对齐 Cache::get('controlhub:worker-heartbeat')。
 	WorkerHeartbeat(ctx context.Context) (*time.Time, error)
 	// QueueCounts 返回 pending / running / failed。
+	//
+	// ⚠️ 这是 **Laravel jobs/failed_jobs 表** 的口径；Go 侧队列走进程内 goroutine，
+	// 纯 Go 部署下这两张表恒为 0 行，不能代表真实排队情况。真实水位由
+	// MailQueueStater 上报，见 workerStatus 的 queueStats。
 	QueueCounts(ctx context.Context) (pending, running, failed int64, err error)
 	// FailedJobsRecent 最近 N 条 failed_jobs。
 	FailedJobsRecent(ctx context.Context, limit int64) ([]SystemFailedJob, error)
+}
+
+// MailQueueCounter 是系统域读取邮件队列水位的接缝（可选注入）。
+//
+// goroutine 队列不落库，监控页要显示「排队中/运行中/失败」只能由队列自己报数。
+// ok=false 表示该实现不报数（如测试注入的假队列），系统域回退到 jobs 表口径。
+type MailQueueCounter interface {
+	QueueStats() (MailQueueStats, bool)
 }
 
 // PHPStatus 是 PHP 运行时体检结果（php2shell CVE 判定）。
@@ -160,9 +172,12 @@ type GeodataService interface {
 
 // SystemDeps 是系统域的依赖清单。
 type SystemDeps struct {
-	Store   SystemStore
-	PHP     PHPStatusAuditor
-	Geo     GeodataService
+	Store SystemStore
+	PHP   PHPStatusAuditor
+	Geo   GeodataService
+	// MailQueue 是邮件队列（可选）：注入后监控页的「排队中/运行中/失败」显示真实水位，
+	// 不再读恒为 0 行的 Laravel jobs 表。
+	MailQueue MailQueueCounter
 	// Schedule 是定时任务定义（PHP Laravel Schedule 的静态副本；测试可注入）。
 	Schedule []ScheduledEvent
 	Now      func() time.Time
@@ -171,12 +186,13 @@ type SystemDeps struct {
 
 // SystemDomain 是系统域的 HTTP 入口。
 type SystemDomain struct {
-	store    SystemStore
-	php      PHPStatusAuditor
-	geo      GeodataService
-	schedule []ScheduledEvent
-	now      func() time.Time
-	logger   loggerLike
+	store     SystemStore
+	php       PHPStatusAuditor
+	geo       GeodataService
+	mailQueue MailQueueCounter
+	schedule  []ScheduledEvent
+	now       func() time.Time
+	logger    loggerLike
 }
 
 // NewSystemDomain 组装系统域。
@@ -201,12 +217,13 @@ func NewSystemDomain(d SystemDeps) *SystemDomain {
 		logger = log.Default()
 	}
 	return &SystemDomain{
-		store:    d.Store,
-		php:      php,
-		geo:      d.Geo,
-		schedule: sched,
-		now:      now,
-		logger:   logger,
+		store:     d.Store,
+		php:       php,
+		geo:       d.Geo,
+		mailQueue: d.MailQueue,
+		schedule:  sched,
+		now:       now,
+		logger:    logger,
 	}
 }
 

@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// mailQueue 是 MailQueue 的 goroutine 实现：单 goroutine 串行消费 + DelaySeconds 延迟。
+// mailQueue 是 MailQueue 的 goroutine 实现：单 goroutine 串行消费 + 按绝对时刻限速。
 //
 // 对齐 PHP 语义（SendMailJob::onQueue + queue:work 单线程）：
-//   - 单 goroutine 一封一封发，避免 4 并发触发 SMTP 风控/限流；
-//   - DelaySeconds = (i/perMinute)*60 秒在取到 job 后 sleep（对齐 ->delay()），
-//     限速真正生效，不会一口气全发；
+//   - 单 goroutine 一封一封发，避免并发触发 SMTP 风控/限流；
+//   - DelaySeconds = (i/perMinute)*60 是「相对入队时刻的最早可发偏移」，**不是每封之间
+//     要睡的秒数**。worker 只睡到「该封的最早可发时刻」为止（wait = EnqueuedAt+delay-now），
+//     所以延迟不会逐封累加（旧实现直接 sleep(DelaySeconds)，第 99 封要多睡 19 分钟，
+//     整批 100 封要跑 27 小时——那是 bug，不是限速）；
 //   - 发信执行体由 MailDomain.deliver 提供（load 配置 + 发信 + 写 mail_logs + 失败语义）。
 type mailQueue struct {
 	jobs    chan MailJob
@@ -20,13 +23,31 @@ type mailQueue struct {
 	logger  loggerLike
 
 	// interval 返回两封之间的间隔（读 site_config 的 mail_send_interval_ms）；
-	// sleep 可注入（测试里替换成记账不真睡）。
+	// sleep 可注入（测试里替换成记账不真睡）；now 可注入（测试里控制时钟）。
 	interval func() time.Duration
 	sleep    func(time.Duration)
+	now      func() time.Time
+
+	// 运行时计数（系统监控页读它；goroutine 队列不落库，jobs 表永远是 0 行）。
+	running int32 // 0/1，是否正在发某一封
+	sent    int64
+	failed  int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// MailQueueStats 是邮件队列的实时水位（供 /admin-api/system/status 展示）。
+type MailQueueStats struct {
+	// Pending 是还没取出来的封数（chan 里排队的）。
+	Pending int64
+	// Running 是正在发的那封（单并发，最多 1）。
+	Running int64
+	// Failed 是本次进程启动以来发信失败的封数。
+	Failed int64
+	// Sent 是本次进程启动以来发信成功的封数。
+	Sent int64
 }
 
 // newMailQueue 构造并启动单 worker 的邮件队列。
@@ -40,6 +61,7 @@ func newMailQueue(deliver func(MailJob), logger loggerLike, interval func() time
 		logger:   logger,
 		interval: interval,
 		sleep:    time.Sleep,
+		now:      time.Now,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
@@ -49,7 +71,12 @@ func newMailQueue(deliver func(MailJob), logger loggerLike, interval func() time
 }
 
 // Enqueue 实现 MailQueue（PHP 的 SendMailJob::dispatch）。
+//
+// 入队时刻记进 job.EnqueuedAt：DelaySeconds 是相对它的偏移，worker 据此算「最早可发时刻」。
 func (q *mailQueue) Enqueue(job MailJob) error {
+	if job.EnqueuedAt.IsZero() {
+		job.EnqueuedAt = q.now()
+	}
 	select {
 	case <-q.ctx.Done():
 		return fmt.Errorf("邮件队列已停止")
@@ -58,10 +85,21 @@ func (q *mailQueue) Enqueue(job MailJob) error {
 	}
 }
 
-// worker 单 goroutine 消费：DelaySeconds 延迟 + 串行发信 + 封间隔。
+// Stats 返回队列实时水位。
+func (q *mailQueue) Stats() MailQueueStats {
+	return MailQueueStats{
+		Pending: int64(len(q.jobs)),
+		Running: int64(atomic.LoadInt32(&q.running)),
+		Failed:  atomic.LoadInt64(&q.failed),
+		Sent:    atomic.LoadInt64(&q.sent),
+	}
+}
+
+// worker 单 goroutine 消费：等到该封的最早可发时刻 → 发 → 封间隔。
 //
-// 间隔在 deliver 之后、取下一封之前生效（mail_send_interval_ms，仅 >0 才 sleep）；
-// 每封各自读配置，改配置后下一封立即生效。
+// 两个等待都不累加：
+//   - 限速等待只等到 EnqueuedAt+DelaySeconds（已过期就立刻发，不补睡）；
+//   - mail_send_interval_ms 是「发完这封、再发下一封之前」的间隔，只睡一次。
 func (q *mailQueue) worker() {
 	defer q.wg.Done()
 	for {
@@ -69,14 +107,40 @@ func (q *mailQueue) worker() {
 		case <-q.ctx.Done():
 			return
 		case job := <-q.jobs:
-			if job.DelaySeconds > 0 {
-				q.sleep(time.Duration(job.DelaySeconds) * time.Second)
+			if wait := q.rateWait(job); wait > 0 {
+				q.sleep(wait)
 			}
+			atomic.StoreInt32(&q.running, 1)
 			q.deliver(job)
+			atomic.StoreInt32(&q.running, 0)
 			if d := q.currentInterval(); d > 0 {
 				q.sleep(d)
 			}
 		}
+	}
+}
+
+// rateWait 算出「还要等多久才轮到这封」：EnqueuedAt + DelaySeconds - 现在。
+//
+// DelaySeconds <= 0 或已过期一律返回 0（立刻发）。这样第 i 封最早在批次开始后
+// (i/perMinute) 分钟发出，而不是在「前面所有封都睡完之后」再睡。
+func (q *mailQueue) rateWait(job MailJob) time.Duration {
+	if job.DelaySeconds <= 0 || job.EnqueuedAt.IsZero() {
+		return 0
+	}
+	notBefore := job.EnqueuedAt.Add(time.Duration(job.DelaySeconds) * time.Second)
+	if wait := notBefore.Sub(q.now()); wait > 0 {
+		return wait
+	}
+	return 0
+}
+
+// record 记一封的发送结果（stats 用）。
+func (q *mailQueue) record(ok bool) {
+	if ok {
+		atomic.AddInt64(&q.sent, 1)
+	} else {
+		atomic.AddInt64(&q.failed, 1)
 	}
 }
 
@@ -107,6 +171,7 @@ func (d *MailDomain) deliver(job MailJob) {
 	cfg, err := d.store.MailConfigMany(ctx, emailConfigKeys)
 	if err != nil {
 		d.logger.Printf("admin mail deliver 读配置失败: %v", err)
+		d.recordMailResult(false)
 		return
 	}
 	result := d.deliverWithPool(ctx, job, cfg)
@@ -137,5 +202,13 @@ func (d *MailDomain) deliver(job MailJob) {
 	}
 	if err := d.store.CreateMailLog(ctx, row); err != nil {
 		d.logger.Printf("admin 写发信日志失败: %v", err)
+	}
+	d.recordMailResult(sendErr == nil)
+}
+
+// recordMailResult 把结果记进队列水位（nil 队列或非 goroutine 实现时静默跳过）。
+func (d *MailDomain) recordMailResult(ok bool) {
+	if q, isQueue := d.queue.(*mailQueue); isQueue {
+		q.record(ok)
 	}
 }

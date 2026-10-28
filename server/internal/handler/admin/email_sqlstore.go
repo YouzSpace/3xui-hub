@@ -272,6 +272,34 @@ func (s *mailSQLStore) CreateMailLog(ctx context.Context, row MailLogRow) error 
 	return err
 }
 
+// MailBatchProgress 按 batch_id 统计已发/失败（进度条用，只读聚合）。
+func (s *mailSQLStore) MailBatchProgress(ctx context.Context, batchID int64) (*MailBatchProgress, error) {
+	var (
+		sent, failed          int64
+		firstAt, lastAt       sql.NullTime
+	)
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT
+		   SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent,
+		   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+		   MIN(created_at) AS first_at,
+		   MAX(created_at) AS last_at
+		 FROM mail_logs WHERE batch_id = ?`, batchID).
+		Scan(&sent, &failed, &firstAt, &lastAt); err != nil {
+		return nil, err
+	}
+	p := &MailBatchProgress{BatchID: batchID, Sent: sent, Failed: failed}
+	if firstAt.Valid {
+		t := firstAt.Time
+		p.FirstAt = &t
+	}
+	if lastAt.Valid {
+		t := lastAt.Time
+		p.LastAt = &t
+	}
+	return p, nil
+}
+
 // parseInt64Strict 严格解析十进制整数。
 func parseInt64Strict(s string) (int64, error) {
 	var n int64

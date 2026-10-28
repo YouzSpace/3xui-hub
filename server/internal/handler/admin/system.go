@@ -154,6 +154,15 @@ func (d *SystemDomain) workerStatus(ctx context.Context) *jsObj {
 		// 队列表未就绪时保持 0 / 空数组的容错语义，但必须留痕
 		d.logger.Printf("系统状态：读取队列数据失败: %v", qerr)
 	}
+	// Go 侧队列走进程内 goroutine，Laravel 的 jobs/failed_jobs 表在纯 Go 部署下恒为 0 行
+	// （历史表现：面板永远显示 0/0/0，用户以为没在排队）。有内存队列时以它为准。
+	queueSource := "jobs_table"
+	if d.mailQueue != nil {
+		if st, ok := d.mailQueue.QueueStats(); ok {
+			pending, running, failed = st.Pending, st.Running, st.Failed
+			queueSource = "memory_queue"
+		}
+	}
 	recent, ferr := d.store.FailedJobsRecent(ctx, 5)
 	if ferr != nil {
 		d.logger.Printf("系统状态：读取失败任务失败: %v", ferr)
@@ -184,6 +193,7 @@ func (d *SystemDomain) workerStatus(ctx context.Context) *jsObj {
 		"pending", pending,
 		"running", running,
 		"failed_count", failed,
+		"queue_source", queueSource,
 		"recent_failed", recentOut,
 	)
 }
