@@ -47,7 +47,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Logf: logger.Printf,
 	})
 	registerProvisionHandler(queue, db, cfg.AppKey, logger)
-	registerDomainHandler(queue, db, logger)
+	registerDomainHandler(queue, asyncSvc, db, logger)
 	// 节点类 Job（初始化 / 入站同步 / 扫描 / 删除清理）。不注册的话节点域派出的
 	// async_tasks 会被队列按「不支持的任务类型」丢掉，任务永远 pending。
 	registerNodeJobs(queue, db, cfg.AppKey, asyncSvc, logger)
