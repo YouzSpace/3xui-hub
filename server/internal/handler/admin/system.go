@@ -163,6 +163,17 @@ func (d *SystemDomain) workerStatus(ctx context.Context) *jsObj {
 			queueSource = "memory_queue"
 		}
 	}
+	// 节点任务队列是另一条 goroutine 队列（task.Queue），必须单独取水位 ——
+	// 只读邮件队列的话，用户跑「节点初始化/入站同步」时这里仍然是 0/0/0。
+	// 两条队列同时在跑时取两者之和（它们是同一个 worker 进程里的并发负载）。
+	if d.taskQueue != nil {
+		if tp, tr, tf, ok := d.taskQueue.Stats(); ok {
+			pending += tp
+			running += tr
+			failed += tf
+			queueSource = "memory_queue"
+		}
+	}
 	recent, ferr := d.store.FailedJobsRecent(ctx, 5)
 	if ferr != nil {
 		d.logger.Printf("系统状态：读取失败任务失败: %v", ferr)

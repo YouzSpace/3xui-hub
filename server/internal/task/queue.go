@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -80,10 +81,35 @@ type Queue struct {
 	sleep   func(time.Duration)
 	logf    func(format string, args ...any)
 
+	// queued / running / failed 是**队列实时水位**，供系统监控页显示。
+	//
+	// 为什么必须自己数：Go 侧队列走进程内 goroutine + channel，Laravel 的
+	// jobs/failed_jobs 表在纯 Go 部署下恒为 0 行，监控页会一直显示「排队中 0 /
+	// 运行中 0 / 失败 0」，用户以为任务根本没在跑（线上就踩过这个）。
+	queued  int64 // 已入队未取走（含 channel 缓冲 + 已入队未消费）
+	running int64 // 已取走正在执行
+	failed  int64 // 累计失败（handler 重试耗尽的单元数，进程生命周期内只增）
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	once   sync.Once
+}
+
+// QueueStats 是队列实时水位的快照。
+type QueueStats struct {
+	Pending int64
+	Running int64
+	Failed  int64
+}
+
+// Stats 返回队列实时水位（实现 admin.QueueCounter）。
+func (q *Queue) Stats() QueueStats {
+	return QueueStats{
+		Pending: atomic.LoadInt64(&q.queued),
+		Running: atomic.LoadInt64(&q.running),
+		Failed:  atomic.LoadInt64(&q.failed),
+	}
 }
 
 // QueueOptions 是队列构造参数。
@@ -161,6 +187,16 @@ func (q *Queue) Enqueue(job JobPayload) {
 	case <-q.ctx.Done():
 		q.logf("[queue] 队列已停止，丢弃 %s task=%d item=%s", job.Kind, job.TaskID, job.ItemKey)
 		return
+	default:
+	}
+	// 先记「排队中」再入 channel：worker 取走时立刻 -1 并 +1 到运行中，
+	// 这样监控页的 queued+running 始终等于「还没跑完的单元数」，不会出现数字缺口。
+	atomic.AddInt64(&q.queued, 1)
+	select {
+	case <-q.ctx.Done():
+		atomic.AddInt64(&q.queued, -1)
+		q.logf("[queue] 队列已停止，丢弃 %s task=%d item=%s", job.Kind, job.TaskID, job.ItemKey)
+		return
 	case q.jobs <- job:
 	}
 }
@@ -189,7 +225,10 @@ func (q *Queue) worker(_ int) {
 		case <-q.ctx.Done():
 			return
 		case job := <-q.jobs:
+			atomic.AddInt64(&q.queued, -1)
+			atomic.AddInt64(&q.running, 1)
 			q.execute(q.ctx, job)
+			atomic.AddInt64(&q.running, -1)
 		}
 	}
 }
@@ -226,6 +265,8 @@ func (q *Queue) execute(ctx context.Context, job JobPayload) {
 
 // failItem 把子项标失败（taskID/itemKey 为空的单元只记日志）。
 func (q *Queue) failItem(ctx context.Context, job JobPayload, summary string) {
+	// 监控页的「失败累计」是队列级计数：不论有没有子项，重试耗尽的单元都算一次。
+	atomic.AddInt64(&q.failed, 1)
 	if q.svc == nil || job.TaskID == 0 || job.ItemKey == "" {
 		return
 	}

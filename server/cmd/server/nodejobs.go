@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"controlhub-server/internal/driver/threexui"
 	"controlhub-server/internal/handler/admin"
@@ -111,36 +112,67 @@ func isXrayNode(n *jobNode) bool {
 }
 
 // jobUser 是 Job 用到的用户行。
+//
+// ⚠️ 这里的 Email 是**用户登录用的邮箱**，只用于日志与通知；
+// **绝不能当 3x-ui 的 client 主键**（那是 clientEmailOf(ID) 的活）。见 clientEmailOf。
 type jobUser struct {
-	ID           int64
-	Email        string
-	Protocol     string
-	PlanID       sql.NullInt64
-	Enabled      bool
-	TrafficLimit int64
-	ExpiredAt    sql.NullTime
+	ID                 int64
+	Email              string
+	Protocol           string
+	PlanID             sql.NullInt64
+	Enabled            bool
+	TrafficLimit       int64
+	TrafficUsed        int64
+	MonthlyTrafficUsed int64
+	MonthlyLimit       int64
+	ExpiredAt          sql.NullTime
 }
 
-// clientEmail 与 collector.clientEmail 同口径（ch_user_{id}）。
+// clientEmailOf 是 3x-ui client 主键的唯一口径（`ch_user_{id}`）。
+//
+// 全仓同口径：collector.clientEmail / xray.ClientEmail / threexui.ClientEmail /
+// UserRow.ClientEmail / provisioner 建号 / 订阅生成 / 流量归属 全都用它。
+// 历史 bug：node-init 曾用 users.email 当主键建号（有真实邮箱就不回落），
+// 结果这批 client 与其余链路对不上 —— 流量永远 0、对账当孤儿跳过、清理也删不掉。
 func clientEmailOf(userID int64) string { return "ch_user_" + strconv.FormatInt(userID, 10) }
 
 // loadJobUser 读用户行（不存在返回 (nil, nil)）。
 func loadJobUser(ctx context.Context, db *sql.DB, userID int64) (*jobUser, error) {
 	var u jobUser
 	err := db.QueryRowContext(ctx,
-		`SELECT id, email, protocol, plan_id, enabled, traffic_limit, expired_at
+		`SELECT id, email, protocol, plan_id, enabled, traffic_limit, traffic_used,
+		        monthly_traffic_used, monthly_traffic_limit, expired_at
 		 FROM users WHERE id = ?`, userID).
-		Scan(&u.ID, &u.Email, &u.Protocol, &u.PlanID, &u.Enabled, &u.TrafficLimit, &u.ExpiredAt)
+		Scan(&u.ID, &u.Email, &u.Protocol, &u.PlanID, &u.Enabled, &u.TrafficLimit,
+			&u.TrafficUsed, &u.MonthlyTrafficUsed, &u.MonthlyLimit, &u.ExpiredAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(u.Email) == "" {
-		u.Email = clientEmailOf(u.ID)
-	}
 	return &u, nil
+}
+
+// usableNow 判定「套餐现在还能用」：有套餐 + 未过期 + 总量未超 + 当月未超。
+//
+// 判据与封禁扫描器 collector.banReasonAt **逐条一致**（那边是私有的，无法直接复用）；
+// 三处口径必须同源，改一处要同步另一处。不看用户的登录邮箱，也不看 enabled ——
+// enabled 只决定 client 建出来是开还是关（建号时仍按 u.Enabled 下发）。
+func (u *jobUser) usableNow(now time.Time) bool {
+	if u == nil || !u.PlanID.Valid {
+		return false
+	}
+	if u.ExpiredAt.Valid && u.ExpiredAt.Time.Before(now) {
+		return false
+	}
+	if u.MonthlyLimit > 0 && u.MonthlyTrafficUsed >= u.MonthlyLimit {
+		return false
+	}
+	if u.TrafficLimit > 0 && u.TrafficUsed >= u.TrafficLimit {
+		return false
+	}
+	return true
 }
 
 // inboundIDsForNode 取该节点上协议匹配的入站 id（对齐 Node::inboundIdsFor）。
@@ -273,9 +305,10 @@ func runNodeInboundSync(ctx context.Context, db *sql.DB, appKey []byte, svc *tas
 			continue
 		}
 
-		if err := client.AttachClient(ctx, u.Email, ids); err != nil {
+		email := clientEmailOf(u.ID)
+		if err := client.AttachClient(ctx, email, ids); err != nil {
 			failJobItem(ctx, svc, job.TaskID, key,
-				fmt.Sprintf("挂载入站失败（user=%d email=%s inbounds=%v）：%v", uid, u.Email, ids, err))
+				fmt.Sprintf("挂载入站失败（user=%d email=%s inbounds=%v）：%v", uid, email, ids, err))
 			continue
 		}
 		completeJobItem(ctx, svc, job.TaskID, key)
@@ -366,7 +399,7 @@ func runNodeInboundScan(ctx context.Context, db *sql.DB, appKey []byte, svc *tas
 			continue
 		}
 
-		st, exists := snap.Clients[u.Email]
+		st, exists := snap.Clients[clientEmailOf(u.ID)]
 		switch {
 		case !exists && snap.Complete:
 			// 面板上根本没有这个 client：老语义就是跳过（入站同步不负责建号）。
@@ -471,6 +504,7 @@ func runNodeInitUser(ctx context.Context, db *sql.DB, appKey []byte, svc *task.S
 	}
 
 	client := threeXUiFor(node, appKey)
+	now := time.Now().UTC()
 
 	for i, uid := range job.UserIDs {
 		key := itemKeyAt(job, i)
@@ -489,14 +523,17 @@ func runNodeInitUser(ctx context.Context, db *sql.DB, appKey []byte, svc *task.S
 			continue
 		}
 
+		// client 主键固定是 ch_user_{id}（与订阅/流量归属/对账同一口径）。
+		email := clientEmailOf(u.ID)
+
 		// 幂等清理：该用户在此节点已有残留则先删，再重建（避免重接后重复计流量）。
-		existing, getErr := client.GetClient(ctx, u.Email)
+		existing, getErr := client.GetClient(ctx, email)
 		if getErr != nil {
 			failJobItem(ctx, svc, job.TaskID, key, "查询残留 client 失败："+getErr.Error())
 			continue
 		}
 		if existing != nil {
-			if err := client.DeleteClient(ctx, u.Email, false); err != nil {
+			if err := client.DeleteClient(ctx, email, false); err != nil {
 				failJobItem(ctx, svc, job.TaskID, key, "清理残留 client 失败："+err.Error())
 				continue
 			}
@@ -507,8 +544,9 @@ func runNodeInitUser(ctx context.Context, db *sql.DB, appKey []byte, svc *task.S
 			failJobItem(ctx, svc, job.TaskID, key, "读取节点入站失败："+err.Error())
 			continue
 		}
-		if !u.PlanID.Valid || len(ids) == 0 {
-			// 无套餐或未配置入站：无 client 可建，仅清理残留即可。
+		// 只给「套餐现在还能用」的人建号：无套餐 / 已过期 / 总量超 / 当月超 一律不建。
+		// 与封禁扫描器同一判据；用户续费或重置流量后，下一轮建号任务会重新建回来。
+		if !u.usableNow(now) || len(ids) == 0 {
 			completeJobItem(ctx, svc, job.TaskID, key)
 			continue
 		}
@@ -522,7 +560,7 @@ func runNodeInitUser(ctx context.Context, db *sql.DB, appKey []byte, svc *task.S
 			expiryMs = u.ExpiredAt.Time.UnixMilli()
 		}
 		payload := map[string]any{
-			"email":      u.Email,
+			"email":      email,
 			"enable":     u.Enabled,
 			"totalGB":    totalGB,
 			"expiryTime": expiryMs,

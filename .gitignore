@@ -5,3 +5,18 @@
 
 # 本地诊断/临时产物
 *.log
+
+# Go 编译产物（`go build ./...` 会在包目录里留下同名可执行文件）
+server/server
+server/server.exe
+server/*.exe
+server/*.test
+*.test
+
+# 编辑器 / 系统垃圾
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

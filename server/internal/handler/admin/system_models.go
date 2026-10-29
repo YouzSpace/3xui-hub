@@ -98,6 +98,15 @@ type MailQueueCounter interface {
 	QueueStats() (MailQueueStats, bool)
 }
 
+// TaskQueueCounter 是系统域读取**节点任务队列**水位的接缝（可选注入）。
+//
+// 与 MailQueueCounter 并列而非合并：两者是两条独立的 goroutine 队列（邮件单线程串行、
+// 节点任务多 worker），水位必须分别取；只能有一个接缝的话，监控页就只能显示其中一条。
+// ok=false 表示该实现不报数（测试注入的假队列），系统域回退到 jobs 表口径。
+type TaskQueueCounter interface {
+	Stats() (pending, running, failed int64, ok bool)
+}
+
 // PHPStatus 是 PHP 运行时体检结果（php2shell CVE 判定）。
 type PHPStatus struct {
 	Checked  bool
@@ -178,6 +187,8 @@ type SystemDeps struct {
 	// MailQueue 是邮件队列（可选）：注入后监控页的「排队中/运行中/失败」显示真实水位，
 	// 不再读恒为 0 行的 Laravel jobs 表。
 	MailQueue MailQueueCounter
+	// TaskQueue 是节点任务队列（可选）：同样报内存水位，与 MailQueue 并列注入。
+	TaskQueue TaskQueueCounter
 	// Schedule 是定时任务定义（PHP Laravel Schedule 的静态副本；测试可注入）。
 	Schedule []ScheduledEvent
 	Now      func() time.Time
@@ -190,6 +201,7 @@ type SystemDomain struct {
 	php       PHPStatusAuditor
 	geo       GeodataService
 	mailQueue MailQueueCounter
+	taskQueue TaskQueueCounter
 	schedule  []ScheduledEvent
 	now       func() time.Time
 	logger    loggerLike
@@ -221,6 +233,7 @@ func NewSystemDomain(d SystemDeps) *SystemDomain {
 		php:       php,
 		geo:       d.Geo,
 		mailQueue: d.MailQueue,
+		taskQueue: d.TaskQueue,
 		schedule:  sched,
 		now:       now,
 		logger:    logger,

@@ -235,6 +235,12 @@ func jsonGetString(v any, path ...string) string {
 }
 
 // nodeScalarString 复刻 PHP 的 (string) 转换（本域只用到的标量）。
+//
+// ⚠️ 必须能吃 json.Number：本仓的 phpjson.Decode 用 `dec.UseNumber()` 解码，
+// 3x-ui 返回的所有数字（id / port / total / expiryTime …）都是 json.Number 而不是
+// float64。以前这里只有 int64/float64/int 分支，数字一律落到 return "" ——
+// 表现就是入站选择器里端口显示成 `JP02 (vless :?)`（见 node_crud.probeInbounds
+// 里 `port := nodeScalarString(in["port"]); if port == "" { port = "?" }`）。
 func nodeScalarString(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -252,6 +258,12 @@ func nodeScalarString(v any) string {
 		return strconv.FormatFloat(t, 'f', -1, 64)
 	case int:
 		return strconv.Itoa(t)
+	case json.Number:
+		// 整数形态（3x-ui 的 id/port 都是整数）直接按整数输出，避免出现 "30159.0"。
+		if i, err := t.Int64(); err == nil {
+			return strconv.FormatInt(i, 10)
+		}
+		return t.String()
 	}
 	return ""
 }

@@ -698,8 +698,19 @@ func (s *nodeSQLStore) EligibleProtocolCounts(ctx context.Context) (map[string]i
 	return out, rows.Err()
 }
 
+// AllUserIDs 返回**套餐现在还能用**的用户 id（建号任务的候选集）。
+//
+// 「还能用」= 有套餐 + 未过期 + 总量未超 + 当月未超，与封禁扫描器 banReasonAt 同判据。
+// 以前这里取全部用户：几万个过期/无套餐的人也被拆成 item 派下去，每个都要一次建号判断，
+// 白白浪费队列吞吐（线上表现为「新接节点初始化要跑很久」）。
+// 现在只取真正会建号的人；用户续费/重置流量后再跑初始化仍会被重新算进来。
 func (s *nodeSQLStore) AllUserIDs(ctx context.Context) ([]uint64, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM users ORDER BY id")
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id FROM users WHERE plan_id IS NOT NULL AND enabled = 1 "+
+			"AND (expired_at IS NULL OR expired_at > NOW()) "+
+			"AND (monthly_traffic_limit = 0 OR monthly_traffic_used < monthly_traffic_limit) "+
+			"AND (traffic_limit = 0 OR traffic_used < traffic_limit) "+
+			"ORDER BY id")
 	if err != nil {
 		return nil, err
 	}

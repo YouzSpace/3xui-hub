@@ -1,0 +1,53 @@
+# 统一行尾：仓库内一律 LF，检出时不转换。
+#
+# 为什么必须写死：Windows 上 core.autocrlf=true 会把工作区检出成 CRLF，
+# 一提交就把整份文件算成「全文重写」（PR 上出现过 +4305/-4171，而真实改动只有
+# +156/-22），review 无法看、历史也不可读。仓库是跨平台的（Linux 部署 + Windows 开发）。
+* text=auto eol=lf
+
+# 明确按文本处理、强制 LF 的源码与配置
+*.go      text eol=lf
+*.php     text eol=lf
+*.js      text eol=lf
+*.mjs     text eol=lf
+*.ts      text eol=lf
+*.css     text eol=lf
+*.html    text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.sh      text eol=lf
+*.md      text eol=lf
+*.sql     text eol=lf
+.gitignore       text eol=lf
+.gitattributes   text eol=lf
+
+# Windows 批处理必须是 CRLF（cmd.exe 对纯 LF 的 goto/label 有坑）
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# 二进制：不做任何转换，也不在 diff 里显示内容
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.webp    binary
+*.svg     text eol=lf
+*.woff    binary
+*.woff2   binary
+*.ttf     binary
+*.eot     binary
+*.zip     binary
+*.gz      binary
+*.tar     binary
+*.exe     binary
+*.dll     binary
+*.so      binary
+*.dat     binary
+
+# 编译产物：跨平台构建时会出现在 server/ 下，绝不入库
+server/server            binary
+server/server.exe        binary
+server/*.exe             binary
+server/*.test            binary
