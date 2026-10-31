@@ -264,5 +264,8 @@ func defaultScheduledEvents() []ScheduledEvent {
 		{Command: "geodata-update", Expression: "45 4 * * 1", HasMutex: true},
 		{Command: "users-reconcile-enable", Expression: "*/5 * * * *", HasMutex: true},
 		{Command: "reality-audit", Expression: "10 4 * * *", HasMutex: true},
+		// Go 侧新增（PHP 没有对应条目）：本机证书目录 → TLS 证书库，
+		// acme.sh 续签后自动把新 PEM 刷进库，HY2 入站不用改。
+		{Command: "xray-certificates-sync", Expression: "0 */6 * * *", HasMutex: true},
 	}
 }

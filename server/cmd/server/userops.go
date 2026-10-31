@@ -216,9 +216,13 @@ func idsExcept(all, exclude []int64) []int64 {
 
 // provisionThreeX 给 3x-ui 节点建 client（对齐 PHP prepareClientData + 存在则更新）。
 //
-// ⚠️ 更新分支必须「先取回节点上的完整 client，归一化后只覆盖我们要改的字段」：
-// 3x-ui 的 clients/update 是整条替换语义，只发 email/enable/totalGB/expiryTime/limitIp
-// 会把没带上的一串字段（uuid、flow、limitIp、subId…）按零值写掉。
+// 新建与更新走**两套不同**的负载，别合并：
+//   - 新建（clients/add）：用 threexui.ClientPayload 带协议凭据，否则 hysteria 的 client
+//     因缺 auth 建不出来（3x-ui 报 empty client ID），trojan/shadowsocks 缺 password 同理。
+//   - 更新（clients/update）：**不带凭据**，且必须「先取回节点上的完整 client、归一化后只
+//     覆盖我们要改的字段」。3x-ui 的 update 是整条替换语义，只发
+//     email/enable/totalGB/expiryTime/limitIp 会把没带上的一串字段（uuid、flow、limitIp、
+//     subId…）按零值写掉。
 func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Client, nodeID int64, user *admin.UserRow, email string) error {
 	inboundIDs, err := o.col.InboundIDs(ctx, nodeID, user.Protocol)
 	if err != nil {
@@ -237,21 +241,18 @@ func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Cli
 
 	existing, getErr := client.GetClient(ctx, email)
 	if getErr != nil || existing == nil {
-		clientData := map[string]any{
-			"email":   email,
-			"enable":  enable,
-			"totalGB": totalGB,
-			"limitIp": 0,
-		}
-		if expiryMs > 0 {
-			clientData["expiryTime"] = expiryMs
-		}
+		clientData := threexui.ClientPayload(email, enable, totalGB, expiryMs)
 		if _, err := client.AddClient(ctx, clientData, inboundIDs); err != nil {
 			return fmt.Errorf("AddClient: %w", err)
 		}
 		return nil
 	}
 
+	// 更新：**刻意不传凭据**。3x-ui 的 clients/update 是整条替换语义，但这里是
+	// 「先 GetClient 取回节点上的完整对象、归一化后只覆盖我们要改的字段」——
+	// 凭据（id/password/auth）由 NormalizeForUpdate 原样带回，节点上的 uuid 因此保持不变。
+	// 一旦在这里再显式塞 ClientPayload 的凭据，就会把存量用户的 uuid 换成 users.uuid，
+	// 订阅链接与客户端配置当场失效。
 	payload := collector.NormalizeForUpdate(existing)
 	payload["email"] = email
 	payload["enable"] = enable

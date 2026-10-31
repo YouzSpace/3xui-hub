@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"strconv"
 	"strings"
+	"time"
 
 	"controlhub-server/internal/driver/xray"
 
@@ -64,6 +65,10 @@ func (d *NodeDomain) xrayInboundStore(c *gin.Context) {
 		return
 	}
 
+	// HY2 自动端口跳跃：用户没填区间时后端先探测一段空闲区间写进 payload。
+	// 失败只降级成「无跳跃」，不挡建入站（原因随回执的 hop 段回给前端）。
+	hopAuto, hopReason := d.autoAssignHysteriaHop(c, node, input, nil)
+
 	in, ok := d.buildInboundInput(c, node, input, nil)
 	if !ok {
 		return
@@ -84,10 +89,15 @@ func (d *NodeDomain) xrayInboundStore(c *gin.Context) {
 		d.failServer(c, "统计可用用户", err)
 		return
 	}
-	d.success(c, jo(
+	resp := jo(
 		"inbound", presentXrayInbound(created, counts),
 		"config_version", version,
-	))
+	)
+	// 入站已落库，防火墙这一步只报状态：下发失败不能让创建算失败。
+	if hop := d.applyHysteriaHopAfterSave(c, node, created, hopAuto, hopReason); hop != nil {
+		resp.put("hop", hop)
+	}
+	d.success(c, resp)
 }
 
 // xrayInboundUpdate 对齐 update()。
@@ -109,6 +119,9 @@ func (d *NodeDomain) xrayInboundUpdate(c *gin.Context) {
 		return
 	}
 
+	// HY2 自动端口跳跃（编辑场景）：原配置已有区间就沿用，没有才重新探测。
+	hopAuto, hopReason := d.autoAssignHysteriaHop(c, node, input, existing)
+
 	in, ok := d.buildInboundInput(c, node, input, existing)
 	if !ok {
 		return
@@ -129,10 +142,15 @@ func (d *NodeDomain) xrayInboundUpdate(c *gin.Context) {
 		d.failServer(c, "统计可用用户", err)
 		return
 	}
-	d.success(c, jo(
+	resp := jo(
 		"inbound", presentXrayInbound(updated, counts),
 		"config_version", version,
-	))
+	)
+	// 入站已落库，防火墙这一步只报状态：下发失败不能让保存算失败。
+	if hop := d.applyHysteriaHopAfterSave(c, node, updated, hopAuto, hopReason); hop != nil {
+		resp.put("hop", hop)
+	}
+	d.success(c, resp)
 }
 
 // xrayInboundDestroy 对齐 destroy()。
@@ -379,7 +397,10 @@ func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any
 	v.field("remark", "nullable", "string", "max:128")
 	v.field("port", "required", "integer", "between:1,65535")
 	v.field("listen", "nullable", "string", "max:64")
-	v.field("network", "nullable", "in:tcp,ws,grpc,xhttp,httpupgrade")
+	// hysteria 也在白名单里：HY2 的传输层由 buildInboundInput 强制归一成 hysteria
+	// （内核只认这个名字），前端建 HY2 时固定提交 network=hysteria —— 缺了它这条会被
+	// 这里拦成 422「The selected network is invalid.」，整个 HY2 入站根本建不出来。
+	v.field("network", "nullable", "in:tcp,ws,grpc,xhttp,httpupgrade,hysteria")
 	v.field("security", "nullable", "in:none,tls,reality")
 	v.field("sniffing", "nullable", "array")
 	v.field("sniffing.enabled", "nullable", "boolean")
@@ -470,6 +491,9 @@ func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any
 	// hysteria（HY2）：主端口复用 port；其余见 buildHysteriaStream。
 	v.field("hy_hop_ports", "nullable", "string", "max:64")
 	v.field("hy_hop_interval", "nullable", "string", "max:64")
+	// hy_hop_auto：可选总开关。缺省（不带这个字段）按开启处理 —— HY2 默认自动分配跳跃区间；
+	// 只有显式 false 才关掉（见 autoAssignHysteriaHop）。
+	v.field("hy_hop_auto", "nullable", "boolean")
 	v.field("hy_udp_idle_timeout", "nullable", "integer", "min:2", "max:600")
 	v.field("hy_masquerade_type", "nullable", "in:,proxy,file,string")
 	v.field("hy_masquerade_url", "nullable", "string", "max:255")
@@ -735,11 +759,18 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		in.RealityKeySet = true
 	}
 
+	// certPickReason 是「自动挑证书为什么没挑到」的原因（"" = 挑到了，或压根没走自动挑）。
+	// 只用来把下面的报错文案说准：证书库空 / 全过期，用户要做的操作不一样。
+	certPickReason := ""
 	if protocol == "hysteria" {
 		var prevStream any
 		if existing != nil {
 			prevStream, _ = parseOrderedJS(existing.StreamSettings)
 		}
+		// 证书自动引用：请求没带 tls_cert_id、编辑时原配置也没引用时，从证书库挑一张，
+		// 免得「建一个 HY2 入站先去手抄一个证书 id」。必须放在 buildHysteriaStream 之前
+		// ——它读的就是 input 里的 tls_cert_id。
+		certPickReason = d.autoPickHysteriaCert(c, node, input, prevStream)
 		if !d.buildHysteriaStream(c, input, stream, prevStream) {
 			return XrayInboundInput{}, false
 		}
@@ -812,8 +843,9 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 
 	if protocol == "hysteria" {
 		// HY2 强制 TLS：没引用证书时内核起不来（与 TLS 入站同理）。
+		// 自动挑证书没成功（库空 / 全过期）时，文案要直接指向用户下一步该做什么。
 		if jsonGet(stream, "tlsSettings", xray.CertRefKey) == nil {
-			d.fail(c, "Hysteria 入站必须选择 TLS 证书（证书库引用）", 500)
+			d.fail(c, hysteriaCertMissingMessage(certPickReason), 500)
 			return XrayInboundInput{}, false
 		}
 	}
@@ -840,8 +872,193 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	return in, true
 }
 
-// defaultHopInterval 是端口跳跃的缺省重拨间隔（秒，3x-ui 前端同款 5-10）。
-const defaultHopInterval = "5-10"
+// ---- hysteria 的 TLS 证书自动引用 ----
+
+// 自动挑证书的未命中原因（只影响报错文案：库空 / 全过期 / 缺私钥，用户要做的事不一样）。
+const (
+	certPickEmpty   = "empty"
+	certPickExpired = "expired"
+	certPickNoKey   = "nokey"
+	certPickDBError = "dberr"
+	certPickNoMatch = "nomatch"
+)
+
+// hysteriaCertMissingMessage 把「自动挑不到证书」的原因翻成给管理员看的一句话。
+func hysteriaCertMissingMessage(reason string) string {
+	switch reason {
+	case certPickExpired:
+		return "Hysteria 入站需要 TLS 证书：证书库里的证书都已过期，请先到『TLS 证书库』更新一张再回来"
+	case certPickNoKey:
+		return "Hysteria 入站需要 TLS 证书：证书库里的证书缺少证书或私钥，请先到『TLS 证书库』补全一张再回来"
+	case certPickDBError:
+		return "Hysteria 入站需要 TLS 证书：读取证书库失败，请稍后重试或到『TLS 证书库』手动选一张"
+	case certPickNoMatch:
+		return "Hysteria 入站需要 TLS 证书：证书库里没有与该域名匹配的证书（域名不一致的证书握手会失败，故不自动选用）。请先到『TLS 证书库』为该域名签/导一张，或在下方手动指定"
+	}
+	return "Hysteria 入站需要 TLS 证书：证书库为空，请先到『TLS 证书库』添加一张再回来"
+}
+
+// autoPickHysteriaCert 在「没指定证书」时从证书库自动挑一张，把 tlsCertId 写回请求。
+//
+// 为什么要有这一步：前端建 HY2 时不带 tls_cert_id，而内核没有证书起不来 —— 于是
+// 「证书库里明明有证书」也照样卡在「必须选择 TLS 证书」，用户得先去别处手抄一个 id。
+//
+// 沿用优先：请求带了 tls_cert_id、或编辑时原配置已经引用了证书 → 一个字都不改
+// （避免每次改备注都换证书）。
+//
+// 返回非空 = 没挑到，值是原因常量（只用于报错文案）。
+func (d *NodeDomain) autoPickHysteriaCert(c *gin.Context, node *NodeRecord, input map[string]any, prevStream any) string {
+	if v, present := input["tls_cert_id"]; present && v != nil && inputInt(v) > 0 {
+		return ""
+	}
+	if jsonInt(jsonGet(prevStream, "tlsSettings", xray.CertRefKey)) > 0 {
+		return ""
+	}
+
+	certs, err := d.store.XrayCertificates(ctxOf(c))
+	if err != nil {
+		// 读库失败不能说成「库是空的」：用户会跑去建证书而白忙一场。
+		return certPickDBError
+	}
+	if len(certs) == 0 {
+		return certPickEmpty
+	}
+
+	sni := strings.TrimSpace(nodeStringField(input, "tls_server_name"))
+	if sni == "" {
+		sni = strings.TrimSpace(jsonGetString(prevStream, "tlsSettings", "serverName"))
+	}
+	id, live, material := pickCertForHysteria(certs, sni, nodeHostName(node), d.now())
+	if id > 0 {
+		// 必须写成 inputInt 认识的类型：它只处理 jsonNumber / string / bool / int，
+		// 直接塞 uint64 会被读成 0（= 没选证书），于是「库里有证书也报证书库为空」。
+		input["tls_cert_id"] = int(id)
+		return ""
+	}
+	switch {
+	case live == 0 && material == 0:
+		return certPickNoKey
+	case live == 0:
+		return certPickExpired
+	case live > 0 && (strings.TrimSpace(sni) != "" || strings.TrimSpace(nodeHostName(node)) != ""):
+		// 库里有未过期的证书，但没有一张能覆盖要用的域名 —— 不能拿别的域名凑数。
+		return certPickNoMatch
+	}
+	return certPickEmpty
+}
+
+// pickCertForHysteria 按优先级挑一张证书：① 域名与 SNI 一致 ② 域名与节点主机名一致
+// ③ 未过期里到期最晚的一张（兜底，先让它跑得起来，用户之后可到表单里换）。
+//
+// 返回 (证书 id, 未过期张数, 齐材料张数)：id=0 时调用方按后两个数选报错文案。
+// 过期判定用 not_after <= now；not_after 读不到（PEM 解析失败）按「不知道」处理 ——
+// 不排除它，但优先级排在已知未过期之后（不知道的先别押）。
+func pickCertForHysteria(certs []XrayCertificate, sni, nodeHost string, now time.Time) (uint64, int, int) {
+	type candidate struct {
+		id       uint64
+		domain   string
+		notAfter *time.Time
+	}
+	live := make([]candidate, 0, len(certs))
+	material := 0
+	for i := range certs {
+		c := &certs[i]
+		// 没有证书或没有私钥的行 xray 用不了：不算候选，也不该被选上。
+		if strings.TrimSpace(c.CertPEM) == "" || strings.TrimSpace(c.KeyEnc) == "" {
+			continue
+		}
+		material++
+		if c.NotAfter != nil && !c.NotAfter.After(now) {
+			continue
+		}
+		dom := ""
+		if c.Domain != nil {
+			dom = strings.ToLower(strings.TrimSpace(*c.Domain))
+		}
+		live = append(live, candidate{id: c.ID, domain: dom, notAfter: c.NotAfter})
+	}
+	if len(live) == 0 {
+		return 0, 0, material
+	}
+
+	sni = strings.ToLower(strings.TrimSpace(sni))
+	host := strings.ToLower(strings.TrimSpace(nodeHost))
+
+	// ① 与入站 SNI 匹配
+	if sni != "" {
+		for _, c := range live {
+			if certDomainMatches(c.domain, sni) {
+				return c.id, len(live), material
+			}
+		}
+	}
+	// ② 与节点域名匹配
+	if host != "" && host != sni {
+		for _, c := range live {
+			if certDomainMatches(c.domain, host) {
+				return c.id, len(live), material
+			}
+		}
+	}
+	// 知道该用哪个域名却一张都不匹配 → 拒绝兜底，让调用方报错。
+	//
+	// 这里**故意不做「到期最晚的一张」兜底**：证书域名不匹配时客户端按 SNI 握手必失败，
+	// 面板却显示建站成功，比直接报错危险得多。线上真踩过：给 KR01 建 HY2 时库里没有
+	// kr1.wujiecloud.top，兜底挑了 jk.wujiecloud.top，入站看着正常、实际连不上。
+	if sni != "" || host != "" {
+		return 0, len(live), material
+	}
+
+	// 两个域名都不知道（例如节点没填 host）：只能退到到期最晚的一张。
+	best := live[0]
+	for _, c := range live[1:] {
+		switch {
+		case best.notAfter == nil && c.notAfter != nil:
+			best = c
+		case best.notAfter != nil && c.notAfter != nil && c.notAfter.After(*best.notAfter):
+			best = c
+		}
+	}
+	return best.id, len(live), material
+}
+
+// certDomainMatches 判断证书登记的域名是否覆盖某个主机名：完全一致，或通配符
+// （*.example.com 覆盖 a.example.com 与 example.com 本身）。
+func certDomainMatches(certDomain, host string) bool {
+	if certDomain == "" || host == "" {
+		return false
+	}
+	if certDomain == host {
+		return true
+	}
+	if strings.HasPrefix(certDomain, "*.") {
+		base := certDomain[2:]
+		return host == base || strings.HasSuffix(host, "."+base)
+	}
+	return false
+}
+
+// nodeHostName 把节点记录的 host 剥成小写裸主机名（去 scheme / 路径 / 端口 / IPv6 方括号）。
+func nodeHostName(node *NodeRecord) string {
+	h := strings.TrimSpace(node.Host)
+	if i := strings.Index(h, "//"); i >= 0 {
+		h = h[i+2:]
+	}
+	if i := strings.IndexAny(h, "/?"); i >= 0 {
+		h = h[:i]
+	}
+	if strings.HasPrefix(h, "[") { // [::1]:443
+		if j := strings.Index(h, "]"); j > 0 {
+			h = h[1:j]
+		}
+	} else if i := strings.LastIndex(h, ":"); i > 0 && strings.Count(h, ":") == 1 {
+		h = h[:i] // host:port（有多个冒号的是裸 IPv6，不能截）
+	}
+	return strings.ToLower(h)
+}
+
+// defaultHopInterval 是端口跳跃的缺省重拨间隔（秒）：缺省 5 秒；用户不需要手填。
+const defaultHopInterval = "5"
 
 // buildHysteriaStream 组装 hysteria 入站的 streamSettings 专有段。
 //
@@ -863,7 +1080,7 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 	hopPorts := strings.TrimSpace(nodeStringField(input, "hy_hop_ports"))
 	hopInterval := strings.TrimSpace(nodeStringField(input, "hy_hop_interval"))
 	if hopPorts != "" {
-		// interval 只在配了跳跃区间时才有意义；缺省 5-10（与 3x-ui 表单默认一致）。
+		// interval 只在配了跳跃区间时才有意义；缺省 5 秒（defaultHopInterval）。
 		if hopInterval == "" {
 			hopInterval = defaultHopInterval
 		}
@@ -1619,9 +1836,14 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 	client := jsonGet(reality, "settings")
 	xs := jsonGet(stream, "xhttpSettings")
 
+	// 用户全协议通用：任何入站上的 client 都是「全部有套餐的可用用户」，不再按
+	// 入站协议去匹配 users.protocol（那样 hy2 入站永远显示 0，而实际它上面有 105 个）。
+	// shadowsocks 例外（历史行为：它的人数在订阅里走另一条路）。
 	clientCount := int64(0)
 	if ib.Protocol != "shadowsocks" {
-		clientCount = userCounts[ib.Protocol]
+		for _, n := range userCounts {
+			clientCount += n
+		}
 	}
 
 	var sniffing any

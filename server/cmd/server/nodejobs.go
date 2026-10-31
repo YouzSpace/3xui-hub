@@ -116,9 +116,12 @@ func isXrayNode(n *jobNode) bool {
 // ⚠️ 这里的 Email 是**用户登录用的邮箱**，只用于日志与通知；
 // **绝不能当 3x-ui 的 client 主键**（那是 clientEmailOf(ID) 的活）。见 clientEmailOf。
 type jobUser struct {
-	ID                 int64
-	Email              string
-	Protocol           string
+	ID       int64
+	Email    string
+	Protocol string
+	// UUID 是 users.uuid（建号时的协议凭据来源：vless/vmess→id、trojan/ss→password、
+	// hysteria→auth）。缺了它 hysteria 的 client 建不出来（3x-ui 回 empty client ID）。
+	UUID               string
 	PlanID             sql.NullInt64
 	Enabled            bool
 	TrafficLimit       int64
@@ -140,10 +143,10 @@ func clientEmailOf(userID int64) string { return "ch_user_" + strconv.FormatInt(
 func loadJobUser(ctx context.Context, db *sql.DB, userID int64) (*jobUser, error) {
 	var u jobUser
 	err := db.QueryRowContext(ctx,
-		`SELECT id, email, protocol, plan_id, enabled, traffic_limit, traffic_used,
+		`SELECT id, email, protocol, uuid, plan_id, enabled, traffic_limit, traffic_used,
 		        monthly_traffic_used, monthly_traffic_limit, expired_at
 		 FROM users WHERE id = ?`, userID).
-		Scan(&u.ID, &u.Email, &u.Protocol, &u.PlanID, &u.Enabled, &u.TrafficLimit,
+		Scan(&u.ID, &u.Email, &u.Protocol, &u.UUID, &u.PlanID, &u.Enabled, &u.TrafficLimit,
 			&u.TrafficUsed, &u.MonthlyTrafficUsed, &u.MonthlyLimit, &u.ExpiredAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -175,10 +178,14 @@ func (u *jobUser) usableNow(now time.Time) bool {
 	return true
 }
 
-// inboundIDsForNode 取该节点上协议匹配的入站 id（对齐 Node::inboundIdsFor）。
+// inboundIDsForNode 取该节点上**勾选的全部入站** id（不按协议过滤）。
+//
+// 用户是全协议通用的：节点上勾了哪些入站，就该在每个入站里都有一条同名 client，
+// 客户端拿哪条链接都能用。按 users.protocol 过滤会让「勾了 hy2 入站」永远建不出人
+// —— 线上就是 171 个 vless 用户，hy2 入站恒 0 客户端。
 func inboundIDsForNode(ctx context.Context, db *sql.DB, nodeID int64, protocol string) ([]int64, error) {
 	rows, err := db.QueryContext(ctx,
-		"SELECT inbound_id FROM node_inbounds WHERE node_id = ? AND protocol = ?", nodeID, protocol)
+		"SELECT inbound_id FROM node_inbounds WHERE node_id = ?", nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -559,13 +566,7 @@ func runNodeInitUser(ctx context.Context, db *sql.DB, appKey []byte, svc *task.S
 		if u.ExpiredAt.Valid {
 			expiryMs = u.ExpiredAt.Time.UnixMilli()
 		}
-		payload := map[string]any{
-			"email":      email,
-			"enable":     u.Enabled,
-			"totalGB":    totalGB,
-			"expiryTime": expiryMs,
-			"limitIp":    0,
-		}
+		payload := threexui.ClientPayload(email, u.Enabled, totalGB, expiryMs)
 		if _, err := client.AddClient(ctx, payload, ids); err != nil {
 			failJobItem(ctx, svc, job.TaskID, key, "创建 client 失败："+err.Error())
 			continue

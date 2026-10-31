@@ -442,7 +442,8 @@ type NodeStore interface {
 	UpdateNode(ctx context.Context, id uint64, in NodeUpdateInput) (*NodeRecord, error)
 	DeleteNode(ctx context.Context, id uint64) error
 	// ReplaceNodeInbounds 全量替换入站挂载，返回「确实变化的协议 → 新入站集合」。
-	ReplaceNodeInbounds(ctx context.Context, nodeID uint64, vless, trojan []int64) (map[string][]int64, error)
+	// 入参是「协议 → 入站 id」全集（含 hysteria / vmess / shadowsocks），不只 vless/trojan。
+	ReplaceNodeInbounds(ctx context.Context, nodeID uint64, inbounds map[string][]int64) (map[string][]int64, error)
 	// SetNodeSecret 加密写入 driver_config.node_secret。
 	SetNodeSecret(ctx context.Context, id uint64, secret string) error
 	// MergeDriverConfig 行锁内按键合并 driver_config（只 merge 自家键，不整块回写）。
@@ -481,6 +482,9 @@ type NodeStore interface {
 	// XrayCertificates 读 TLS 证书库（私钥为密文，渲染时解密）。
 	XrayCertificates(ctx context.Context) ([]XrayCertificate, error)
 	CreateXrayCertificate(ctx context.Context, in XrayCertificateInput) (*XrayCertificate, error)
+	// UpdateXrayCertificate 覆盖一行的 PEM / not_after（本机目录同步刷新续签后的证书用）。
+	// 就地更新而不是删了重建：入站的 tlsCertId 指着这一行的 id，重建会让引用悬空。
+	UpdateXrayCertificate(ctx context.Context, id uint64, in XrayCertificateInput) error
 	DeleteXrayCertificate(ctx context.Context, id uint64) error
 	CreateXrayInbound(ctx context.Context, in XrayInboundInput) (*XrayInboundRecord, error)
 	UpdateXrayInbound(ctx context.Context, id uint64, in XrayInboundInput) (*XrayInboundRecord, error)

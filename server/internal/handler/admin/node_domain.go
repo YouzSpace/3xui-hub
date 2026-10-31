@@ -142,6 +142,8 @@ func (d *NodeDomain) Register(r gin.IRouter) {
 	// ── TLS 证书库（hysteria 的 TLS 证书引用源）──
 	r.GET("/xray-certificates", d.xrayCertificateIndex)
 	r.POST("/xray-certificates", d.xrayCertificateStore)
+	// 本机证书目录同步（acme.sh 续签后刷新库里的 PEM）：静态段必须排在 :certificate 之前。
+	r.POST("/xray-certificates/sync-local", d.xrayCertificateSyncLocal)
 	r.DELETE("/xray-certificates/:certificate", d.xrayCertificateDestroy)
 
 	// ── xray 入站 ──

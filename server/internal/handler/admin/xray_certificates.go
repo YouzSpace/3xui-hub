@@ -23,9 +23,11 @@ func (d *NodeDomain) xrayCertificateIndex(c *gin.Context) {
 		d.failServer(c, "查询证书库", err)
 		return
 	}
+	// 来源标记不落库：现扫一遍本机目录，能对上的就是「目录同步来的」。
+	local := localCertSourceSet()
 	items := make(jsArr, 0, len(certs))
 	for i := range certs {
-		items = append(items, presentXrayCertificate(&certs[i]))
+		items = append(items, presentXrayCertificate(&certs[i], local))
 	}
 	d.success(c, jo("certificates", items))
 }
@@ -80,7 +82,31 @@ func (d *NodeDomain) xrayCertificateStore(c *gin.Context) {
 		d.failServer(c, "保存证书", err)
 		return
 	}
-	d.success(c, jo("certificate", presentXrayCertificate(created)))
+	d.success(c, jo("certificate", presentXrayCertificate(created, localCertSourceSet())))
+}
+
+// xrayCertificateSyncLocal 扫描本机证书目录（默认 /root/cert，XRAY_CERT_DIR 覆盖）并入库。
+//
+// 给面板机自己用：acme.sh 续签后点一下（或等每 6 小时的定时任务）就能把新 PEM 刷进库，
+// 入站只存 tlsCertId，所以证书一刷新，下次下发配置就生效，入站不用改。
+func (d *NodeDomain) xrayCertificateSyncLocal(c *gin.Context) {
+	res, err := d.SyncLocalCertificates(ctxOf(c))
+	if err != nil {
+		d.failServer(c, "同步本机证书", err)
+		return
+	}
+	reasons := res.Reasons
+	if reasons == nil {
+		reasons = []string{}
+	}
+	d.success(c, jo(
+		"dir", res.Dir,
+		"scanned", res.Scanned,
+		"created", res.Created,
+		"updated", res.Updated,
+		"skipped", res.Skipped,
+		"reasons", stringsToJSArr(reasons),
+	))
 }
 
 // xrayCertificateDestroy 对齐 destroy()。
@@ -98,11 +124,14 @@ func (d *NodeDomain) xrayCertificateDestroy(c *gin.Context) {
 }
 
 // presentXrayCertificate 只输出元信息（私钥绝不回显，PEM 本体也不进列表载荷）。
-func presentXrayCertificate(c *XrayCertificate) *jsObj {
+//
+// source 是派生字段（不落库）：能对上本机证书目录的标 local-dir，手工加的标 manual。
+func presentXrayCertificate(c *XrayCertificate, local map[string]bool) *jsObj {
 	return jo(
 		"id", c.ID,
 		"name", c.Name,
 		"domain", nullableStr(c.Domain),
+		"source", certSourceOf(c, local),
 		"has_cert", c.CertPEM != "",
 		"has_key", c.KeyEnc != "",
 		"cert_pem_chars", utf8.RuneCountInString(c.CertPEM),

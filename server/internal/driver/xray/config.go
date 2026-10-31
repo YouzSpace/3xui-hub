@@ -366,9 +366,7 @@ func clientsFor(d *Data, ib Inbound) (phpjson.Array, bool, error) {
 
 	clients := phpjson.Array{}
 	for _, u := range d.Users {
-		if u.Protocol != ib.Protocol {
-			continue
-		}
+		// 用户全协议通用：每个入站都给所有人注入 client，不按 users.protocol 过滤。
 		var client phpjson.Object
 		switch ib.Protocol {
 		case "vless":

@@ -335,9 +335,11 @@ func clientsFor(d *RenderData, ib RenderInbound) (Array, bool, error) {
 
 	clients := Array{}
 	for _, u := range d.Users {
-		if u.Protocol != ib.Protocol {
-			continue
-		}
+		// 用户全协议通用：每个入站都注入所有人，不按 users.protocol 过滤。
+		//
+		// 这份渲染器才是真正把配置发给节点 agent 的那个（driver/xray/config.go 里
+		// 那份是另一条路径）。之前只改了后者，结果所有 hysteria 入站在节点上
+		// clients=0 —— 订阅里有 hy2 链接，但节点上没有任何用户被授权，谁连都连不上。
 		var client Object
 		switch ib.Protocol {
 		case "vless":

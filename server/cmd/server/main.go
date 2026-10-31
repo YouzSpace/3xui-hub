@@ -231,7 +231,10 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		Tasks:     asyncSvc,
 		Commands:  cmdRunner,
 		Lookups:   &task.SQLLookups{DB: db},
-		Logf:      logger.Printf,
+		// 本机证书目录同步（acme.sh 续签 → TLS 证书库）：复用节点域的实现，
+		// 只用到库操作（加密写私钥）与读目录，不需要 HTTP。
+		SyncLocalCerts: certSyncAdapter(nodeDomain.SyncLocalCertificates),
+		Logf:           logger.Printf,
 	})...); err != nil {
 		logger.Printf("[schedule] 注册调度任务失败: %v", err)
 		return
@@ -239,4 +242,27 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 
 	sched.Start(ctx)
 	logger.Printf("[schedule] 调度器已启动（%d 条任务）", len(sched.Entries()))
+}
+
+// certSyncAdapter 把 admin 的「本机证书目录同步」结果转成调度层的口径。
+//
+// 为什么要绕一层：task 包不 import handler/admin（会反向依赖），调度项只认自己的小结构。
+func certSyncAdapter(sync func(context.Context) (admin.LocalCertSyncResult, error)) func(context.Context) (task.LocalCertSyncSummary, error) {
+	if sync == nil {
+		return nil
+	}
+	return func(ctx context.Context) (task.LocalCertSyncSummary, error) {
+		res, err := sync(ctx)
+		if err != nil {
+			return task.LocalCertSyncSummary{}, err
+		}
+		return task.LocalCertSyncSummary{
+			Dir:     res.Dir,
+			Scanned: res.Scanned,
+			Created: res.Created,
+			Updated: res.Updated,
+			Skipped: res.Skipped,
+			Reasons: res.Reasons,
+		}, nil
+	}
 }

@@ -371,7 +371,7 @@ func (s *nodeSQLStore) CreateNode(ctx context.Context, in NodeCreateInput) (*Nod
 	}
 
 	if in.DriverType != "xray" && len(in.Inbounds) > 0 {
-		if _, err := s.ReplaceNodeInbounds(ctx, uint64(id), in.Inbounds["vless"], in.Inbounds["trojan"]); err != nil {
+		if _, err := s.ReplaceNodeInbounds(ctx, uint64(id), in.Inbounds); err != nil {
 			return nil, err
 		}
 	}
@@ -459,7 +459,11 @@ func (s *nodeSQLStore) DeleteNode(ctx context.Context, id uint64) error {
 }
 
 // ReplaceNodeInbounds 全量替换 node_inbounds，并回报「确实变化的协议 → 新入站集合」。
-func (s *nodeSQLStore) ReplaceNodeInbounds(ctx context.Context, nodeID uint64, vless, trojan []int64) (map[string][]int64, error) {
+//
+// 入参是「协议 → 入站 id 列表」的全集，**不能只认 vless/trojan**：3x-ui 上的
+// hysteria（HY2）/ vmess / shadowsocks 入站一样要落进 node_inbounds，否则建号时
+// 按 users.protocol 查不到入站，整台节点被静默跳过（症状：面板里入站在、用户数恒 0）。
+func (s *nodeSQLStore) ReplaceNodeInbounds(ctx context.Context, nodeID uint64, inbounds map[string][]int64) (map[string][]int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -489,24 +493,28 @@ func (s *nodeSQLStore) ReplaceNodeInbounds(ctx context.Context, nodeID uint64, v
 		return nil, err
 	}
 
+	// 协议键排序后逐条写入：同一份入参每次落库顺序一致，便于比对与排错。
+	protos := make([]string, 0, len(inbounds))
+	for proto := range inbounds {
+		protos = append(protos, proto)
+	}
+	sort.Strings(protos)
+
 	now := s.now().UTC().Truncate(time.Second)
 	changed := map[string][]int64{}
-	for _, pair := range []struct {
-		proto string
-		ids   []int64
-	}{{"vless", vless}, {"trojan", trojan}} {
-		ids := append([]int64{}, pair.ids...)
+	for _, proto := range protos {
+		ids := append([]int64{}, inbounds[proto]...)
 		for _, inboundID := range ids {
 			if _, err := tx.ExecContext(ctx,
 				"INSERT INTO node_inbounds (node_id, protocol, inbound_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-				nodeID, pair.proto, inboundID, now, now); err != nil {
+				nodeID, proto, inboundID, now, now); err != nil {
 				return nil, err
 			}
 		}
-		if !int64SetsEqual(old[pair.proto], ids) && len(ids) > 0 {
+		if !int64SetsEqual(old[proto], ids) && len(ids) > 0 {
 			sorted := append([]int64{}, ids...)
 			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-			changed[pair.proto] = sorted
+			changed[proto] = sorted
 		}
 	}
 
@@ -731,18 +739,10 @@ func (s *nodeSQLStore) AllUserIDs(ctx context.Context) ([]uint64, error) {
 }
 
 func (s *nodeSQLStore) UserIDsWithPlanByProtocols(ctx context.Context, protocols []string) ([]uint64, error) {
-	if len(protocols) == 0 {
-		return nil, nil
-	}
-	// 对齐 NodeInboundSyncService::submit 的选人条件（有套餐 + 协议命中）。
-	sort.Strings(protocols)
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(protocols)), ",")
-	args := make([]any, len(protocols))
-	for i, p := range protocols {
-		args[i] = p
-	}
+	// 有套餐的人全都要同步到新入站：用户全协议通用，不再按 protocol 过滤
+	// （按协议过滤会让「新加的 hy2 入站」只同步 vless 用户，其余人永远缺挂载）。
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id FROM users WHERE plan_id IS NOT NULL AND protocol IN ("+placeholders+") ORDER BY id", args...)
+		"SELECT id FROM users WHERE plan_id IS NOT NULL ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -1213,6 +1213,27 @@ func (s *nodeSQLStore) CreateXrayCertificate(ctx context.Context, in XrayCertifi
 		}
 	}
 	return nil, sql.ErrNoRows
+}
+
+// UpdateXrayCertificate 覆盖一条证书的 PEM 与 not_after（本机目录同步用）。
+//
+// 私钥同样重新加密写 key_enc（换证书就是换私钥，不能留着旧密文）；
+// domain 传 nil 时保持原值（COALESCE），免得「只想刷新 PEM」把域名抹掉。
+func (s *nodeSQLStore) UpdateXrayCertificate(ctx context.Context, id uint64, in XrayCertificateInput) error {
+	keyEnc, err := s.encryptString(in.KeyPEM)
+	if err != nil {
+		return err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	var notAfter any
+	if t := certificateNotAfter(in.CertPEM); t != nil {
+		notAfter = t.UTC().Truncate(time.Second)
+	}
+	_, err = s.db.ExecContext(ctx,
+		"UPDATE xray_certificates SET domain = COALESCE(?, domain), cert_pem = ?, key_enc = ?, "+
+			"not_after = ?, updated_at = ? WHERE id = ?",
+		nullStrValue(in.Domain), in.CertPEM, keyEnc, notAfter, now, id)
+	return err
 }
 
 func (s *nodeSQLStore) DeleteXrayCertificate(ctx context.Context, id uint64) error {

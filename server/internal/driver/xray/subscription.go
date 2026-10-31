@@ -41,9 +41,7 @@ func SubscriptionURIs(node Node, inbounds []Inbound, user User) []string {
 
 	uris := []string{}
 	for _, ib := range inbounds {
-		if user.Protocol != ib.Protocol {
-			continue
-		}
+		// 用户全协议通用：每个启用入站都出一条链接，不按 users.protocol 过滤。
 		var uri string
 		switch ib.Protocol {
 		case "vless":

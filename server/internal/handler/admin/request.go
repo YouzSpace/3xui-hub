@@ -216,6 +216,12 @@ func inputInt(v any) int64 {
 		return 0
 	case int:
 		return int64(t)
+	// 面板内部自己往 input 里回填 id 时用的是 int64/uint64（例如 HY2 自动挑证书），
+	// 少这两个分支就会被当成「没传」，症状是明明有值却走缺省逻辑。
+	case int64:
+		return t
+	case uint64:
+		return int64(t)
 	}
 	return 0
 }

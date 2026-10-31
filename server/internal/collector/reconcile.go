@@ -89,6 +89,9 @@ type ReconcileReport struct {
 type reconcileUser struct {
 	ID       int64
 	Protocol string
+	// UUID 是 users.uuid：补注册（AddClient）时组协议凭据用。
+	// 更新路径不用它 —— 那边的凭据由 NormalizeForUpdate 从节点原对象带回。
+	UUID     string
 	Intent   bool // 面板判「该可用」
 	Limit    int64
 	ExpiryMs int64
@@ -141,9 +144,11 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 	}
 	rep.Users = len(users)
 
-	// 写上限随规模自适应：50 起步，用户上万后一轮要能吃掉 1% 的漂移，否则收敛要几小时。
-	if maxWritesPerNode < len(users)/100 {
-		maxWritesPerNode = len(users) / 100
+	// 补挂/补建一轮要能补齐整台节点：节点上新加入站时，缺的是「全部有套餐用户」，
+	// 按 50 上限会被切到下一轮，用户看到的就是「入站只补了一半人」。
+	// 用户定稿：一轮就补齐，不设人为上限。
+	if len(users) > maxWritesPerNode {
+		maxWritesPerNode = len(users)
 	}
 
 	// 我们自己建的 client 只认 `ch_user_{id}` 且该 id 在 users 表里存在；
@@ -421,7 +426,15 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 		}
 	}
 
+	// 分批写入：maxWritesPerNode 是「单批上限」，不是「本轮总量上限」。
+	// 节点新加入站时要补的人可能上百个，卡在单批会被切到下一轮（用户看到「只补了一半」）。
+	// 所以写满一批就歇一下继续下一批，直到这轮该补的都补完。
 	writes := 0
+	batchCap := maxWritesPerNode
+	if batchCap <= 0 {
+		batchCap = 100
+	}
+	batchWrites := 0
 	for _, u := range users {
 		email := clientEmail(u.ID)
 		if !snap.Probed[email] {
@@ -437,14 +450,20 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 				continue
 			}
 			out.Probed++
-			if writes >= maxWritesPerNode {
-				out.Deferred++
-				continue
+			if !dry && batchWrites >= batchCap {
+				// 一批写完，歇一下再继续下一批（避免瞬间打满节点）
+				select {
+				case <-ctx.Done():
+					return out, ctx.Err()
+				case <-time.After(300 * time.Millisecond):
+				}
+				batchWrites = 0
 			}
 			if dry {
 				out.Registered++
 				out.Opened++
 				writes++
+				batchWrites++
 				continue
 			}
 			if err := c.addClientOnNode(ctx, client, node, u, true); err != nil {
@@ -456,6 +475,7 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 			out.Opened++
 			out.NeedOpen = append(out.NeedOpen, u.ID)
 			writes++
+			batchWrites++
 			continue
 		}
 
@@ -465,17 +485,23 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 			continue
 		}
 
-		// 入站维度：节点后加了入站、或上次入站同步失败 → 这个人的 client 缺挂载，
-		// 新入站上连不上（续费/重置也不会补：3x-ui 的 update 只改 client 定义）。
-		// 只对「有套餐」的人补（无套餐本来就不该在节点上有 client）；
-		// entry.Inbounds 为空表示解析不到归属 → 不猜，留给入站同步任务。
-		if want := protoInbounds[u.Protocol]; len(want) > 0 && len(entry.Inbounds) > 0 && u.PlanIDValid {
+		// 入站维度：节点后加了入站、或远程把 client 丢了 → 这个人缺挂载/缺人，
+		// 新入站上连不上（3x-ui 的 update 只改 client 定义，不会自动补挂）。
+		// want 取该节点**全部**勾选的入站，不按用户协议过滤：用户全协议通用，
+		// 节点上新加的 hy2 入站也要给所有老用户补上（否则那条入站永远 0 客户端）。
+		want := allInboundIDs(protoInbounds)
+		if len(want) > 0 && len(entry.Inbounds) > 0 && u.PlanIDValid {
 			if missing := missingInbounds(want, entry.Inbounds); len(missing) > 0 {
-				if writes >= maxWritesPerNode {
-					out.Deferred++
-					continue
+				if !dry && batchWrites >= batchCap {
+					select {
+					case <-ctx.Done():
+						return out, ctx.Err()
+					case <-time.After(300 * time.Millisecond):
+					}
+					batchWrites = 0
 				}
 				writes++
+				batchWrites++
 				if dry {
 					out.Attached++
 				} else if err := client.AttachClient(ctx, email, missing); err != nil {
@@ -827,7 +853,25 @@ func firstIntField(obj map[string]any, keys ...string) (int64, bool) {
 
 // ── 写：补注册 / 修正 / 重建 ─────────────────────────────────
 
+// allInboundIDs 把「协议 → 入站 id」的 map 拍平成一串去重升序的入站 id。
+//
+// 用户全协议通用：补挂/补建时要用该节点**全部**勾选的入站，不按用户协议过滤。
+func allInboundIDs(byProto map[string][]int64) []int64 {
+	var out []int64
+	for _, ids := range byProto {
+		for _, id := range ids {
+			out = appendUniqueID(out, id)
+		}
+	}
+	return out
+}
+
 // addClientOnNode 在单台 3x-ui 节点上补注册（按面板意图组负载）。
+//
+// 这是**新建**路径（补注册 / 重建都是这一条），所以要带协议凭据：
+// vless/vmess→id、trojan/shadowsocks→password、hysteria→auth（取 users.uuid）。
+// 不带的话 hysteria 的 client 会被 3x-ui 拒成 `empty client ID`，补注册等于白跑。
+// 更新路径（updateClientOnNode）相反，见那边的说明。
 func (c *Collector) addClientOnNode(ctx context.Context, client *threexui.Client, node nodeRow, u reconcileUser, enable bool) error {
 	inboundIDs, err := c.inboundIDsFor(ctx, node.ID, u.Protocol)
 	if err != nil {
@@ -836,18 +880,16 @@ func (c *Collector) addClientOnNode(ctx context.Context, client *threexui.Client
 	if len(inboundIDs) == 0 {
 		return nil // 该节点没有这个协议的端口：不必注册（等同不存在）
 	}
-	payload := map[string]any{
-		"email":      clientEmail(u.ID),
-		"enable":     enable,
-		"totalGB":    u.Limit,
-		"expiryTime": u.ExpiryMs,
-		"limitIp":    0,
-	}
+	payload := threexui.ClientPayload(clientEmail(u.ID), enable, u.Limit, u.ExpiryMs)
 	_, err = client.AddClient(ctx, payload, inboundIDs)
 	return err
 }
 
 // updateClientOnNode 修正字段但**保留 uuid**：get 全量 → NormalizeForUpdate → 覆盖三个字段。
+//
+// 刻意**不传协议凭据**：凭据（id/password/auth）已经由 NormalizeForUpdate 从节点上的
+// 完整对象原样带回，节点 uuid 保持不变。若在这里改成显式写 users.uuid，存量用户的 uuid
+// 会被改写 → 订阅链接与客户端配置当场失效。新建（含重建）才该带凭据，见 addClientOnNode。
 //
 // 逐入站 + 兜底各更新一次，与 applyEnableOnNode 同序（3x-ui 的 update 是整条替换语义，
 // 且入站维度也有 client 副本，只更一次可能漏掉某条入站）。
@@ -886,7 +928,9 @@ func (c *Collector) updateClientOnNode(ctx context.Context, client *threexui.Cli
 
 // rebuildClientOnNode 删除重建：DeleteClient(keepTraffic=1) 保住流量统计基线 → 重新 AddClient。
 //
-// ⚠️ uuid 会轮换（3x-ui 的 AddClient 自己生成）：手工导入链接的用户会断、订阅用户要重拉。
+// ⚠️ 重建会走 addClientOnNode，也就是带上 users.uuid 作凭据：uuid 不再由面板随机生成，
+// 重建后与面板侧 users.uuid 一致（订阅复算得回来）。但重建前节点上的 uuid 若本来就是
+// 面板早期随机生成的、与 users.uuid 不同，这一步仍会换号 —— 手工导入链接的用户要改配置。
 // 因此只在「字段修正后仍对不上」时才用它，并在日志里标出来。
 func (c *Collector) rebuildClientOnNode(ctx context.Context, client *threexui.Client, node nodeRow, u reconcileUser) error {
 	email := clientEmail(u.ID)
@@ -912,7 +956,7 @@ func (c *Collector) clientMatches(ctx context.Context, client *threexui.Client, 
 // reconcileUsers 一次取齐参与比对的面板用户（意图在 Go 侧算，不再用 SQL 排除带标记的人）。
 func (c *Collector) reconcileUsers(ctx context.Context) ([]reconcileUser, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT u.id, u.protocol, u.enabled, u.traffic_disabled_at, u.expired_at, u.traffic_limit, "+
+		"SELECT u.id, u.uuid, u.protocol, u.enabled, u.traffic_disabled_at, u.expired_at, u.traffic_limit, "+
 			"u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit, u.plan_id, p.type "+
 			"FROM users u LEFT JOIN plans p ON p.id = u.plan_id ORDER BY u.id")
 	if err != nil {
@@ -934,7 +978,7 @@ func (c *Collector) reconcileUsers(ctx context.Context) ([]reconcileUser, error)
 			monthly  int64
 			monthLim int64
 		)
-		if err := rows.Scan(&u.ID, &u.Protocol, &enabled, &flagAt, &expired, &u.Limit,
+		if err := rows.Scan(&u.ID, &u.UUID, &u.Protocol, &enabled, &flagAt, &expired, &u.Limit,
 			&used, &monthly, &monthLim, &planID, &planType); err != nil {
 			return nil, fmt.Errorf("读取对账用户失败: %w", err)
 		}

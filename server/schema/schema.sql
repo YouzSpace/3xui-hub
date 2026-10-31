@@ -247,7 +247,7 @@ CREATE TABLE `node_api_commands` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `node_id` bigint unsigned NOT NULL,
   `user_id` bigint unsigned DEFAULT NULL,
-  `action` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `action` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
   `payload` json DEFAULT NULL,
   `status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
   `result` text COLLATE utf8mb4_unicode_ci,

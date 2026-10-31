@@ -299,7 +299,7 @@ func (d *NodeDomain) nodeUpdate(c *gin.Context) {
 
 	var syncTask *NodeTaskRecord
 	if !updated.IsXray() && inboundsPresent {
-		changed, err := d.store.ReplaceNodeInbounds(ctxOf(c), updated.ID, inbounds["vless"], inbounds["trojan"])
+		changed, err := d.store.ReplaceNodeInbounds(ctxOf(c), updated.ID, inbounds)
 		if err != nil {
 			d.failServer(c, "保存节点入站", err)
 			return

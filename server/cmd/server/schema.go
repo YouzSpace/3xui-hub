@@ -67,6 +67,38 @@ func ensureSchema(db *sql.DB) error {
 			return err
 		}
 	}
+
+	// 增量放长列：node_api_commands.action 原为 varchar(16)，但端口跳跃的三个
+	// action（firewall_hop_apply=18 / _remove=19 / _status=19）都超长，插库直接
+	// 报「Data too long for column 'action'」——跳跃的防火墙规则永远下发不出去，
+	// 面板只看到一句「节点指令入队失败」。放宽到 varchar(32)。
+	if err := ensureVarcharAtLeast(db, "node_api_commands", "action", 32); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureVarcharAtLeast 幂等把 varchar 列放长到至少 n（已经够长就什么都不做）。
+//
+// 与 ensureColumn 同思路：MySQL 没有 `MODIFY COLUMN IF ...`，先查
+// information_schema.CHARACTER_MAXIMUM_LENGTH 再决定要不要 ALTER。
+func ensureVarcharAtLeast(db *sql.DB, table, column string, n int) error {
+	var cur sql.NullInt64
+	err := db.QueryRow(
+		"SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "+
+			"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+		table, column).Scan(&cur)
+	if err != nil {
+		return fmt.Errorf("检查列长度 %s.%s 失败: %w", table, column, err)
+	}
+	if !cur.Valid || cur.Int64 >= int64(n) {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf(
+		"ALTER TABLE `%s` MODIFY COLUMN `%s` varchar(%d) COLLATE utf8mb4_unicode_ci NOT NULL",
+		table, column, n)); err != nil {
+		return fmt.Errorf("放长列 %s.%s 失败: %w", table, column, err)
+	}
 	return nil
 }
 

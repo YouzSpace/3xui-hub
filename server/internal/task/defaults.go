@@ -28,8 +28,21 @@ type Deps struct {
 	Commands CommandRunner
 	// Lookups 是 when() 条件查询；nil → SQLLookups 需要 DB，两者都缺则带条件的条目按「跳过」处理。
 	Lookups ConditionLookups
+	// SyncLocalCerts 是本机证书目录同步（xray-certificates-sync 用）：扫面板机上的
+	// acme.sh 证书目录，把续签后的 PEM 刷新进 TLS 证书库。nil → 该条跳过（单测/无库场景）。
+	SyncLocalCerts func(ctx context.Context) (LocalCertSyncSummary, error)
 	// Logf 是日志出口。
 	Logf func(format string, args ...any)
+}
+
+// LocalCertSyncSummary 是「本机证书目录同步」的结果口径（由 admin 侧适配过来）。
+type LocalCertSyncSummary struct {
+	Dir     string
+	Scanned int
+	Created int
+	Updated int
+	Skipped int
+	Reasons []string
 }
 
 // CollectorAPI 是调度层对 P6 采集的最小依赖面（*collector.Collector 直接满足）。
@@ -103,6 +116,8 @@ const (
 	NameGeodataUpdate        = "geodata-update"
 	NameUsersReconcileEnable = "users-reconcile-enable"
 	NameRealityAudit         = "reality-audit"
+	// NameXrayCertificateSync 是「本机证书目录 → TLS 证书库」的同步（Go 侧新增，PHP 没有）。
+	NameXrayCertificateSync = "xray-certificates-sync"
 )
 
 // ── cron 表达式（Laravel 调度宏 → 5 字段 cron，UTC） ──
@@ -116,6 +131,7 @@ const (
 	SpecEveryFiveMinutes = "*/5 * * * *"
 	SpecHourly           = "0 * * * *"
 	SpecEveryTwoHours    = "0 */2 * * *"
+	SpecEverySixHours    = "0 */6 * * *"
 	SpecDaily0000        = "0 0 * * *"
 	SpecDaily0010        = "10 0 * * *"
 	SpecDaily0330        = "30 3 * * *"
@@ -307,6 +323,25 @@ func DefaultJobs(d Deps) []Job {
 	jobs = append(jobs, Job{
 		Name: NameRealityAudit, Spec: SpecDaily0410, WithoutOverlap: true,
 		Run: func(ctx context.Context) error { return commands.Run(ctx, "xray:reality-audit", nil) },
+	})
+
+	// 本机证书目录同步：每 6 小时，与面板机 crontab 里的 acme.sh --cron 同频。
+	// 入站只存 tlsCertId，库里 PEM 一刷新，下次下发配置就生效，入站不用改 ——
+	// 所以这条任务的价值就是「续签后自动把新证书搬进库」，不做任何节点侧动作。
+	jobs = append(jobs, Job{
+		Name: NameXrayCertificateSync, Spec: SpecEverySixHours, WithoutOverlap: true,
+		Run: func(ctx context.Context) error {
+			if d.SyncLocalCerts == nil {
+				return nil // 没接实现（单测 / 无库场景）不报错，避免刷失败记录
+			}
+			sum, err := d.SyncLocalCerts(ctx)
+			if err != nil {
+				return err
+			}
+			logf("[schedule] %s 目录=%s 扫描=%d 新增=%d 更新=%d 跳过=%d reasons=%v",
+				NameXrayCertificateSync, sum.Dir, sum.Scanned, sum.Created, sum.Updated, sum.Skipped, sum.Reasons)
+			return nil
+		},
 	})
 
 	return jobs
