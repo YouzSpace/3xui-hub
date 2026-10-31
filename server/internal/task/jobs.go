@@ -160,7 +160,23 @@ func NewCollectorSyncer(c *collector.Collector, db *sql.DB, appKey []byte) *Coll
 }
 
 // SyncWholeNode 取一次节点全量 client 流量并落账。
+//
+// 裸内核（driver=xray）节点没有面板侧轮询接口，流量由 agent 主动推送
+// （/node-api/push）—— 这里必须**跳过而不是报错**，与同一份代码的另外两条路径同口径：
+// collector.RunTrafficSync 的 xray 分支（continue）、SyncSingleUserNode 的 xray 分支
+// （返回空 map）。此前直接返回错误，导致管理员/用户在后台点「同步流量」时，
+// 4 台裸内核节点的子项必定失败、整条任务被标红（日志原文：
+// 「节点 #37 驱动类型 xray 不支持面板侧轮询」）。
 func (s *CollectorSyncer) SyncWholeNode(ctx context.Context, nodeID int64) (bool, error) {
+	pollable, err := s.panelPollable(ctx, nodeID)
+	if err != nil {
+		return false, err
+	}
+	if !pollable {
+		// 无可轮询数据不等于同步失败：视为已完成，让子项正常收尾。
+		return true, nil
+	}
+
 	res, err := s.C.SyncNode(ctx, nodeID, func(ctx context.Context) (map[string]collector.ClientStat, error) {
 		client, err := s.clientFor(ctx, nodeID)
 		if err != nil {
@@ -192,6 +208,21 @@ func (s *CollectorSyncer) SyncUserNode(ctx context.Context, userID, nodeID int64
 		return false, err
 	}
 	return res.Acquired, nil
+}
+
+// panelPollable 判断节点能否走面板侧轮询：只有 3x-ui 驱动有 client_traffics 可取。
+//
+// 与 collector.RunTrafficSync 的判据一致（driver_type 为空按 3x-ui 处理）。
+func (s *CollectorSyncer) panelPollable(ctx context.Context, nodeID int64) (bool, error) {
+	var driverType sql.NullString
+	err := s.DB.QueryRowContext(ctx, "SELECT driver_type FROM nodes WHERE id = ?", nodeID).Scan(&driverType)
+	if err == sql.ErrNoRows {
+		return false, fmt.Errorf("节点 #%d 不存在", nodeID)
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取节点 #%d 失败: %w", nodeID, err)
+	}
+	return !driverType.Valid || driverType.String == "" || driverType.String == "3x-ui", nil
 }
 
 // clientFor 读节点行并构造 3x-ui 客户端（password/api_key 走 crypto 严格解密）。
