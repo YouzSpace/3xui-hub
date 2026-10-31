@@ -40,6 +40,9 @@ type UserDomain struct {
 	stats   StatsStore
 	traffic TrafficStore
 
+	// notifier 把用户侧变更推给在线前端（可空：为空则只靠前端轮询）。
+	notifier UserNotifier
+
 	// alerts 解锁该用户的自动通知防重标记（购买/续费/重置/改套餐后调用）。
 	// 为空时跳过（只在测试/无邮件场景出现）。
 	alerts AlertRestorer
@@ -86,11 +89,12 @@ func NewUserDomain(d UserDeps) *UserDomain {
 		ops = NoopUserPanelOps{}
 	}
 	return &UserDomain{
-		users:   users,
-		ops:     ops,
-		alerts:  d.Alerts,
-		plans:   d.Plans,
-		orders:  d.Orders,
+		users:    users,
+		ops:      ops,
+		notifier: d.Notifier,
+		alerts:   d.Alerts,
+		plans:    d.Plans,
+		orders:   d.Orders,
 		stats:   d.Stats,
 		traffic: d.Traffic,
 		cfg:     cfg,
@@ -111,6 +115,8 @@ func (d *UserDomain) Register(r gin.IRouter) {
 	r.DELETE("/users/:user", d.userDestroy)
 	r.POST("/users/:user/reset-traffic", d.userResetTraffic)
 	r.POST("/users/:user/reset-password", d.userResetPassword)
+	// 重置订阅：换 token + uuid，旧订阅链接与旧节点凭据全部作废（用户定稿）。
+	r.POST("/users/:user/reset-subscription", d.userResetSubscription)
 	r.POST("/users/:user/protocol", d.userSwitchProtocol)
 	r.POST("/users/:user/renew", d.userRenew)
 

@@ -112,7 +112,15 @@ type UserPatch struct {
 	EnabledSet          bool
 	Password            *string
 	PasswordSet         bool
-	Now                 time.Time
+	// Token / UUID 只服务于「重置订阅」：一次性换掉订阅链接与节点凭据。
+	//
+	// 为什么不并进普通编辑：普通编辑改 token/uuid 会把用户手里的订阅链接和
+	// 已导入客户端的配置无端作废，必须由明确的「重置」动作触发。
+	Token    *string
+	TokenSet bool
+	UUID     *string
+	UUIDSet  bool
+	Now      time.Time
 }
 
 // AdminUserStore 是用户域对数据库的全部依赖（SQL 实现见 user_sqlstore.go）。
@@ -146,6 +154,16 @@ type UserPanelOps interface {
 	// （与 P2 PanelSwitcher 的分工一致，避免网络调用进入事务）。
 	SwitchProtocol(ctx context.Context, user *UserRow, newProtocol string) error
 	DeleteUserClients(ctx context.Context, user *UserRow) error
+	// RebuildUserCredentials 在凭据（uuid）换新后重建该用户在各节点的 client。
+	//
+	// 触发场景：管理员重置订阅（订阅链接泄露处置）。用户行里的 token/uuid 换新后，
+	// 各节点上的旧凭据必须一并作废，否则旧订阅导入出去的客户端照样能连。
+	//
+	// 实现语义（用户定稿：**先删再加**，不做原地 update）：
+	//   - 3x-ui：DeleteClient(email) 后按新 uuid AddClient 重新挂到各入站；
+	//   - xray（裸内核）：投 rmu 再投 adu，agent 按新配置重建 client。
+	// 单节点失败只记日志、不影响接口成功（与 PHP 对面板错误的口径一致）。
+	RebuildUserCredentials(ctx context.Context, user *UserRow) error
 }
 
 // NoopUserPanelOps 是未接线时的默认实现：全部成功（PHP 对面板错误同样只记日志）。
@@ -166,6 +184,9 @@ func (NoopUserPanelOps) SwitchProtocol(context.Context, *UserRow, string) error 
 // DeleteUserClients 见 UserPanelOps。
 func (NoopUserPanelOps) DeleteUserClients(context.Context, *UserRow) error { return nil }
 
+// RebuildUserCredentials 见 UserPanelOps。
+func (NoopUserPanelOps) RebuildUserCredentials(context.Context, *UserRow) error { return nil }
+
 // UserConfig 是用户域需要的站点配置。
 type UserConfig struct {
 	// BcryptRounds 对齐 BCRYPT_ROUNDS（Laravel Hash::make 默认 12）。
@@ -178,12 +199,24 @@ type UserConfig struct {
 	BusinessTimezone string
 }
 
+// UserNotifier 把用户侧的变更推给该用户的在线前端（可空）。
+//
+// 独立成小接口的原因同 UserPanelOps：admin 包不 import internal/handler/api，
+// 真实实现是 api.UserHub，由 cmd/server 组装时注入。为空则跳过推送 ——
+// 前端仍能靠轮询 /api/me 补到最新状态，只是慢一拍。
+type UserNotifier interface {
+	// NotifySubscriptionReset 通知该用户「订阅已重置」。
+	NotifySubscriptionReset(ctx context.Context, userID uint64, token, subPath string) error
+}
+
 // UserDeps 是 NewUserDomain 的依赖清单。
 type UserDeps struct {
 	// Store / Users 是同一个 AdminUserStore（Store 为兼容旧命名）。
-	Store   AdminUserStore
-	Users   AdminUserStore
-	Ops     UserPanelOps
+	Store AdminUserStore
+	Users AdminUserStore
+	Ops   UserPanelOps
+	// Notifier 是用户端下行通知（可空）。
+	Notifier UserNotifier
 	// Alerts 解锁邮件提醒防重标记（可空：为空则续费/重置后不再提醒）。
 	Alerts  AlertRestorer
 	Plans   PlanStore

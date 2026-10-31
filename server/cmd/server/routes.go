@@ -59,6 +59,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 
 	provisioner := NewQueueProvisioner(db, queue, cfg.AppKey, logger)
 
+	// 用户端下行消息通道：WS 端点与「重置订阅」等管理动作共用同一实例。
+	userHub := api.NewUserHub()
+
 	apiHandler := api.New(api.Deps{
 		Store:          apiStore,
 		Cache:          apiCache,
@@ -66,6 +69,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Mailer:         apiMailer,
 		Provisioner:    provisioner,
 		ProtocolSwitch: apiSwitcher,
+		UserHub:        userHub,
 		Logger:         logger,
 	})
 	apiHandler.Register(r)
@@ -176,9 +180,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			AppTimezone:      "UTC",
 			BusinessTimezone: "Asia/Shanghai",
 		},
-		Ops:    NewUserPanelOps(col, logger),
-		Alerts: alertRestorer{notifier: sceneNotifier},
-		Logger: logger,
+		Ops:      NewUserPanelOps(col, logger),
+		Notifier: api.NewUserNotifier(userHub, logger),
+		Alerts:   alertRestorer{notifier: sceneNotifier},
+		Logger:   logger,
 	})
 	userDomain.Register(adminGroup)
 

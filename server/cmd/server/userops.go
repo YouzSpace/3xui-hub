@@ -116,6 +116,46 @@ func (o *userPanelOps) DeleteUserClients(ctx context.Context, user *admin.UserRo
 	return nil
 }
 
+// RebuildUserCredentials 在凭据（uuid）换新后重建该用户在各节点的 client。
+//
+// 用户定稿：**先删旧的、再加新的**，不做原地 update —— 这样节点上不会残留任何旧凭据，
+// 订阅链接泄露后导入出去的旧配置当场失效。
+//
+//   - 3x-ui：DeleteClient(email, keepTraffic=false) → AddClient(新 uuid) 挂回各入站。
+//     刻意 keepTraffic=false：旧 client 的流量基线属于旧凭据，重置订阅是一次身份更换，
+//     不该把旧用量带进新身份。
+//   - xray（裸内核）：DeleteClient 投 rmu，随后 ProvisionUser 走 adu 按**新 uuid**重建；
+//     agent 重新拉配置时 users.uuid 已是新值，所以这里只需保证调用顺序。
+//
+// 单节点失败只记日志，不影响接口成功（与 PHP 对面板错误 report() 后继续的口径一致）。
+func (o *userPanelOps) RebuildUserCredentials(ctx context.Context, user *admin.UserRow) error {
+	drivers, err := o.col.NodeDrivers(ctx)
+	if err != nil {
+		return err
+	}
+	email := user.ClientEmail()
+	for _, nd := range drivers {
+		switch {
+		case nd.ThreeX != nil:
+			if err := nd.ThreeX.DeleteClient(ctx, email, false); err != nil {
+				// 旧 client 可能本就不存在（历史遗留），删失败不阻断后续新建。
+				o.logger.Printf("[userops] rebuild 删除旧 client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+			if err := o.provisionThreeX(ctx, nd.ThreeX, nd.NodeID, user, email); err != nil {
+				o.logger.Printf("[userops] rebuild 新建 client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+		case nd.Xray != nil:
+			if err := nd.Xray.DeleteClient(ctx, email, false); err != nil {
+				o.logger.Printf("[userops] rebuild 删除旧 xray client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+			if err := o.provisionXray(ctx, nd.Xray, user, email); err != nil {
+				o.logger.Printf("[userops] rebuild 新建 xray client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+		}
+	}
+	return nil
+}
+
 // SwitchProtocol 遍历节点切协议，对齐 ProtocolSwitchService::switch 的顺序与保护：
 //
 //  1. **该节点没有新协议入站 → 整个跳过**（什么都不动）。旧实现在这里仍然 detach 旧入站，

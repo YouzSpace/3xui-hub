@@ -496,6 +496,60 @@ func (d *UserDomain) userResetPassword(c *gin.Context) {
 	d.success(c, nil, "密码已重置")
 }
 
+// userResetSubscription 重置订阅：换 token + 换 uuid，旧订阅链接与旧节点凭据全部作废。
+//
+// 用户定稿的行为（别自行改）：
+//   - **全换**：token、uuid 都换新；账号密码、套餐、流量、到期时间一概不动；
+//   - **不掉登录态**：不动 access_tokens，当前会话继续可用，下次登录用新 token；
+//   - **节点立刻生效**：3x-ui 先删旧 client 再加新 client，xray 投 rmu+adu，各机按新
+//     uuid 重建，旧配置导入出去的客户端再也连不上；
+//   - 返回新 token / uuid / 订阅地址，供前端即时展示（前端另有 WebSocket 通知）。
+func (d *UserDomain) userResetSubscription(c *gin.Context) {
+	u, ok := d.loadUser(c)
+	if !ok {
+		return
+	}
+
+	newToken := "sub_" + randomToken(32)
+	newUUID := randomUUID()
+	patch := UserPatch{
+		Token: &newToken, TokenSet: true,
+		UUID: &newUUID, UUIDSet: true,
+		Now: d.now(),
+	}
+	if err := d.users.UpdateUser(ctxOf(c), u.ID, patch); err != nil {
+		d.failServer(c, "重置订阅", err)
+		return
+	}
+
+	// 节点侧按新凭据重建。失败只记日志、不影响接口成功（面板错误不阻断本地改动，
+	// 与 PHP 对面板错误 report() 后继续的口径一致）。
+	if d.ops != nil {
+		updated := *u
+		updated.Token = newToken
+		updated.UUID = newUUID
+		if err := d.ops.RebuildUserCredentials(ctxOf(c), &updated); err != nil {
+			d.logger.Printf("admin 重置订阅 %d 后重建节点 client 失败（忽略）: %v", u.ID, err)
+		}
+	}
+
+	// 通知该用户的在线前端立即换新链接（不要求用户刷新页面）。
+	// 推送失败不影响接口结果：前端下次轮询 /api/me 照样能拿到新 token。
+	if d.notifier != nil {
+		subPath := "/api/sub/" + newToken
+		if err := d.notifier.NotifySubscriptionReset(ctxOf(c), u.ID, newToken, subPath); err != nil {
+			d.logger.Printf("admin 重置订阅 %d 后推送通知失败（忽略）: %v", u.ID, err)
+		}
+	}
+
+	d.success(c, jo(
+		"id", u.ID,
+		"token", newToken,
+		"uuid", newUUID,
+		"sub_path", "/api/sub/"+newToken,
+	), "订阅已重置，旧链接立即失效")
+}
+
 // userRenew 对齐 UserController::renew + UserAdminService::renew（仅总量套餐）。
 func (d *UserDomain) userRenew(c *gin.Context) {
 	u, ok := d.loadUser(c)

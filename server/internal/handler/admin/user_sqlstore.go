@@ -288,6 +288,14 @@ func (s *adminUserSQLStore) UpdateUser(ctx context.Context, id uint64, patch Use
 		set = append(set, "password = ?")
 		args = append(args, nullStrValue(patch.Password))
 	}
+	if patch.TokenSet {
+		set = append(set, "token = ?")
+		args = append(args, nullStrValue(patch.Token))
+	}
+	if patch.UUIDSet {
+		set = append(set, "uuid = ?")
+		args = append(args, nullStrValue(patch.UUID))
+	}
 	if len(set) == 0 {
 		return nil
 	}

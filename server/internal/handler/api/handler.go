@@ -32,6 +32,10 @@ type Handler struct {
 	protocolSwitch ProtocolSwitcher
 	logger         *log.Logger
 
+	// userHub 是用户端下行消息通道（WebSocket）。定位是通用通道，后期接入
+	// 订单/工单/公告等通知直接复用，见 ws_message.go。
+	userHub *UserHub
+
 	// now 供测试注入固定时钟。
 	now func() time.Time
 }
@@ -45,6 +49,9 @@ type Deps struct {
 	// Provisioner / ProtocolSwitch 可为 nil：注册照常成功（只记日志）、协议切换返回 500 文案。
 	Provisioner    Provisioner
 	ProtocolSwitch ProtocolSwitcher
+	// UserHub 是用户端下行消息通道；为空时自建一个（WS 端点与管理端推送需
+	// 共用同一实例，生产由 cmd/server 建好传进来）。
+	UserHub *UserHub
 	// Now 为空时用 time.Now。
 	Now func() time.Time
 	// Logger 为空时用标准库默认 logger。
@@ -86,6 +93,10 @@ func New(d Deps) *Handler {
 	if h.bcryptCost < 4 || h.bcryptCost > 31 {
 		h.bcryptCost = 12
 	}
+	h.userHub = d.UserHub
+	if h.userHub == nil {
+		h.userHub = NewUserHub()
+	}
 	h.limiter = newRateLimiter(d.Cache)
 	h.limiter.now = now
 	h.captchaSecret = captchaSecret(d.Config.AppKey)
@@ -121,6 +132,10 @@ func (h *Handler) Register(r gin.IRouter) {
 	auth.GET("/api/nodes", h.handleNodes)
 	auth.POST("/api/protocol", h.handleProtocol)
 	auth.GET("/api/_auth_check", h.handleAuthCheck)
+
+	// 用户端下行消息通道（WebSocket，自带 access_token 鉴权，故不套 AuthMiddleware）。
+	// 浏览器 WS 无法自定义请求头，鉴权走 ?access_token= 或 Authorization 两种之一。
+	r.GET("/api/ws", h.handleWS)
 }
 
 // handlePing 对齐 routes/api.php 里的闭包：{"code":0,"msg":"ok","data":{"pong":true}}。
