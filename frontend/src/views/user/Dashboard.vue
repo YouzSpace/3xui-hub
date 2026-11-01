@@ -300,48 +300,80 @@ const loadSubscriptionConfig = async () => {
   }
 };
 
+/**
+ * 复制到剪贴板（三级降级）。
+ * navigator.clipboard 只在安全上下文（https / localhost）且未被策略禁用时可用：
+ * App WebView、iframe 内嵌、http 页面里它直接不存在或抛 NotAllowedError，
+ * 所以失败时退到 textarea + document.execCommand('copy')。
+ * 返回是否真的复制成功。
+ */
+const copyText = async (text) => {
+  if (!text) return false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      /* 被策略禁用：落到下方兜底 */
+    }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length); // iOS Safari 只有 select() 选不中
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (e) {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+};
+
 const copied = ref(false);
 const copiedClash = ref(false);
 const copiedSingbox = ref(false);
 
 const copySub = async () => {
   if (!subUrl.value) return;
-  try {
-    await navigator.clipboard.writeText(subUrl.value);
-    copied.value = true;
-    toast.success("订阅地址已复制");
-    setTimeout(() => {
-      copied.value = false;
-    }, 1500);
-  } catch (e) {
-    toast.error("复制失败");
+  if (!(await copyText(subUrl.value))) {
+    toast.error("复制失败，请手动选择复制");
+    return;
   }
+  copied.value = true;
+  toast.success("订阅地址已复制");
+  setTimeout(() => {
+    copied.value = false;
+  }, 1500);
 };
 const copySubClash = async () => {
   if (!subUrlClash.value) return;
-  try {
-    await navigator.clipboard.writeText(subUrlClash.value);
-    copiedClash.value = true;
-    toast.success("Clash 订阅地址已复制");
-    setTimeout(() => {
-      copiedClash.value = false;
-    }, 1500);
-  } catch (e) {
-    toast.error("复制失败");
+  if (!(await copyText(subUrlClash.value))) {
+    toast.error("复制失败，请手动选择复制");
+    return;
   }
+  copiedClash.value = true;
+  toast.success("Clash 订阅地址已复制");
+  setTimeout(() => {
+    copiedClash.value = false;
+  }, 1500);
 };
 const copySubSingbox = async () => {
   if (!subUrlSingbox.value) return;
-  try {
-    await navigator.clipboard.writeText(subUrlSingbox.value);
-    copiedSingbox.value = true;
-    toast.success("Sing-box 订阅地址已复制");
-    setTimeout(() => {
-      copiedSingbox.value = false;
-    }, 1500);
-  } catch (e) {
-    toast.error("复制失败");
+  if (!(await copyText(subUrlSingbox.value))) {
+    toast.error("复制失败，请手动选择复制");
+    return;
   }
+  copiedSingbox.value = true;
+  toast.success("Sing-box 订阅地址已复制");
+  setTimeout(() => {
+    copiedSingbox.value = false;
+  }, 1500);
 };
 
 // 二维码弹层（真实二维码）

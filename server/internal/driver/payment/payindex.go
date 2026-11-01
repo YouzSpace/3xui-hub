@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -15,7 +16,10 @@ import (
 //
 // 协议要点（支付配置/开发文档.md）：
 //   - 下单：POST 网关，返回 JSON；status==1 且 h5_url 非空即成功，否则 msg 是拒绝原因
-//   - 签名：过滤空值 → 按参数名 ASCII 升序 → `k=v&k=v`（http_build_query）→ 末尾拼 `&key={api_key}` → MD5 大写
+//   - 签名：过滤空值 → 参与签名的字段按参数名 ASCII 升序 → `k=v&k=v` → 末尾拼 `&key={api_key}` → MD5 大写
+//     平台 2025-11 改版后默认只有 7 个字段参与签名、且签名串用**原始值**（不 URL 编码）；
+//     商品名/ip/type 只进请求体。字段集合与编码方式都走配置（sign_fields / sign_encode），
+//     平台再改版只改配置，不动代码。
 //   - 回调：memberid/orderid/amount/transaction_id/datetime/returncode 参与验签，returncode=='00' 才算成功
 //   - 应答：成功回 "OK"，失败回 "FAIL"（网关只认这两个字母，否则会重推三次）
 //
@@ -46,8 +50,9 @@ func (d *PayindexDriver) now() string {
 	return nowFormatter()
 }
 
-// paySignFields 是下单参与签名的字段（顺序即网关要求的请求体顺序）。
-var paySignFields = []string{
+// payBodyFields 是下单请求体的全部字段（顺序即网关要求的请求体顺序）。
+// 注意 pay_productname / pay_ip / pay_type 在新规则下**只进请求体，不进签名**。
+var payBodyFields = []string{
 	"pay_memberid",
 	"pay_orderid",
 	"pay_applydate",
@@ -55,9 +60,21 @@ var paySignFields = []string{
 	"pay_notifyurl",
 	"pay_callbackurl",
 	"pay_amount",
-	"pay_productname", // 协议文档标注「不参与签名」，但 PHP 现状把它并进了签名串
+	"pay_productname",
 	"pay_ip",
 	"pay_type",
+}
+
+// defaultPaySignFields 是默认参与签名的字段（平台 2025-11 改版后的规则：只有这 7 个）。
+// 配置项 sign_fields 留空时用它；老平台可用 sign_fields 配回 10 字段 + sign_encode=urlencode 还原。
+var defaultPaySignFields = []string{
+	"pay_memberid",
+	"pay_orderid",
+	"pay_applydate",
+	"pay_bankcode",
+	"pay_notifyurl",
+	"pay_callbackurl",
+	"pay_amount",
 }
 
 // callbackSignFields 是回调参与验签的字段（与 PHP verifySignature 的 $verifyData 一致）。
@@ -65,22 +82,86 @@ var callbackSignFields = []string{
 	"memberid", "orderid", "amount", "transaction_id", "datetime", "returncode",
 }
 
-// SignParams 计算 payindex 签名：ASCII 升序 + http_build_query + `&key=` + MD5 大写。
+// SignEncode 是签名串的取值编码方式（配置项 sign_encode）。
+type SignEncode string
+
+const (
+	// SignEncodeRaw 用原始值拼接（平台 2025-11 新规则，默认）。
+	SignEncodeRaw SignEncode = "raw"
+	// SignEncodeURLEncode 用 PHP urlencode（http_build_query）编码后拼接（老规则）。
+	SignEncodeURLEncode SignEncode = "urlencode"
+)
+
+// SignParams 计算 payindex 签名：过滤空值 + ASCII 升序 + `k=v&k=v` + `&key=` + MD5 大写。
+// 默认按新规则（原始值）拼接；需要老规则（URL 编码）走 signParamsEncoded。
 //
 // 导出是为了让上层（订单对账、离线补单）与测试都能用同一份实现。
 func SignParams(params map[string]string, apiKey string) string {
-	return strings.ToUpper(md5Hex(sortedNonEmpty(params).String() + "&key=" + apiKey))
+	return signParamsEncoded(params, apiKey, SignEncodeRaw)
 }
 
-// signSelected 只挑出参与签名的字段再算签名。
-func signSelected(data map[string]string, fields []string, apiKey string) string {
+// signParamsEncoded 按 encode 指定的编码方式算签名（raw / urlencode）。
+func signParamsEncoded(params map[string]string, apiKey string, encode SignEncode) string {
+	if encode == SignEncodeURLEncode {
+		return strings.ToUpper(md5Hex(sortedNonEmpty(params).String() + "&key=" + apiKey))
+	}
+	keys := make([]string, 0, len(params))
+	for k, v := range params {
+		if v == "" {
+			continue // 空值不参与签名（"0" 保留）
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+params[k])
+	}
+	return strings.ToUpper(md5Hex(strings.Join(parts, "&") + "&key=" + apiKey))
+}
+
+// signSelected 只挑出参与签名的字段再按 encode 算签名。
+func signSelected(data map[string]string, fields []string, apiKey string, encode SignEncode) string {
 	sub := make(map[string]string, len(fields))
 	for _, f := range fields {
 		if v, ok := data[f]; ok {
 			sub[f] = v
 		}
 	}
-	return SignParams(sub, apiKey)
+	return signParamsEncoded(sub, apiKey, encode)
+}
+
+// resolvePaySignFields 读 sign_fields 配置：逗号分隔，留空 / 全部无效时用默认 7 字段。
+// 只接受 payBodyFields 里的字段名（写错的名字直接忽略，避免拼出网关不认的签名串）。
+func resolvePaySignFields(cfg Config) []string {
+	raw := strings.TrimSpace(cfg.Cfg("sign_fields", ""))
+	if raw == "" {
+		return defaultPaySignFields
+	}
+	known := make(map[string]bool, len(payBodyFields))
+	for _, f := range payBodyFields {
+		known[f] = true
+	}
+	out := make([]string, 0, len(payBodyFields))
+	for _, f := range strings.Split(raw, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" || !known[f] {
+			continue
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return defaultPaySignFields
+	}
+	return out
+}
+
+// resolveSignEncode 读 sign_encode 配置：留空 / 无法识别时用 raw（新规则）。
+func resolveSignEncode(cfg Config) SignEncode {
+	if strings.EqualFold(strings.TrimSpace(cfg.Cfg("sign_encode", "")), string(SignEncodeURLEncode)) {
+		return SignEncodeURLEncode
+	}
+	return SignEncodeRaw
 }
 
 func md5Hex(s string) string {
@@ -115,12 +196,16 @@ func (d *PayindexDriver) Pay(ctx context.Context, req PayRequest, cfg Config) Pa
 
 	apiKey := cfg.Cfg("api_key", "")
 
-	// 请求体按 paySignFields 顺序发送，末尾追加 pay_md5sign（与 PHP 的 $params 建法一致）。
-	pairs := make([][2]string, 0, len(paySignFields)+1)
-	for _, f := range paySignFields {
+	// 请求体按 payBodyFields 顺序发全部 10 个字段，签名只覆盖 sign_fields 指定的字段
+	// （默认 7 个，商品名/IP/type 默认不参与）。
+	signFields := resolvePaySignFields(cfg)
+	signEncode := resolveSignEncode(cfg)
+
+	pairs := make([][2]string, 0, len(payBodyFields)+1)
+	for _, f := range payBodyFields {
 		pairs = append(pairs, [2]string{f, params[f]})
 	}
-	pairs = append(pairs, [2]string{"pay_md5sign", SignParams(params, apiKey)})
+	pairs = append(pairs, [2]string{"pay_md5sign", signSelected(params, signFields, apiKey, signEncode)})
 
 	body, err := postForm(ctx, d.client(), cfg.Cfg("gateway", ""), pairs)
 	if err != nil {
@@ -170,13 +255,20 @@ func (d *PayindexDriver) HandleCallback(data map[string]string, cfg Config) Call
 }
 
 // VerifySignature 验签（不区分大小写，与 PHP strcasecmp 一致）。
+//
+// 平台 2025-11 改版后签名串用**原始值**，老平台用 URL 编码值，两者在 datetime 这类
+// 含空格/冒号的字段上结果不同。这里**不读 sign_encode 配置**：先按新规则验，
+// 不中再退老规则兜底 —— 下单的编码配置填错了也不能把真实支付回调当伪造拒掉。
 func (d *PayindexDriver) VerifySignature(data map[string]string, cfg Config) bool {
 	sign := data["sign"]
 	if sign == "" {
 		return false
 	}
-	expected := signSelected(data, callbackSignFields, cfg.Cfg("api_key", ""))
-	return strings.EqualFold(sign, expected)
+	key := cfg.Cfg("api_key", "")
+	if strings.EqualFold(sign, signSelected(data, callbackSignFields, key, SignEncodeRaw)) {
+		return true
+	}
+	return strings.EqualFold(sign, signSelected(data, callbackSignFields, key, SignEncodeURLEncode))
 }
 
 // Query 查单：returncode=='00' 且 trade_state=='SUCCESS' 视为已支付。
@@ -190,11 +282,12 @@ func (d *PayindexDriver) Query(ctx context.Context, order Order, cfg Config) *Qu
 		"pay_memberid": cfg.Cfg("member_id", ""),
 		"pay_orderid":  order.OrderNo,
 	}
-	// 查询接口的签名同样覆盖全部参数（含 pay_md5sign 之外的两个字段）。
+	// 查单的签名同样覆盖全部参数（这两个字段都是数字/字母，raw 与 urlencode 结果相同；
+	// 仍按 sign_encode 走，保证把驱动配置回老规则时行为一致）。
 	body, err := postForm(ctx, d.client(), queryGateway, [][2]string{
 		{"pay_memberid", params["pay_memberid"]},
 		{"pay_orderid", params["pay_orderid"]},
-		{"pay_md5sign", SignParams(params, cfg.Cfg("api_key", ""))},
+		{"pay_md5sign", signParamsEncoded(params, cfg.Cfg("api_key", ""), resolveSignEncode(cfg))},
 	})
 	if err != nil {
 		return nil
@@ -232,7 +325,7 @@ func (d *PayindexDriver) Definition() Definition {
 	return Definition{
 		Key:           DriverPayindex,
 		Label:         "PayIndex（现网关协议）",
-		Description:   "当前生产在用协议：MD5 签名（ksort + http_build_query + &key= 密钥，大写）。支持查单。",
+		Description:   "MD5 签名：参与签名的字段按参数名升序、拼 `k=v&k=v` + &key= 密钥取大写。默认 2025-11 新规则（7 字段 + 原始值），可通过 sign_fields / sign_encode 还原老规则。支持查单。",
 		SupportsQuery: true,
 		Fields: []FieldDef{
 			{Name: "gateway", Label: "支付网关地址", Placeholder: "https://xxx.com/Pay_Index.html", Required: true},
@@ -240,6 +333,8 @@ func (d *PayindexDriver) Definition() Definition {
 			{Name: "member_id", Label: "商户号", Placeholder: "输入商户号", Required: true},
 			{Name: "api_key", Label: "API密钥", Placeholder: "输入API密钥", Required: true, Secret: true},
 			{Name: "bank_code", Label: "银行编码（支付平台后台查看）", Placeholder: "如：1=支付宝, 2=微信", Required: true},
+			{Name: "sign_fields", Label: "参与签名的字段", Placeholder: "留空=pay_memberid,pay_orderid,pay_applydate,pay_bankcode,pay_notifyurl,pay_callbackurl,pay_amount（平台改版时按新文档填）"},
+			{Name: "sign_encode", Label: "签名取值编码", Placeholder: "留空=raw（原始值）；老平台填 urlencode"},
 		},
 	}
 }

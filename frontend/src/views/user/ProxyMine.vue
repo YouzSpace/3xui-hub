@@ -52,13 +52,44 @@ const usagePercent = (item) => {
   return Math.min(100, Math.round(((item.used_bytes || 0) / item.limit_bytes) * 100))
 }
 
-const copy = async (text, label) => {
-  try {
-    await navigator.clipboard.writeText(text)
-    toast.success(`${label}已复制`)
-  } catch (e) {
-    toast.error('复制失败，请手动选择复制')
+/**
+ * 复制到剪贴板（三级降级）。
+ * navigator.clipboard 只在安全上下文（https / localhost）且未被策略禁用时可用：
+ * App WebView、iframe 内嵌、http 页面里它直接不存在或抛 NotAllowedError，
+ * 所以失败时退到 textarea + document.execCommand('copy')。
+ * 返回是否真的复制成功。
+ */
+const copyText = async (text) => {
+  if (!text) return false
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch (e) {
+      /* 被策略禁用：落到下方兜底 */
+    }
   }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.top = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  ta.setSelectionRange(0, text.length) // iOS Safari 只有 select() 选不中
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch (e) {
+    ok = false
+  }
+  ta.remove()
+  return ok
+}
+
+const copy = async (text, label) => {
+  if (await copyText(text)) toast.success(`${label}已复制`)
+  else toast.error('复制失败，请手动选择复制')
 }
 
 const copyAll = (item) => {

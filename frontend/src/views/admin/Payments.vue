@@ -34,6 +34,12 @@ const form = ref({
 // 旧列字段名（与 payment_configs 表列名一致）：保存时镜像一份，老读取路径零影响
 const LEGACY_KEYS = ['gateway', 'query_gateway', 'member_id', 'api_key', 'bank_code']
 
+// 通用字段（不在协议 fields 里）的中文名：变更提示用
+const COMMON_LABELS = { name: '配置名称', driver_type: '支付协议', notify_url: '回调地址', enabled: '启用状态' }
+
+// 打开编辑时回填的原始值快照：保存成功后按它算出「这次实际改了哪些字段」
+const original = ref(null)
+
 // 当前协议定义（老数据 driver_type 为空按 payindex 处理）
 const currentProtocol = computed(() => {
   const key = form.value.driver_type || 'payindex'
@@ -43,6 +49,46 @@ const currentProtocol = computed(() => {
 const protocolLabel = (t) => {
   const key = t || 'payindex'
   return protocols.value.find((p) => p.key === key)?.label || key
+}
+
+// 字段名 → 中文名：先按当前协议定义，再按任一协议定义，最后通用字段/字段名兜底
+const labelOf = (key) => {
+  const hit =
+    (currentProtocol.value?.fields || []).find((f) => f.name === key) ||
+    protocols.value.flatMap((p) => p.fields || []).find((f) => f.name === key)
+  return hit?.label || COMMON_LABELS[key] || key
+}
+
+// 与后端口径一致（config 值落库前 trim），避免只有首尾空格的“假变更”
+const norm = (v) => String(v ?? '').trim()
+
+/**
+ * 本次实际变更的字段中文名（顺序：名称/协议/协议字段/回调地址/启用）。
+ * 密文留空 = 不修改：提交前已从 fields 里剔除，与原始空值比相等 → 不算变更。
+ */
+const diffLabels = (before, now) => {
+  const labels = []
+  const add = (key) => {
+    const label = labelOf(key)
+    if (!labels.includes(label)) labels.push(label)
+  }
+  const beforeFields = before?.fields || {}
+
+  if (norm(before?.name) !== norm(now.name)) add('name')
+  if (norm(before?.driver_type) !== norm(now.driver_type)) add('driver_type')
+
+  // 协议字段按当前协议定义顺序，再补两边多出来的键（切协议时旧键仍在表单里）
+  const keys = (currentProtocol.value?.fields || []).map((f) => f.name)
+  for (const k of Object.keys({ ...beforeFields, ...now.fields })) {
+    if (!keys.includes(k)) keys.push(k)
+  }
+  for (const k of keys) {
+    if (norm(beforeFields[k]) !== norm(now.fields[k])) add(k)
+  }
+
+  if (norm(before?.notify_url) !== norm(now.notify_url)) add('notify_url')
+  if (!!before?.enabled !== !!now.enabled) add('enabled')
+  return labels
 }
 
 const load = async () => {
@@ -74,6 +120,7 @@ const resetForm = () => {
     notify_url: '',
     enabled: true,
   }
+  original.value = null
 }
 
 const openCreate = () => {
@@ -98,6 +145,14 @@ const openEdit = async (p) => {
       fields,
       notify_url: detail.notify_url || '',
       enabled: detail.enabled,
+    }
+    // 回填后的这份就是“编辑前原始值”，保存后拿它算变更清单
+    original.value = {
+      name: form.value.name,
+      driver_type: form.value.driver_type,
+      notify_url: form.value.notify_url,
+      enabled: !!form.value.enabled,
+      fields: { ...fields },
     }
   } catch (e) {
     toast.error('加载配置详情失败')
@@ -144,10 +199,23 @@ const save = async () => {
     else if (k !== 'api_key') payload[k] = fields[k] ?? ''
   }
 
+  // 变更清单：按提交给后端的 payload 与打开编辑时的原始值逐字段比；新建不算
+  const changed =
+    isEdit && original.value
+      ? diffLabels(original.value, {
+          name: payload.name,
+          driver_type: payload.driver_type,
+          notify_url: payload.notify_url,
+          enabled: payload.enabled,
+          fields: payload.driver_config,
+        })
+      : []
+
   try {
     if (isEdit) {
       await adminApi.updatePayment(editing.value.id, payload)
-      toast.success('已更新')
+      if (changed.length) toast.success(`已更新：${changed.join('、')}`)
+      else toast.info('无变更')
     } else {
       await adminApi.createPayment(payload)
       toast.success('已创建')
