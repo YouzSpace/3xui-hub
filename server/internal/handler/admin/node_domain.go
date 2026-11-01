@@ -146,6 +146,9 @@ func (d *NodeDomain) Register(r gin.IRouter) {
 	r.POST("/xray-certificates/sync-local", d.xrayCertificateSyncLocal)
 	// 远程证书签发：对裸内核节点下发 cert_issue，回执 PEM 写进证书库。
 	r.POST("/xray-certificates/issue", d.certIssue)
+	// 自动续签的手动触发（与每日 05:20 的定时任务同一套逻辑）；
+	// body {"dry_run":true} 只报告「哪些证书到期、会去哪台节点签」，不真签。
+	r.POST("/xray-certificates/renew", d.xrayCertificateRenew)
 	// 单条证书的解密 PEM（入站表单「从证书库填充 PEM」用；私钥明文唯一的出口）。
 	r.GET("/xray-certificates/:certificate/pem", d.xrayCertificatePEM)
 	r.DELETE("/xray-certificates/:certificate", d.xrayCertificateDestroy)

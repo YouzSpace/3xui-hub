@@ -31,6 +31,9 @@ type Deps struct {
 	// SyncLocalCerts 是本机证书目录同步（xray-certificates-sync 用）：扫面板机上的
 	// acme.sh 证书目录，把续签后的 PEM 刷新进 TLS 证书库。nil → 该条跳过（单测/无库场景）。
 	SyncLocalCerts func(ctx context.Context) (LocalCertSyncSummary, error)
+	// RenewNodeCerts 是远程证书自动续签（xray-certificates-renew 用）：把快到期的证书
+	// 交给对应节点重签并覆盖入库。nil → 该条跳过（单测/无库场景）。
+	RenewNodeCerts func(ctx context.Context) (CertRenewSummary, error)
 	// Logf 是日志出口。
 	Logf func(format string, args ...any)
 }
@@ -42,6 +45,18 @@ type LocalCertSyncSummary struct {
 	Created int
 	Updated int
 	Skipped int
+	Bumped  int
+	Reasons []string
+}
+
+// CertRenewSummary 是「远程证书自动续签」的结果口径（由 admin 侧适配过来）。
+type CertRenewSummary struct {
+	Checked int
+	Due     int
+	Renewed int
+	Failed  int
+	Skipped int
+	Bumped  int
 	Reasons []string
 }
 
@@ -118,6 +133,9 @@ const (
 	NameRealityAudit         = "reality-audit"
 	// NameXrayCertificateSync 是「本机证书目录 → TLS 证书库」的同步（Go 侧新增，PHP 没有）。
 	NameXrayCertificateSync = "xray-certificates-sync"
+	// NameXrayCertificateRenew 是远程证书自动续签（Go 侧新增，PHP 没有）：
+	// 到期前 N 天把证书交给该域名落地的节点重签，回执 PEM 覆盖证书库同一行并 bump 配置版本。
+	NameXrayCertificateRenew = "xray-certificates-renew"
 )
 
 // ── cron 表达式（Laravel 调度宏 → 5 字段 cron，UTC） ──
@@ -137,7 +155,10 @@ const (
 	SpecDaily0330        = "30 3 * * *"
 	SpecDaily0430        = "30 4 * * *"
 	SpecDaily0410        = "10 4 * * *"
-	SpecWeeklyMon0445    = "45 4 * * 1"
+	// SpecDaily0520 是证书自动续签的档位：排在 00:00 / 00:10 / 03:30 / 04:10 / 04:30 / 04:45
+	// 这些既有每日任务之后，避开备份与全量巡检的 I/O 高峰。
+	SpecDaily0520     = "20 5 * * *"
+	SpecWeeklyMon0445 = "45 4 * * 1"
 )
 
 // DefaultJobs 复刻 console.php 的全部 Schedule 条目。
@@ -338,8 +359,29 @@ func DefaultJobs(d Deps) []Job {
 			if err != nil {
 				return err
 			}
-			logf("[schedule] %s 目录=%s 扫描=%d 新增=%d 更新=%d 跳过=%d reasons=%v",
-				NameXrayCertificateSync, sum.Dir, sum.Scanned, sum.Created, sum.Updated, sum.Skipped, sum.Reasons)
+			logf("[schedule] %s 目录=%s 扫描=%d 新增=%d 更新=%d 跳过=%d bump节点=%d reasons=%v",
+				NameXrayCertificateSync, sum.Dir, sum.Scanned, sum.Created, sum.Updated, sum.Skipped, sum.Bumped, sum.Reasons)
+			return nil
+		},
+	})
+
+	// 远程证书自动续签：每日 05:20（UTC）。
+	//
+	// 为什么这条任务必须在面板侧：证书真源是证书库那一行（渲染时把 PEM 内联下发到节点），
+	// 节点上自己续签对入站无效；而 HTTP-01 又只能由域名落地的节点完成 ——
+	// 所以面板负责「挑证书 + 发指令 + 回执入库 + bump 配置版本」，节点只负责签发动作。
+	jobs = append(jobs, Job{
+		Name: NameXrayCertificateRenew, Spec: SpecDaily0520, WithoutOverlap: true,
+		Run: func(ctx context.Context) error {
+			if d.RenewNodeCerts == nil {
+				return nil // 没接实现（单测 / 无库场景）不报错，避免刷失败记录
+			}
+			sum, err := d.RenewNodeCerts(ctx)
+			if err != nil {
+				return err
+			}
+			logf("[schedule] %s 检查=%d 到期=%d 续签成功=%d 失败=%d 跳过=%d bump节点=%d reasons=%v",
+				NameXrayCertificateRenew, sum.Checked, sum.Due, sum.Renewed, sum.Failed, sum.Skipped, sum.Bumped, sum.Reasons)
 			return nil
 		},
 	})

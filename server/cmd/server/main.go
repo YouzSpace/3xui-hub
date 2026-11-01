@@ -189,6 +189,43 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		Logger: logger,
 	})
 
+	// 一次性运维入口：把「有入站引用、且不由面板机 acme.sh 维护」的证书立刻重签一遍后退出
+	// （定时任务要等窗口期，这个入口给「刚接手一批手工导入证书」的场景用）：
+	//
+	//	controlhub-server --renew-certs-once
+	//
+	// 与定时任务同一套实现（同一份入库 + bump 逻辑），跑完退出，不启 HTTP 与调度。
+	if len(os.Args) > 1 && os.Args[1] == "--renew-certs-once" {
+		res, err := nodeDomain.RenewAllReferencedCertificates(context.Background())
+		log.Printf("[certs] 一次性续签：检查=%d 处理=%d 成功=%d 失败=%d 跳过=%d bump节点=%d",
+			res.Checked, res.Due, res.Renewed, res.Failed, res.Skipped, res.Bumped)
+		for _, r := range res.Reasons {
+			log.Printf("[certs]   %s", r)
+		}
+		if err != nil {
+			log.Printf("[certs] 续签出错: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// 一次性运维入口：本机证书目录 → 证书库同步（acme.sh 续签后跑；内容变了才 bump 节点）：
+	//
+	//	controlhub-server --sync-local-certs
+	if len(os.Args) > 1 && os.Args[1] == "--sync-local-certs" {
+		res, err := nodeDomain.SyncLocalCertificates(context.Background())
+		log.Printf("[certs] 本机目录同步：目录=%s 扫描=%d 新增=%d 更新=%d 跳过=%d bump节点=%d",
+			res.Dir, res.Scanned, res.Created, res.Updated, res.Skipped, res.Bumped)
+		for _, r := range res.Reasons {
+			log.Printf("[certs]   %s", r)
+		}
+		if err != nil {
+			log.Printf("[certs] 同步出错: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// Geo 数据服务（geodata:update 命令用）。
 	// 目录必须与 assets.go 的 geoRoot 同一个（../backend/storage/app/xray/geo），
 	// 否则更新写到 server/storage、分发却从 backend/storage 读 → 节点侧 sha256 校验必失败。
@@ -234,6 +271,8 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		// 本机证书目录同步（acme.sh 续签 → TLS 证书库）：复用节点域的实现，
 		// 只用到库操作（加密写私钥）与读目录，不需要 HTTP。
 		SyncLocalCerts: certSyncAdapter(nodeDomain.SyncLocalCertificates),
+		// 远程证书自动续签（到期前 N 天让对应节点重签，回执 PEM 覆盖证书库并 bump 配置版本）。
+		RenewNodeCerts: certRenewAdapter(nodeDomain.RenewDueCertificates),
 		Logf:           logger.Printf,
 	})...); err != nil {
 		logger.Printf("[schedule] 注册调度任务失败: %v", err)
@@ -262,6 +301,29 @@ func certSyncAdapter(sync func(context.Context) (admin.LocalCertSyncResult, erro
 			Created: res.Created,
 			Updated: res.Updated,
 			Skipped: res.Skipped,
+			Bumped:  res.Bumped,
+			Reasons: res.Reasons,
+		}, nil
+	}
+}
+
+// certRenewAdapter 把 admin 的「远程证书自动续签」结果转成调度层的口径。
+func certRenewAdapter(renew func(context.Context) (admin.CertRenewResult, error)) func(context.Context) (task.CertRenewSummary, error) {
+	if renew == nil {
+		return nil
+	}
+	return func(ctx context.Context) (task.CertRenewSummary, error) {
+		res, err := renew(ctx)
+		if err != nil {
+			return task.CertRenewSummary{}, err
+		}
+		return task.CertRenewSummary{
+			Checked: res.Checked,
+			Due:     res.Due,
+			Renewed: res.Renewed,
+			Failed:  res.Failed,
+			Skipped: res.Skipped,
+			Bumped:  res.Bumped,
 			Reasons: res.Reasons,
 		}, nil
 	}

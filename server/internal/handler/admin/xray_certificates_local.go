@@ -48,6 +48,7 @@ type LocalCertSyncResult struct {
 	Created int      // 新入库
 	Updated int      // 已有同域名行被刷新
 	Skipped int      // 跳过的子目录数
+	Bumped  int      // 因证书内容变化而 bump 配置版本的节点数
 	Reasons []string // 跳过原因（最多 certSyncMaxReasons 条）
 }
 
@@ -76,6 +77,10 @@ func (d *NodeDomain) SyncLocalCertificates(ctx context.Context) (LocalCertSyncRe
 	if err != nil {
 		return res, err
 	}
+
+	// 内容真的变了（续签后）才需要让引用它的节点重拉配置：
+	// 每 6 小时都 bump 会让内核白重载六次；没变就只刷库、不动节点。
+	changedIDs := map[uint64]bool{}
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -110,12 +115,18 @@ func (d *NodeDomain) SyncLocalCertificates(ctx context.Context) (LocalCertSyncRe
 			KeyPEM:  keyPEM,
 		}
 		if hit != nil {
+			// PEM 与库里一致就不算更新（acme 没续签时每 6 小时都会读一遍同样的证书）。
+			if strings.TrimSpace(hit.CertPEM) == strings.TrimSpace(certPEM) {
+				res.Updated++
+				continue
+			}
 			if err := d.store.UpdateXrayCertificate(ctx, hit.ID, in); err != nil {
 				res.Skipped++
 				res.addReason(domain + " 更新失败：" + err.Error())
 				continue
 			}
 			res.Updated++
+			changedIDs[hit.ID] = true
 			continue
 		}
 		if _, err := d.store.CreateXrayCertificate(ctx, in); err != nil {
@@ -125,7 +136,46 @@ func (d *NodeDomain) SyncLocalCertificates(ctx context.Context) (LocalCertSyncRe
 		}
 		res.Created++
 	}
+
+	// 证书换过内容 → 让引用它的节点重拉配置，否则内核继续用旧证书直到下次无关变更。
+	// 这是「本机 acme.sh 续签后真正生效」缺的那一环（此前只刷库，不触发下发）。
+	if len(changedIDs) > 0 {
+		res.Bumped += d.bumpNodesUsingCerts(ctx, changedIDs, res.addReason)
+	}
 	return res, nil
+}
+
+// bumpNodesUsingCerts 给「引用了这些证书的节点」+1 配置版本，返回 bump 的节点数。
+func (d *NodeDomain) bumpNodesUsingCerts(ctx context.Context, certIDs map[uint64]bool, note func(string)) int {
+	nodes, _, err := d.store.NodesPage(ctx, true, 1, 500)
+	if err != nil {
+		note("续签后查节点失败：" + err.Error())
+		return 0
+	}
+	bumped := 0
+	for _, n := range nodes {
+		inbounds, err := d.store.XrayInboundsByNode(ctx, n.ID)
+		if err != nil {
+			note("续签后读节点 " + n.Name + " 的入站失败：" + err.Error())
+			continue
+		}
+		hit := false
+		for _, ib := range inbounds {
+			if certIDs[certIDOfInbound(ib.StreamSettings)] {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		if _, err := d.store.BumpConfigVersion(ctx, n.ID); err != nil {
+			note("续签后 bump 节点 " + n.Name + " 配置版本失败：" + err.Error())
+			continue
+		}
+		bumped++
+	}
+	return bumped
 }
 
 // addReason 记一条跳过原因（超上限就丢，避免回执过长）。
