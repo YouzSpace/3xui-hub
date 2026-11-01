@@ -44,6 +44,109 @@ const taskDone = (t) => (t.completed || 0) + (t.failed || 0)
 const taskPercent = (t) => (!t.total ? (t.status === 'succeeded' ? 100 : 0) : Math.min(100, Math.round((taskDone(t) / t.total) * 100)))
 const canRetryTask = (t) => t.status === 'failed' && (t.attempts || 0) < (t.max_attempts || 0)
 
+// 定时任务说明：鼠标悬停任务名时弹出的小卡片。措辞与后端 internal/task/defaults.go 的
+// 注释逐条对齐（那边是这些任务的唯一实现处），改任务时两边一起改。
+//
+// ⚠️ 时间一律写**北京时间**：cron 表达式是 UTC，但本表「下次运行」列走 fmtTime() →
+// toLocaleString() 按浏览器本地时区渲染，用户看到的就是北京时间。说明里若写 UTC，
+// 会出现「表里 13:20、说明写 05:20」这种自相矛盾（2026-11-02 踩过）。
+const scheduleDesc = {
+  'traffic-sync': {
+    title: '流量同步',
+    body: '每隔 5 分钟把各节点上的流量用量拉回面板记账。3x-ui 节点走面板接口轮询；裸内核（xray）节点由节点 agent 主动推送，这条任务会跳过它们。',
+  },
+  'ban-check': {
+    title: '到期 / 超量扫描',
+    body: '每隔 5 分钟检查所有启用用户：套餐到期或流量用超就关闭节点的使用权限。只关流量、不封账号，用户仍可登录续费。',
+  },
+  'health-check': {
+    title: '节点健康检查',
+    body: '每隔 5 分钟探测所有已启用节点，刷新在线状态与延迟，节点掉线会触发通知。',
+  },
+  'monthly-reset-traffic': {
+    title: '周期套餐月流量重置',
+    body: '每天 08:00（北京时间）检查一遍，把到了重置时间点的周期套餐用户当月已用流量清零。',
+  },
+  'invite-code-refresh': {
+    title: '邀请码刷新',
+    body: '每天 08:10（北京时间）刷新已到期的邀请码，旧码立即失效、只认最新一码，防止邀请码被长期外传复用。',
+  },
+  'db-backup': {
+    title: '数据库备份',
+    body: '每天 11:30（北京时间）导出一次数据库，并按保留份数自动清理旧备份。',
+  },
+  'monitor-rollup': {
+    title: '监控数据汇总',
+    body: '每天 12:30（北京时间）把原始的监控采样点汇总成按天的统计，供面板图表使用；原始采样随后按保留策略清理。',
+  },
+  'expire-pending-orders': {
+    title: '待支付订单过期',
+    body: '每小时把超过 1 小时仍未支付的订单标记为过期，避免死单一直占着用户的下单入口。',
+  },
+  'proxy-maintain': {
+    title: '代理商城维护',
+    body: '回采 upstream 代理商的用量、标记到期权益、停用到期的上游子账号。',
+  },
+  'async-task-timeout': {
+    title: '异步任务超时清扫',
+    body: '每隔 5 分钟清理长时间卡在「执行中」的异步任务，把它们标成超时失败，避免任务列表永远转圈。',
+  },
+  'mail-notify-scan': {
+    title: '邮件自动通知',
+    body: '扫描需要发通知的事件（到期提醒、流量告警等）并发出邮件。四个通知开关全关时整条任务直接跳过。',
+  },
+  'mail-schedule-scan': {
+    title: '定时邮件扫描',
+    body: '检查有没到发送时间的定时邮件/公告邮件并发出；没配置定时邮件时这条任务不会真正执行。',
+  },
+  'third-party-fetch': {
+    title: '第三方订阅拉取',
+    body: '每 2 小时拉一次已启用的第三方订阅内容。总开关关闭、或没有启用中的订阅时跳过。',
+  },
+  'xray-warp-rotate': {
+    title: 'WARP 出口换 IP',
+    body: '每隔 5 分钟检查并轮换 WARP 出站 IP。没有配置 WARP 出站时跳过。',
+  },
+  'xray-refresh-outbound-subs': {
+    title: '出站订阅自动刷新',
+    body: '每隔 5 分钟把「出站订阅」里的节点列表重新拉一遍，内容有变化就更新到节点并提升该节点的配置版本，让节点重拉配置生效。表里这条显示的上次运行时间很久，是因为「没有启用中的出站订阅时整条任务会跳过、也不写运行记录」，不是坏了。',
+  },
+  'geodata-update': {
+    title: 'GeoIP / GeoSite 更新',
+    body: '每周一 12:45（北京时间）检查 geoip.dat / geosite.dat 有没新版本，有就下载并分发到所有已启用的裸内核节点。',
+  },
+  'users-reconcile-enable': {
+    title: '用户与节点对账',
+    body: '每隔 5 分钟把面板里的「谁该在哪些入站」与节点上的实际状态逐条比对，补齐缺失的、报告漂移（只报告不擅自改）。裸内核节点靠 agent 的 client_list 指令读回实际状态。',
+  },
+  'reality-audit': {
+    title: 'REALITY 入站巡检',
+    body: '每天 12:10（北京时间）巡检 REALITY 入站的配置是否合法（目标站证书 SAN、SNI 等），发现问题只记录不自动改。',
+  },
+  'xray-certificates-sync': {
+    title: '本机证书目录同步',
+    body: '每 6 小时把面板机上 acme.sh 续签好的证书搬进「TLS 证书库」。证书内容真变了才会提升引用它的节点配置版本；没变只刷库，不会让节点白重载。',
+  },
+  'xray-certificates-renew': {
+    title: '远程证书自动续签',
+    body: '每天 13:20（北京时间）检查证书库，到期前 21 天把证书交给「这个域名实际落地的节点」重新签发（节点自己做 ACME），回执的证书写回库里同一行并提升节点配置版本。面板机 acme.sh 自己管的证书不归它管。',
+  },
+}
+
+// scheduleDescFor 取某条任务的说明；没登记的返回 null（不弹窗、不报错）。
+const scheduleDescFor = (cmd) => scheduleDesc[cmd] || null
+
+// hoverTip 控制悬浮说明：进入任务名时记录任务与鼠标位置，离开即清空。
+const hoverTip = ref(null)
+const showScheduleTip = (e, cmd) => {
+  const d = scheduleDescFor(cmd)
+  if (!d) return
+  const r = e.currentTarget.getBoundingClientRect()
+  hoverTip.value = { ...d, cmd, x: r.left, y: r.bottom + 8 }
+}
+const hideScheduleTip = () => { hoverTip.value = null }
+
+
 const loadAsyncTasks = async () => {
   try {
     asyncTasks.value = (await adminApi.listAsyncTasks()) || []
@@ -155,7 +258,14 @@ onActivated(load)
           </thead>
           <tbody>
             <tr v-for="t in tasks.events" :key="t.command">
-              <td class="mono">{{ t.command }}</td>
+              <td class="mono">
+                <span
+                  class="sys-task-name"
+                  :class="{ 'is-help': scheduleDescFor(t.command) }"
+                  @mouseenter="showScheduleTip($event, t.command)"
+                  @mouseleave="hideScheduleTip"
+                >{{ t.command }}</span>
+              </td>
               <td class="mono">{{ t.expression }}</td>
               <td>{{ fmtTime(t.next_run, '—') }}</td>
               <td>{{ fmtTime(t.last_run, '从未') }}</td>
@@ -185,6 +295,20 @@ onActivated(load)
         </div>
       </div>
     </Card>
+
+    <!-- 定时任务说明：跟随鼠标任务名，移开即消失。用 Teleport 挂到 body，
+         避免被表格容器的 overflow-x 裁剪掉。 -->
+    <Teleport to="body">
+      <div
+        v-if="hoverTip"
+        class="sys-task-tip"
+        :style="{ left: hoverTip.x + 'px', top: hoverTip.y + 'px' }"
+        role="tooltip"
+      >
+        <div class="sys-task-tip-title">{{ hoverTip.title }}</div>
+        <div class="sys-task-tip-body">{{ hoverTip.body }}</div>
+      </div>
+    </Teleport>
 
     <!-- 异步任务（失败可重试；与定时任务不同，这是后台任务体系的实时列表） -->
     <Card padding="false">
@@ -281,6 +405,35 @@ onActivated(load)
   color: var(--text-muted); font-weight: var(--font-medium); font-size: var(--text-xs);
 }
 .sys-table tbody tr:hover { background: var(--bg-hover); }
+
+/* 任务名：只做悬浮提示，不动表格外观（不加下划线/不变色），鼠标移上去指针提示可查 */
+.sys-task-name.is-help {
+  cursor: help;
+}
+
+/* 悬浮说明卡片 */
+.sys-task-tip {
+  position: fixed;
+  z-index: 1200;
+  max-width: 340px;
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, .28));
+  pointer-events: none; /* 鼠标穿过，避免抖动 */
+}
+.sys-task-tip-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+.sys-task-tip-body {
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
 .sys-table td.sys-err-cell { max-width: 280px; white-space: normal; }
 .sys-empty { text-align: center; color: var(--text-muted); padding: var(--space-6); }
 .sys-muted { color: var(--text-muted); }
