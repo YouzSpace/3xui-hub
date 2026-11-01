@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -13,9 +14,11 @@ import (
 // wwspay 是网关品牌，payindex 是协议名 —— 线上 driver_type 列默认值写的就是 'wwspay'，
 // 两者是同一套协议，这里只保留 payindex 一个实现（回退规则见 Registry.For）。
 //
-// 协议要点（支付配置/开发文档.md）：
+// 协议要点（平台对接文档，2025-11-08 更新版；老 PHP 规则已废弃）：
 //   - 下单：POST 网关，返回 JSON；status==1 且 h5_url 非空即成功，否则 msg 是拒绝原因
-//   - 签名：过滤空值 → 按参数名 ASCII 升序 → `k=v&k=v`（http_build_query）→ 末尾拼 `&key={api_key}` → MD5 大写
+//   - 签名：参与签名的 7 字段（memberid/orderid/applydate/bankcode/notifyurl/callbackurl/amount）
+//     按参数名 ASCII 升序，用**原始值**拼 `k=v&k=v` → 末尾拼 `&key={api_key}` → MD5 大写
+//     （商品名/ip/type 只进请求体不进签名；用 URL 编码值签名会报「签名错误」，实测证实）
 //   - 回调：memberid/orderid/amount/transaction_id/datetime/returncode 参与验签，returncode=='00' 才算成功
 //   - 应答：成功回 "OK"，失败回 "FAIL"（网关只认这两个字母，否则会重推三次）
 //
@@ -46,7 +49,8 @@ func (d *PayindexDriver) now() string {
 	return nowFormatter()
 }
 
-// paySignFields 是下单参与签名的字段（顺序即网关要求的请求体顺序）。
+// paySignFields 是下单参与签名的字段（平台 2025-11 改版后的文档规则：只有这 7 个，
+// pay_productname / pay_ip / pay_type 不参与签名 —— 老网关兼容性探测已证实 7 字段在新老域名都通过）。
 var paySignFields = []string{
 	"pay_memberid",
 	"pay_orderid",
@@ -55,21 +59,47 @@ var paySignFields = []string{
 	"pay_notifyurl",
 	"pay_callbackurl",
 	"pay_amount",
-	"pay_productname", // 协议文档标注「不参与签名」，但 PHP 现状把它并进了签名串
+}
+
+// payBodyFields 是下单请求体的全部字段（顺序即网关要求的请求体顺序）。
+// 注意 pay_productname / pay_ip 必填、pay_type 沿用老实现发 JSON —— 都**只进请求体，不进签名**。
+var payBodyFields = []string{
+	"pay_memberid",
+	"pay_orderid",
+	"pay_applydate",
+	"pay_bankcode",
+	"pay_notifyurl",
+	"pay_callbackurl",
+	"pay_amount",
+	"pay_productname",
 	"pay_ip",
 	"pay_type",
 }
 
-// callbackSignFields 是回调参与验签的字段（与 PHP verifySignature 的 $verifyData 一致）。
+// callbackSignFields 是回调参与验签的字段（与 PHP verifySignature 的 $verifyData 一致；全是字母数字，原始值与编码值相同）。
 var callbackSignFields = []string{
 	"memberid", "orderid", "amount", "transaction_id", "datetime", "returncode",
 }
 
-// SignParams 计算 payindex 签名：ASCII 升序 + http_build_query + `&key=` + MD5 大写。
+// SignParams 计算 payindex 签名：参与签名的字段按参数名 ASCII 升序，签名串用**原始值**
+// （不做 URL 编码 —— 平台 2025-11 改版后按原始值验签，URL 编码值会报「签名错误」，
+// 实测 D1/D5 对照），最后拼 `&key={api_key}` 取 MD5 大写。
 //
 // 导出是为了让上层（订单对账、离线补单）与测试都能用同一份实现。
 func SignParams(params map[string]string, apiKey string) string {
-	return strings.ToUpper(md5Hex(sortedNonEmpty(params).String() + "&key=" + apiKey))
+	keys := make([]string, 0, len(params))
+	for k, v := range params {
+		if v == "" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+params[k])
+	}
+	return strings.ToUpper(md5Hex(strings.Join(parts, "&") + "&key=" + apiKey))
 }
 
 // signSelected 只挑出参与签名的字段再算签名。
@@ -115,12 +145,12 @@ func (d *PayindexDriver) Pay(ctx context.Context, req PayRequest, cfg Config) Pa
 
 	apiKey := cfg.Cfg("api_key", "")
 
-	// 请求体按 paySignFields 顺序发送，末尾追加 pay_md5sign（与 PHP 的 $params 建法一致）。
-	pairs := make([][2]string, 0, len(paySignFields)+1)
-	for _, f := range paySignFields {
+	// 请求体按 payBodyFields 顺序发送（含商品名/IP/type），签名只覆盖 paySignFields 的 7 个字段。
+	pairs := make([][2]string, 0, len(payBodyFields)+1)
+	for _, f := range payBodyFields {
 		pairs = append(pairs, [2]string{f, params[f]})
 	}
-	pairs = append(pairs, [2]string{"pay_md5sign", SignParams(params, apiKey)})
+	pairs = append(pairs, [2]string{"pay_md5sign", signSelected(params, paySignFields, apiKey)})
 
 	body, err := postForm(ctx, d.client(), cfg.Cfg("gateway", ""), pairs)
 	if err != nil {
@@ -170,13 +200,26 @@ func (d *PayindexDriver) HandleCallback(data map[string]string, cfg Config) Call
 }
 
 // VerifySignature 验签（不区分大小写，与 PHP strcasecmp 一致）。
+// 平台 2025-11 改版后签名串用**原始值**；旧版平台用 http_build_query（URL 编码）。
+// 回调 datetime 含空格/冒号，两种规则结果不同 —— 先按新规则验，不中再退老规则兜底，
+// 避免把真实支付回调当伪造拒掉。
 func (d *PayindexDriver) VerifySignature(data map[string]string, cfg Config) bool {
 	sign := data["sign"]
 	if sign == "" {
 		return false
 	}
-	expected := signSelected(data, callbackSignFields, cfg.Cfg("api_key", ""))
-	return strings.EqualFold(sign, expected)
+	key := cfg.Cfg("api_key", "")
+	if strings.EqualFold(sign, signSelected(data, callbackSignFields, key)) {
+		return true
+	}
+	sub := make(map[string]string, len(callbackSignFields))
+	for _, f := range callbackSignFields {
+		if v, ok := data[f]; ok {
+			sub[f] = v
+		}
+	}
+	legacy := strings.ToUpper(md5Hex(sortedNonEmpty(sub).String() + "&key=" + key))
+	return strings.EqualFold(sign, legacy)
 }
 
 // Query 查单：returncode=='00' 且 trade_state=='SUCCESS' 视为已支付。
@@ -232,7 +275,7 @@ func (d *PayindexDriver) Definition() Definition {
 	return Definition{
 		Key:           DriverPayindex,
 		Label:         "PayIndex（现网关协议）",
-		Description:   "当前生产在用协议：MD5 签名（ksort + http_build_query + &key= 密钥，大写）。支持查单。",
+		Description:   "MD5 签名（参与签名的 7 个字段按参数名升序，原始值拼接 + &key= 密钥，大写）。支持查单。",
 		SupportsQuery: true,
 		Fields: []FieldDef{
 			{Name: "gateway", Label: "支付网关地址", Placeholder: "https://xxx.com/Pay_Index.html", Required: true},
