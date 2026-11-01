@@ -1,0 +1,261 @@
+/* ControlHub Design Tokens
+   Palette: neutral (shadcn-style). Token names are stable across the app —
+   only the VALUES live here, so every page picks up theme changes for free.
+   Layout scale (radius / spacing / type) mirrors the admin reference so the
+   skeleton measures identically. */
+
+:root {
+  /* ===== 1. 色彩系统 ===== */
+
+  /* 1.1 表面层级（浅 -> 深） */
+  --bg-base: hsl(0 0% 100%);
+  --bg-surface: hsl(0 0% 100%);
+  --bg-elevated: hsl(240 4.8% 95.9%);
+  --bg-input: hsl(240 4.8% 95.9%);
+  --bg-hover: hsl(240 4.8% 95.9%);
+
+  /* 1.2 边框 / 分割线 */
+  --border-subtle: hsl(240 5.9% 90%);
+  --border-strong: hsl(240 5.9% 90%);
+  --border-focus: hsl(240 5.9% 10%);
+
+  /* 1.3 文字 */
+  --text-primary: hsl(240 10% 3.9%);
+  --text-secondary: hsl(240 3.8% 46.1%);
+  --text-muted: hsl(240 3.8% 46.1%);
+  --text-inverse: hsl(0 0% 98%);
+
+  /* 1.4 主色 / 强调色（近黑，中性风格） */
+  --accent: hsl(240 5.9% 10%);
+  --accent-hover: hsl(240 5.9% 10% / 0.9);
+  --accent-active: hsl(240 5.9% 10% / 0.8);
+  --accent-muted: hsl(240 4.8% 95.9%);
+
+  /* 1.5 语义色 */
+  --success: hsl(120 40% 30%);
+  --success-muted: hsl(120 40% 94%);
+  --warning: hsl(38 92% 35%);
+  --warning-muted: hsl(48 96% 89%);
+  --danger: hsl(0 84.2% 60.2%);
+  --danger-muted: hsl(0 86% 97%);
+  --info: hsl(240 5.9% 46%);
+  --info-muted: hsl(240 4.8% 95.9%);
+
+  /* 1.6 协议专属色 */
+  --proto-vless: hsl(240 5.9% 40%);
+  --proto-vless-muted: hsl(240 4.8% 95.9%);
+  --proto-trojan: hsl(240 5.9% 46%);
+  --proto-trojan-muted: hsl(240 4.8% 95.9%);
+
+  /* 1.7 滑动开关（Switch）：开启态轨道随 --accent 自动适配亮/暗 */
+  --switch-off: hsl(240 5.9% 90%);
+  --switch-on: var(--accent);
+  --switch-knob: hsl(0 0% 100%);
+
+  /* ===== 2. 字体系统 ===== */
+
+  /* 2.1 字体族 */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+
+  /* 2.2 字号阶梯 */
+  --text-xs: 12px;
+  --text-xs-line: 1.5;
+  --text-sm: 14px;
+  --text-sm-line: 1.5;
+  --text-base: 16px;
+  --text-base-line: 1.6;
+  --text-md: 15px;
+  --text-md-line: 1.6;
+  --text-lg: 18px;
+  --text-lg-line: 1.5;
+  --text-xl: 20px;
+  --text-xl-line: 1.4;
+  --text-2xl: 24px;
+  --text-2xl-line: 1.3;
+  --text-3xl: 30px;
+  --text-3xl-line: 1.2;
+
+  /* 2.3 字重映射 */
+  --font-regular: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* ===== 3. 间距系统 (4px 基准) ===== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ===== 4. 圆角系统（基准 8px = --radius） ===== */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ===== 5. 阴影系统 ===== */
+  --overlay: rgba(0, 0, 0, 0.5);
+  /* 分层阴影：卡片悬浮、浮层、下拉面板用。xl 最强只给 Modal/浮层，
+     lg 给可点击卡片，md 给静态卡片，sm 给贴面元素（输入框/徽章）。 */
+  --shadow-xs: 0 1px 2px 0 hsl(240 5.9% 10% / 0.06);
+  --shadow-sm: 0 1px 2px 0 hsl(240 5.9% 10% / 0.05), 0 1px 1px -1px hsl(240 5.9% 10% / 0.04);
+  --shadow-md: 0 2px 4px -1px hsl(240 5.9% 10% / 0.06), 0 4px 8px -2px hsl(240 5.9% 10% / 0.06);
+  --shadow-lg: 0 4px 8px -2px hsl(240 5.9% 10% / 0.08), 0 12px 20px -4px hsl(240 5.9% 10% / 0.08);
+  --shadow-xl: 0 8px 16px -4px hsl(240 5.9% 10% / 0.10), 0 24px 40px -8px hsl(240 5.9% 10% / 0.14);
+  --glow-accent: 0 0 0 1px hsl(240 5.9% 10%);
+  --glow-success: 0 0 0 1px hsl(120 40% 30%);
+
+  /* ===== 6. 动效 ===== */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+}
+
+/* ===== 暗色主题 ===== */
+html.dark {
+  --bg-base: hsl(240 10% 3.9%);
+  --bg-surface: hsl(240 10% 3.9%);
+  --bg-elevated: hsl(240 3.7% 15.9%);
+  --bg-input: hsl(240 3.7% 15.9%);
+  --bg-hover: hsl(240 3.7% 15.9%);
+
+  --border-subtle: hsl(240 3.7% 15.9%);
+  --border-strong: hsl(240 3.7% 15.9%);
+  --border-focus: hsl(240 4.9% 83.9%);
+
+  --text-primary: hsl(0 0% 98%);
+  --text-secondary: hsl(240 5% 64.9%);
+  --text-muted: hsl(240 5% 64.9%);
+  --text-inverse: hsl(240 5.9% 10%);
+
+  --accent: hsl(0 0% 98%);
+  --accent-hover: hsl(0 0% 98% / 0.9);
+  --accent-active: hsl(0 0% 98% / 0.8);
+  --accent-muted: hsl(240 3.7% 15.9%);
+
+  --success: hsl(120 60% 55%);
+  --success-muted: hsl(120 40% 15%);
+  --warning: hsl(48 96% 70%);
+  --warning-muted: hsl(48 60% 15%);
+  --danger: hsl(0 72% 51%);
+  --danger-muted: hsl(0 62% 20%);
+  --info: hsl(240 5% 84%);
+  --info-muted: hsl(240 3.7% 15.9%);
+
+  --proto-vless: hsl(240 5% 74%);
+  --proto-vless-muted: hsl(240 3.7% 15.9%);
+  --proto-trojan: hsl(240 5% 74%);
+  --proto-trojan-muted: hsl(240 3.7% 15.9%);
+
+  /* 滑动开关：关闭=暗灰轨道，开启=白轨道，圆点统一深色（原固定白点，暗色下白上加白看不清） */
+  --switch-off: hsl(240 3.7% 25%);
+  --switch-on: var(--accent);
+  --switch-knob: hsl(240 10% 3.9%);
+
+  --overlay: rgba(0, 0, 0, 0.7);
+  /* 暗色：不用「更黑」模拟高度，改用更深底 + 更强对比的边界感 */
+  --shadow-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.30);
+  --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.34), 0 1px 1px -1px hsl(0 0% 0% / 0.28);
+  --shadow-md: 0 2px 4px -1px hsl(0 0% 0% / 0.36), 0 4px 8px -2px hsl(0 0% 0% / 0.32);
+  --shadow-lg: 0 4px 8px -2px hsl(0 0% 0% / 0.40), 0 12px 20px -4px hsl(0 0% 0% / 0.42);
+  --shadow-xl: 0 8px 16px -4px hsl(0 0% 0% / 0.46), 0 24px 40px -8px hsl(0 0% 0% / 0.52);
+  --glow-accent: 0 0 0 1px hsl(240 4.9% 83.9%);
+  --glow-success: 0 0 0 1px hsl(120 60% 55%);
+}
+
+/* ===== 亮色主题（html.light 时覆盖）===== */
+html.light {
+  --bg-base: hsl(0 0% 100%);
+  --bg-surface: hsl(0 0% 100%);
+  --bg-elevated: hsl(240 4.8% 95.9%);
+  --bg-input: hsl(240 4.8% 95.9%);
+  --bg-hover: hsl(240 4.8% 95.9%);
+
+  --border-subtle: hsl(240 5.9% 90%);
+  --border-strong: hsl(240 5.9% 90%);
+  --border-focus: hsl(240 5.9% 10%);
+
+  --text-primary: hsl(240 10% 3.9%);
+  --text-secondary: hsl(240 3.8% 46.1%);
+  --text-muted: hsl(240 3.8% 46.1%);
+  --text-inverse: hsl(0 0% 98%);
+
+  --accent: hsl(240 5.9% 10%);
+  --accent-hover: hsl(240 5.9% 10% / 0.9);
+  --accent-active: hsl(240 5.9% 10% / 0.8);
+  --accent-muted: hsl(240 4.8% 95.9%);
+
+  --success: hsl(120 40% 30%);
+  --success-muted: hsl(120 40% 94%);
+  --warning: hsl(38 92% 35%);
+  --warning-muted: hsl(48 96% 89%);
+  --danger: hsl(0 84.2% 60.2%);
+  --danger-muted: hsl(0 86% 97%);
+  --info: hsl(240 5.9% 46%);
+  --info-muted: hsl(240 4.8% 95.9%);
+
+  --proto-vless: hsl(240 5.9% 40%);
+  --proto-vless-muted: hsl(240 4.8% 95.9%);
+  --proto-trojan: hsl(240 5.9% 46%);
+  --proto-trojan-muted: hsl(240 4.8% 95.9%);
+
+  --switch-off: hsl(240 5.9% 90%);
+  --switch-on: var(--accent);
+  --switch-knob: hsl(0 0% 100%);
+
+  --overlay: rgba(0, 0, 0, 0.5);
+  /* 分层阴影：卡片悬浮、浮层、下拉面板用。xl 最强只给 Modal/浮层，
+     lg 给可点击卡片，md 给静态卡片，sm 给贴面元素（输入框/徽章）。 */
+  --shadow-xs: 0 1px 2px 0 hsl(240 5.9% 10% / 0.06);
+  --shadow-sm: 0 1px 2px 0 hsl(240 5.9% 10% / 0.05), 0 1px 1px -1px hsl(240 5.9% 10% / 0.04);
+  --shadow-md: 0 2px 4px -1px hsl(240 5.9% 10% / 0.06), 0 4px 8px -2px hsl(240 5.9% 10% / 0.06);
+  --shadow-lg: 0 4px 8px -2px hsl(240 5.9% 10% / 0.08), 0 12px 20px -4px hsl(240 5.9% 10% / 0.08);
+  --shadow-xl: 0 8px 16px -4px hsl(240 5.9% 10% / 0.10), 0 24px 40px -8px hsl(240 5.9% 10% / 0.14);
+  --glow-accent: 0 0 0 1px hsl(240 5.9% 10%);
+  --glow-success: 0 0 0 1px hsl(120 40% 30%);
+}
+
+/* Base element styles bound to tokens */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+}

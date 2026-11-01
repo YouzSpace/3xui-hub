@@ -1,0 +1,179 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 暗色模式由 tokens.css 的 html.dark 覆盖，这里不再硬编码底色 */
+
+/* ===== 原生勾选框 / 单选框统一 accent 色 =====
+   不设 accent-color 时浏览器渲染成高饱和亮蓝（#0075ff 系），
+   在近黑/中性色系的后台里很扎眼。统一到 --accent（近黑），
+   与按钮、开关、选中态同一色系。 */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ===== 全局数据表格 =====
+   参考项目的表格是 shadcn Table：th 高 40px / px-2 / muted-foreground，
+   td p-2，行分隔线 1px + hover 灰底，外层横向滚动。
+   10 个后台页面原本各自复制了一份 .au-table 样式（scoped，数值已漂移），
+   统一到全局类后各页只保留布局类。 */
+.admin-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  caption-side: bottom;
+}
+
+.admin-table th {
+  height: 40px;
+  padding: 8px;
+  text-align: left;
+  vertical-align: middle;
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+  /* 表头淡底 + 文字比正文亮一档 + 更重的下边框：表头与数据行一眼分得开 */
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-strong);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+
+.admin-table td {
+  padding: 8px;
+  text-align: left;
+  vertical-align: middle;
+  /* 行分隔线用弱边框，靠留白分组；hover 底色才有存在感 */
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* 最后一行不要分隔线，否则表格底部会多一条悬空的线 */
+.admin-table tbody tr:last-child td { border-bottom: none; }
+
+/* 数字列等宽对齐：刷新时数值不左右跳动 */
+.admin-table .mono,
+.admin-table td.mono { font-variant-numeric: tabular-nums; }
+
+.admin-table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.admin-table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.admin-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* 表内保持单行不换行的列（流量 / ID 等） */
+.admin-table .cell-nowrap {
+  white-space: nowrap;
+}
+
+/* 表内次要信息（ID / 时间戳等） */
+.admin-table .cell-muted {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+/* 空状态 */
+.admin-table-empty {
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* ============================================================
+   后台表格质感增强（全局渐进增强）
+   各页表格类名不同（.au-table / .pl-table / .ord-table / .an-table...），
+   逐页改类名风险高（跨行选择器 .xx-table th,\n.xx-table td 只改到第二行就会样式分裂）。
+   所以这里只做「加法」：行高/分隔线/hover 过渡/数字等宽 —— 不碰 padding、字号、布局，
+   各页原有规则仍然覆盖在上面。
+   ============================================================ */
+.admin-table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+
+/* 各页表格的 hover 补上过渡，避免瞬时闪色 */
+.au-table tbody tr,
+.pl-table tbody tr,
+.ord-table tbody tr,
+.an-table tbody tr,
+.pay-table tbody tr,
+.sys-table tbody tr,
+.st-domains-table tbody tr,
+.dc-table tbody tr,
+.email-table tbody tr,
+.bk-env-diff-table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+/* 末行去分隔线：否则表格底部有一条悬空的多余横线 */
+.au-table tbody tr:last-child td,
+.pl-table tbody tr:last-child td,
+.ord-table tbody tr:last-child td,
+.an-table tbody tr:last-child td,
+.pay-table tbody tr:last-child td,
+.sys-table tbody tr:last-child td,
+.st-domains-table tbody tr:last-child td,
+.dc-table tbody tr:last-child td,
+.email-table tbody tr:last-child td,
+.bk-env-diff-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ============================================================
+   管理端窄屏表格：横向滚动提示（≤767px）
+   ------------------------------------------------------------
+   各页表格容器本来就有 overflow-x:auto（.au-table-wrap / .pl-table-wrap / …），
+   手机上一直能横滑 —— 但移动浏览器默认不画滚动条，用户会以为「列就这些」。
+   这里统一给所有 *-table-wrap 一条常驻细滚动条 + 惯性滚动，不逐页复制。
+   ============================================================ */
+@media (max-width: 767px) {
+  [class*='-table-wrap'] {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    /* 右侧 16px 渐隐：移动浏览器默认不画滚动条，靠这道渐隐告诉用户「右边还有列」。
+       比滚动条可靠 —— overlay 滚动条只在手指滑动时才出现。 */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+  }
+  [class*='-table-wrap']::-webkit-scrollbar {
+    height: 4px;
+  }
+  [class*='-table-wrap']::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: var(--radius-full);
+  }
+  [class*='-table-wrap']::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  /* 表头正上方一行提示：移动浏览器不画滚动条，光靠 16px 渐隐用户仍看不出「右边还有列」。
+     必须放表格上方 —— 放底部要滚到最后才看见，那时已经没有意义了。
+     sticky left:0 让这行字在横向滚动时钉在视口左侧，不会被一起拖走。
+     仪表盘那两张表在窄屏已经收成 4 列（不溢出），排除掉避免误导。 */
+  [class*='-table-wrap']:not(.dsh-ut-table-wrap)::before {
+    content: '← 左右滑动查看全部列 →';
+    position: sticky;
+    left: 0;
+    display: block;
+    width: max-content;
+    padding: var(--space-1) var(--space-2) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+}

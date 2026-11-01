@@ -142,6 +142,12 @@ func (d *NodeDomain) Register(r gin.IRouter) {
 	// ── TLS 证书库（hysteria 的 TLS 证书引用源）──
 	r.GET("/xray-certificates", d.xrayCertificateIndex)
 	r.POST("/xray-certificates", d.xrayCertificateStore)
+	// 静态段必须排在 :certificate 之前：本机目录同步 / 远程签发（body 里带 node_id）。
+	r.POST("/xray-certificates/sync-local", d.xrayCertificateSyncLocal)
+	// 远程证书签发：对裸内核节点下发 cert_issue，回执 PEM 写进证书库。
+	r.POST("/xray-certificates/issue", d.certIssue)
+	// 单条证书的解密 PEM（入站表单「从证书库填充 PEM」用；私钥明文唯一的出口）。
+	r.GET("/xray-certificates/:certificate/pem", d.xrayCertificatePEM)
 	r.DELETE("/xray-certificates/:certificate", d.xrayCertificateDestroy)
 
 	// ── xray 入站 ──

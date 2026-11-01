@@ -1,0 +1,198 @@
+/* 用户端新 UI 设计变量 / 材质 / 动画
+   移植自 ui/new/src/index.css。仅作用于 .uu-root 子树，
+   不做全局 reset，不影响管理后台 / 登录 / 公开首页。
+   浅色 = 稿中 .navy（iOS light），深色 = 稿中 .dark（纯黑，html.dark）。 */
+
+.uu-root {
+  /* ── iOS system colors — 两种主题相同 ── */
+  --blue:   #0A84FF;
+  --green:  #30D158;
+  --orange: #FF9F0A;
+  --red:    #FF453A;
+  --purple: #BF5AF2;
+  --teal:   #5AC8FA;
+  --indigo: #5E5CE6;
+  --pink:   #FF375F;
+  --yellow: #FFD60A;
+
+  /* Tinted fills */
+  --blue-t:   rgba(10,132,255,0.18);
+  --green-t:  rgba(48,209,88,0.18);
+  --orange-t: rgba(255,159,10,0.18);
+  --red-t:    rgba(255,69,58,0.18);
+  --purple-t: rgba(191,90,242,0.18);
+  --teal-t:   rgba(90,200,250,0.18);
+  --indigo-t: rgba(94,92,230,0.18);
+  --pink-t:   rgba(255,55,95,0.18);
+
+  /* Geometry */
+  --r-sm:  10px;
+  --r-md:  14px;
+  --r-lg:  20px;
+  --r-xl:  26px;
+  --r-2xl: 32px;
+  --sidebar-w: 248px;
+
+  /* 字体（不引入外部字体，走系统栈） */
+  --uu-font-sans: 'Inter', -apple-system, 'SF Pro Display', 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --uu-font-mono: 'DM Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ── 浅色主题（稿中 .navy） ── */
+  --ground:         #F2F2F7;
+  --mat-ultra-thin: #FFFFFF;
+  --mat-thin:       #FFFFFF;
+  --mat-regular:    #FFFFFF;
+  --mat-thick:      #E5E5EA;
+  --mat-chrome:     #D1D1D6;
+  --border-glass:   rgba(0,0,0,0.08);
+  --border-subtle:  rgba(0,0,0,0.04);
+  --border-strong:  rgba(0,0,0,0.14);
+  --lbl1: rgba(0,0,0,1.00);
+  --lbl2: rgba(60,60,67,0.78);
+  --lbl3: rgba(60,60,67,0.50);
+  --lbl4: rgba(60,60,67,0.30);
+  --fill1: rgba(120,120,128,0.20);
+  --fill2: rgba(120,120,128,0.16);
+  --fill3: rgba(120,120,128,0.12);
+  --fill4: rgba(120,120,128,0.08);
+  --sep:   rgba(60,60,67,0.29);
+  --nav-bg:  rgba(249,249,249,0.94);
+  --tab-bg:  rgba(249,249,249,0.94);
+  --nav-sep: rgba(60,60,67,0.29);
+}
+
+/* ── 深色主题（稿中 .dark） ── */
+html.dark .uu-root {
+  --ground:         #000000;
+  --mat-ultra-thin: #1C1C1E;
+  --mat-thin:       #1C1C1E;
+  --mat-regular:    #1C1C1E;
+  --mat-thick:      #2C2C2E;
+  --mat-chrome:     #3A3A3C;
+  --border-glass:   rgba(255,255,255,0.12);
+  --border-subtle:  rgba(255,255,255,0.06);
+  --border-strong:  rgba(255,255,255,0.18);
+  --lbl1: rgba(255,255,255,1.00);
+  --lbl2: rgba(235,235,245,0.82);
+  --lbl3: rgba(235,235,245,0.56);
+  --lbl4: rgba(235,235,245,0.36);
+  --fill1: rgba(120,120,128,0.36);
+  --fill2: rgba(120,120,128,0.32);
+  --fill3: rgba(118,118,128,0.24);
+  --fill4: rgba(116,116,128,0.18);
+  --sep:   rgba(84,84,88,0.65);
+  --nav-bg:  rgba(18,18,20,0.94);
+  --tab-bg:  rgba(18,18,20,0.94);
+  --nav-sep: rgba(84,84,88,0.65);
+}
+
+/* ── iOS system material — 实色卡 + 细玻璃边框，卡片不用 backdrop-filter ── */
+.uu-mat-ultra-thin {
+  background: var(--mat-ultra-thin);
+  border: 1px solid var(--border-subtle);
+}
+.uu-mat-thin {
+  background: var(--mat-thin);
+  border: 1px solid var(--border-subtle);
+}
+.uu-mat-regular {
+  background: var(--mat-regular);
+  border: 1px solid var(--border-glass);
+}
+.uu-mat-thick {
+  background: var(--mat-thick);
+  border: 1px solid var(--border-glass);
+}
+.uu-mat-chrome {
+  background: var(--mat-chrome);
+  border: 1px solid var(--border-strong);
+}
+
+/* 浮层材质：毛玻璃（只用于弹层 sheet / 顶部导航 / 底部 Tab Bar） */
+.uu-mat-sheet {
+  background: color-mix(in srgb, var(--mat-regular) 96%, transparent);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-top: 1px solid var(--border-glass);
+}
+
+/* ── 主题切换平滑过渡（稿中 .dark/.navy 全树） ── */
+.uu-root,
+.uu-root * {
+  transition:
+    background-color 0.35s ease,
+    border-color 0.35s ease,
+    color 0.35s ease;
+}
+
+/* ── 按压反馈 ── */
+.uu-press {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 0.12s cubic-bezier(0.34,1.56,0.64,1),
+    opacity  0.12s ease,
+    background-color 0.35s ease,
+    border-color 0.35s ease,
+    color 0.35s ease;
+}
+.uu-press:active {
+  transform: scale(0.94);
+  opacity: 0.78;
+}
+
+/* ── 动画 ── */
+@keyframes uu-slide-up {
+  from { opacity: 0; transform: translateY(18px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.uu-slide-up { animation: uu-slide-up 0.44s cubic-bezier(0.16,1,0.3,1) both; }
+
+@keyframes uu-slide-up-fast {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.uu-slide-up-fast { animation: uu-slide-up-fast 0.28s cubic-bezier(0.16,1,0.3,1) both; }
+
+@keyframes uu-modal-rise {
+  from { opacity: 0; transform: translateY(40px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.uu-modal-rise { animation: uu-modal-rise 0.42s cubic-bezier(0.16,1,0.3,1) both; }
+
+@keyframes uu-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.uu-fade-in { animation: uu-fade-in 0.3s ease both; }
+
+@keyframes uu-spin { to { transform: rotate(360deg); } }
+.uu-spin { animation: uu-spin 0.9s linear infinite; }
+
+@keyframes uu-pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.6; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+.uu-pulse-ring { animation: uu-pulse-ring 1.8s cubic-bezier(0.4,0,0.6,1) infinite; }
+
+@keyframes uu-count-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.uu-count-in { animation: uu-count-in 0.22s cubic-bezier(0.16,1,0.3,1) both; }
+
+/* 流量条填充 */
+.uu-traffic-fill {
+  transition: width 1.6s cubic-bezier(0.16,1,0.3,1);
+}
+
+/* 分段控件滑块 */
+.uu-seg-pill {
+  transition:
+    transform 0.28s cubic-bezier(0.34,1.26,0.64,1),
+    width    0.28s cubic-bezier(0.34,1.26,0.64,1);
+}
+
+/* 浅色主题下 BottomSheet 遮罩减淡（深色保持 rgba(0,0,0,0.6)）。
+   写在全局而非 scoped：需压过 BottomSheet.vue 里 scoped 的 .uu-sheet-overlay。 */
+html:not(.dark) .uu-sheet-overlay { background: rgba(0,0,0,0.32); }

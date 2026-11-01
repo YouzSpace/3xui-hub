@@ -439,10 +439,16 @@ func (o *RealNodeOps) ThirdPartyFetch(ctx context.Context, rawURL string) ([]str
 }
 
 // Manifest 读面板上的 agent manifest。
+//
+// 路径必须与 AssetHandler 一致：发布仓把节点资产放在 backend/storage/app/xray/
+// （相对 server/ 工作目录是 ../backend/...）。历史实现读的是 storage/app/... ，
+// 而进程工作目录是 server/，那里只有 geo/ 没有 manifest.json —— 结果 Manifest()
+// 永远返回 nil，点「升级 agent」一律报「面板 manifest 里没有该架构的 agent 资产」。
 func (o *RealNodeOps) Manifest(ctx context.Context) (*ManifestAgent, error) {
 	paths := []string{
-		"storage/app/xray/manifest.json",
-		"storage/app/node-bin/manifest.json",
+		filepath.Join("..", "backend", "storage", "app", "xray", "manifest.json"),
+		filepath.Join("storage", "app", "xray", "manifest.json"),
+		filepath.Join("storage", "app", "node-bin", "manifest.json"),
 		filepath.Join("storage", "app", "manifest.json"),
 	}
 	for _, p := range paths {

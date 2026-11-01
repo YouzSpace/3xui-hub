@@ -293,21 +293,20 @@ func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 }
 
 // OnlineNodesForProtocol 对齐 NodeController::index 的筛选条件：
-// enabled=1 且 status='online'，且
-//   - 3x-ui：node_inbounds 里有该协议的 inbound；
-//   - xray：xray_inbounds 里有该协议且 enabled=1 的入站。
+// enabled=1 且 status='online'，且有可用入站（不按用户协议过滤：用户全协议通用，
+// 节点上只要配了任何入站就该出现在列表里）。
 //
 // 排序沿用 Eloquent->get() 的隐式主键顺序，保证输出稳定。
 func (s *sqlStore) OnlineNodesForProtocol(ctx context.Context, protocol string) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeColumns+` FROM nodes AS n
 		WHERE n.enabled = 1 AND n.status = 'online'
 		  AND (
-		    EXISTS (SELECT 1 FROM node_inbounds ni WHERE ni.node_id = n.id AND ni.protocol = ?)
+		    EXISTS (SELECT 1 FROM node_inbounds ni WHERE ni.node_id = n.id)
 		    OR (n.driver_type = 'xray'
 		        AND EXISTS (SELECT 1 FROM xray_inbounds xi
-		                    WHERE xi.node_id = n.id AND xi.protocol = ? AND xi.enabled = 1))
+		                    WHERE xi.node_id = n.id AND xi.enabled = 1))
 		  )
-		ORDER BY n.id`, protocol, protocol)
+		ORDER BY n.id`)
 	if err != nil {
 		return nil, err
 	}

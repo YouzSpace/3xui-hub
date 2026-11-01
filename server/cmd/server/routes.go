@@ -12,6 +12,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"controlhub-server/internal/collector"
 	"controlhub-server/internal/handler/admin"
@@ -45,6 +48,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	asyncSvc := task.NewService(db, nil)
 	queue := task.NewQueue(asyncSvc, task.QueueOptions{
 		Logf: logger.Printf,
+		// 单个单元整链 5 分钟封顶（含退避等待）：超时即收终态、worker 立刻回池。
+		// 缺省就有 5 分钟，这里显式写出来是为了让线上调参时一眼找到入口。
+		JobTimeout: queueJobTimeout(),
 	})
 	registerProvisionHandler(queue, db, cfg.AppKey, logger)
 	registerDomainHandler(queue, asyncSvc, db, logger)
@@ -59,6 +65,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 
 	provisioner := NewQueueProvisioner(db, queue, cfg.AppKey, logger)
 
+	// 用户端下行消息通道：WS 端点与「重置订阅」等管理动作共用同一实例。
+	userHub := api.NewUserHub()
+
 	apiHandler := api.New(api.Deps{
 		Store:          apiStore,
 		Cache:          apiCache,
@@ -66,6 +75,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Mailer:         apiMailer,
 		Provisioner:    provisioner,
 		ProtocolSwitch: apiSwitcher,
+		UserHub:        userHub,
 		Logger:         logger,
 	})
 	apiHandler.Register(r)
@@ -176,9 +186,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			AppTimezone:      "UTC",
 			BusinessTimezone: "Asia/Shanghai",
 		},
-		Ops:    NewUserPanelOps(col, logger),
-		Alerts: alertRestorer{notifier: sceneNotifier},
-		Logger: logger,
+		Ops:      NewUserPanelOps(col, logger),
+		Notifier: api.NewUserNotifier(userHub, logger),
+		Alerts:   alertRestorer{notifier: sceneNotifier},
+		Logger:   logger,
 	})
 	userDomain.Register(adminGroup)
 
@@ -194,7 +205,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			PanelURL:   os.Getenv("APP_URL"),
 			PanelURLV6: os.Getenv("APP_URL_V6"),
 			// 端口跳跃首次可能要先装 iptables，等待上限比 reality_scan 长。
-			HopWait: envInt("PANEL_HOP_WAIT", 0),
+			HopWait:       envInt("PANEL_HOP_WAIT", 0),
+			CertIssueWait: envInt("PANEL_CERT_ISSUE_WAIT", 0),
 			// sysctl / BBR 下发：写 conf + modprobe + sysctl -p + 读回，正常 1-2 秒。
 			SysctlWait: envInt("PANEL_SYSCTL_WAIT", 0),
 		},
@@ -249,7 +261,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	systemDomain := admin.NewSystemDomain(admin.SystemDeps{
 		Store:     admin.NewSystemSQLStore(db),
 		Geo:       geoService,
-		MailQueue: mailDomain, // 监控页「排队中/运行中/失败」读内存队列水位，不读恒 0 的 jobs 表
+		MailQueue: mailDomain,                // 监控页「排队中/运行中/失败」读内存队列水位，不读恒 0 的 jobs 表
 		TaskQueue: taskQueueStater{q: queue}, // 节点任务队列同理：这条队列也不落表
 		Logger:    logger,
 	})
@@ -273,6 +285,25 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 
 	return wsServer, mailDomain
+}
+
+// queueJobTimeout 读 QUEUE_JOB_TIMEOUT_MINUTES（分钟，缺省 5）。
+//
+// 为什么要它：旧实现的重试退避是 worker 内 sleep，合计可达 81 分钟，4 个卡住的单元
+// 就能占满默认 4 个 worker、把后续任务全部饿死（2026-10-31 实测：裸内核同步子项把
+// worker 占满后，用户手动同步的 7 个子项一次都没跑上，全被清扫成「任务超时未完成」）。
+// 现在整条重试链按此值封顶，到点收终态并释放 worker。
+func queueJobTimeout() time.Duration {
+	const def = 5 * time.Minute
+	raw := strings.TrimSpace(os.Getenv("QUEUE_JOB_TIMEOUT_MINUTES"))
+	if raw == "" {
+		return def
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil || minutes <= 0 {
+		return def
+	}
+	return time.Duration(minutes) * time.Minute
 }
 
 // writeAPI404 输出 API 口径的 404（HTTP 200 + code 404）。

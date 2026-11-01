@@ -74,7 +74,11 @@ func (p *paymentPanelSyncer) ToggleClient(ctx context.Context, user *api.User, e
 // paymentUserToRow 把支付域的 api.User 映射成用户域行（只带节点下发用到的字段）。
 func paymentUserToRow(u *api.User) *admin.UserRow {
 	row := &admin.UserRow{
-		ID:                  u.ID,
+		ID: u.ID,
+		// ⚠️ 兜底行拿不到 users.uuid（api.User 不含该列），所以 UUID 为空：
+		// 建 client 时只能退化回「由面板自动生成 uuid」，hysteria 的 client 会因缺 auth
+		// 建不出来。正常路径是上面 fullRow 里的 UserByID 重读完整行（带 uuid），
+		// 这里只在「重读失败」时才走到，属于最后兜底。
 		Protocol:            u.Protocol,
 		TrafficLimit:        u.TrafficLimit,
 		TrafficUsed:         u.TrafficUsed,

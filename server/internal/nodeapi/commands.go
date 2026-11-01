@@ -69,6 +69,26 @@ const (
 	// 只写 /etc/sysctl.d/99-controlhub-tuning.conf，key 必须白名单（agent 侧复核）。
 	// 与端口跳跃同一批加入 agent，版本门槛相同（见 admin.node_sysctl）。
 	ActionSysctlApply = "sysctl_apply"
+
+	// ── 裸内核（driver_type=xray）对账与证书签发（agent 1.1.x 起）──
+	//
+	// 三个 action 都由面板按**白名单字段**拼载荷，agent 侧再校验一遍：
+	//
+	//	client_list  {}                                          → 只读
+	//	  result: {"inbounds":[{"inbound_id":7,"tag":"vless-443","port":443,"protocol":"vless",
+	//	           "clients":[{"email":"ch_user_12","enable":true,"totalGB":107374182400,"expiryTime":0}]}]}
+	//	cert_status  {"domain":"node.example.com"}                → 只读
+	//	  result: {"exists":true,"not_after":"2027-01-01T00:00:00Z","remaining_days":41}
+	//	cert_issue   {"domain":"node.example.com","method":"http-01","email":"ops@example.com"}
+	//	  result: {"ok":true,"not_after":"2027-01-01T00:00:00Z","cert_path":"/root/cert/x.crt",
+	//	           "key_path":"/root/cert/x.key"}
+	//
+	// client_list 是裸内核对账的唯一读法（xray 内核没有 3x-ui 那套 /inbounds/list）：
+	// 面板拿回执与「面板意图」逐条比对，不一致就 bump config_version 让 agent 重拉配置。
+	ActionClientList = "client_list"
+	ActionCertStatus = "cert_status"
+	ActionCertIssue  = "cert_issue"
+
 	// 以上与 app/Models/NodeApiCommand.php 的常量逐字一致；本模块只用
 	// ActionRealityScan / ActionOutboundTest / 端口跳跃四件套（决定回执截断上限），
 	// 其余导出供后续 P9（WS 通道）复用。
@@ -95,6 +115,18 @@ const (
 	// （tcp_rmem 这类三连值是长字符串），再加上 modules；默认 2000 在极端情况下会截断，
 	// 截断后前端拿不到「实际生效值」。
 	outputLimitSysctl = 4000
+	// outputLimitClientList 是 client_list 回执的截断长度：一条回执要装下**该节点全部
+	// 入站的全部 client**（每个 client 约 60 字节，几百人就是几十 KB）。
+	// 默认 2000 会把回执截断成非法 JSON，对账侧只能一直判「回执解析失败」。
+	//
+	// 真正的上限不在这层：ack 上报校验是 output ≤ 40000 字符（payload.go ackOutputMaxLen），
+	// 超了整条 ack 会被拒；agent 侧据此在 39000 处自行截断并标 truncated（面板按 UNKNOWN 处理）。
+	// 所以落库截断取同一个 40000：比它更短会把「能过校验的合法回执」截成非法 JSON，
+	// 再长也不会出现（校验先拦下）。
+	outputLimitClientList = 40000
+	// outputLimitCertIssue 是 cert_issue 回执的截断长度：PEM 证书链 + 私钥交给证书库，
+	// 三段证书链加私钥通常 4–8 KB，默认 2000 会把 PEM 拦腰截断（前端拿到的证书直接不可用）。
+	outputLimitCertIssue = 65536
 )
 
 // Command 是下发给 agent 的一条指令。
@@ -243,6 +275,10 @@ func outputLimitFor(action string) int {
 		return outputLimitHop
 	case ActionSysctlApply:
 		return outputLimitSysctl
+	case ActionClientList:
+		return outputLimitClientList
+	case ActionCertIssue:
+		return outputLimitCertIssue
 	}
 	return outputLimitDefault
 }

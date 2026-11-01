@@ -132,7 +132,14 @@ type ReconcileSummary struct {
 	Unknown, Deferred, Foreign int
 	ForeignNames, OfflineNodes []string
 	SnapshotBy                 string
-	ElapsedMs                  int64
+	// 裸内核（driver_type=xray）对账：读法是 client_list 指令回执，
+	// 修法是 bump config_version（让 agent 重拉全量配置）。见 collector/reconcile_bare.go。
+	//
+	// BareMismatch 只统计会真实影响用户的差异（缺人 / 该开被关 / 不该连却在）；
+	// BareBumped 是因此触发重拉的节点数；BareDrift（字段不一致）与 BareStale
+	// （已禁用的残留）只报告，不触发重拉。
+	BareNodes, BareMismatch, BareBumped, BareDrift, BareStale int
+	ElapsedMs                                                int64
 }
 
 // DriftEarlyCutWarning 是「有用户正被节点提前掐」的告警判定（drift_early_cut>0）。
@@ -1733,10 +1740,17 @@ func (r *commandRunner) runUsersReconcileEnable(ctx context.Context, args map[st
 	//   unknown 未知 · drift 三档（safe/early_cut/loose）· ms 墙钟。
 	r.logf("%snodes=%d users=%d probed=%d probe_failed=%d registered=%d fixed=%d attached=%d skipped=%d "+
 		"unknown=%d drift=%d drift_safe=%d drift_early_cut=%d drift_loose=%d "+
-		"opened=%d closed=%d unchanged=%d foreign=%d snap=%s ms=%d",
+		"opened=%d closed=%d unchanged=%d foreign=%d snap=%s ms=%d "+
+		"bare_nodes=%d bare_mismatch=%d bare_bumped=%d bare_drift=%d bare_stale=%d",
 		prefix, sum.Nodes, sum.Users, sum.Probed, sum.ProbeFailed, sum.Registered, sum.Fixed, sum.Attached,
 		sum.Deferred, sum.Unknown, sum.Drift, sum.DriftSafe, sum.DriftEarlyCut, sum.DriftLoose,
-		sum.Opened, sum.Closed, sum.Unchanged, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs)
+		sum.Opened, sum.Closed, sum.Unchanged, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs,
+		sum.BareNodes, sum.BareMismatch, sum.BareBumped, sum.BareDrift, sum.BareStale)
+	if sum.BareBumped > 0 {
+		// 裸内核的唯一修复手段是重拉配置（agent 随后会重启内核），这条要留痕好对时间线。
+		r.logf("裸内核重拉：%d 台节点因用户集合/开关与面板不一致而 bump config_version"+
+			"（缺人或该开被关 %d 条）", sum.BareBumped, sum.BareMismatch)
+	}
 	if sum.DriftEarlyCutWarning() {
 		r.logf("[WARN] 对账：%d 条漂移会让用户被节点提前掐（节点限额/期限比面板更紧），需人工确认",
 			sum.DriftEarlyCut)

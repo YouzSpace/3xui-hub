@@ -16,7 +16,9 @@
 //   - 月重置只清已用流量，next_traffic_reset_at += 30 天，不动套餐时长/额度。
 //
 // 与其他 Go 模块的边界：
-//   - 只依赖 P5 驱动（internal/driver/threexui、internal/driver/xray）与 P0 的 database/sql；
+//   - 依赖 P5 驱动（internal/driver/threexui、internal/driver/xray）、P0 的 database/sql，
+//     以及 internal/nodeapi 的指令 action 常量（裸内核节点只能经 node_api_commands 下发
+//     client_list，见 reconcile_bare.go）；
 //   - 不碰 handler/admin（P8a/P8b 负责后台入口），不碰 routes.go / cmd（P9 负责调度）；
 //   - 时间列一律按库内字面量读写（DSN loc=UTC 打标签、不换算），与 P4/P8 同口径。
 package collector

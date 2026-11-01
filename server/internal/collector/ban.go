@@ -395,10 +395,10 @@ func NormalizeForUpdate(clientData map[string]any) map[string]any {
 	return out
 }
 
-// inboundIDsFor 对齐 Node::inboundIdsFor($protocol)：node_inbounds 里该协议的全部 inbound_id。
+// inboundIDsFor 取该节点勾选的全部入站 id（不按协议过滤，用户全协议通用）。
 func (c *Collector) inboundIDsFor(ctx context.Context, nodeID int64, protocol string) ([]int64, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT inbound_id FROM node_inbounds WHERE node_id = ? AND protocol = ?", nodeID, protocol)
+		"SELECT inbound_id FROM node_inbounds WHERE node_id = ?", nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("查询节点入站失败: %w", err)
 	}

@@ -40,6 +40,11 @@ func reconcileAdapter(col *collector.Collector) func(context.Context, bool, int)
 			ForeignNames:  rep.ForeignNames,
 			OfflineNodes:  rep.OfflineNodes,
 			SnapshotBy:    rep.SnapshotBy,
+			BareNodes:     rep.BareNodes,
+			BareMismatch:  rep.BareMismatch,
+			BareBumped:    rep.BareBumped,
+			BareDrift:     rep.BareDrift,
+			BareStale:     rep.BareStale,
 			ElapsedMs:     rep.ElapsedMs,
 		}, nil
 	}

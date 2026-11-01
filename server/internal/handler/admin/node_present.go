@@ -6,6 +6,7 @@ package admin
 import (
 	"context"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"controlhub-server/internal/driver/xray"
@@ -494,7 +495,16 @@ func (d *NodeDomain) changesInitConfiguration(n *NodeRecord, input map[string]an
 	if !inboundsPresent {
 		return false
 	}
-	for _, proto := range []string{"vless", "trojan"} {
+	// 遍历「节点上实际有的协议 ∪ 表单里提交的协议」，不能写死 vless/trojan：
+	// 否则只改 hy2 等新协议入站时判不出配置变化，保存被当成「无改动」。
+	protos := map[string]bool{}
+	for _, ni := range n.Inbounds {
+		protos[ni.Protocol] = true
+	}
+	for proto := range inbounds {
+		protos[proto] = true
+	}
+	for proto := range protos {
 		if !int64SetsEqual(nodeInboundIDs(n, proto), inbounds[proto]) {
 			return true
 		}
@@ -654,14 +664,26 @@ func nodeInboundsOfOK(input map[string]any) (map[string][]int64, bool) {
 		return map[string][]int64{}, true
 	}
 	out := map[string][]int64{}
-	for _, proto := range []string{"vless", "trojan"} {
-		val, ok := obj[proto]
-		if !ok || val == nil {
+	// 前端节点表单的入站分组已经是三列（vless / trojan / hysteria），3x-ui 还可能有
+	// vmess / shadowsocks。这里以前只认 vless、trojan，等于把用户勾上的 hysteria 入站
+	// 直接丢掉 —— 表现是「入站选好了，保存后再看用户数还是 0」，因为 node_inbounds
+	// 里没有这条记录，建号时按 users.protocol 查不到入站就整台跳过。
+	for proto, val := range obj {
+		if !isKnownInboundProtocol(proto) || val == nil {
 			continue
 		}
 		out[proto] = inboundIDList(val)
 	}
 	return out, true
+}
+
+// isKnownInboundProtocol 判断入站分组名是不是我们认识的协议（防止把表单里的杂键落库）。
+func isKnownInboundProtocol(proto string) bool {
+	switch proto {
+	case "vless", "vmess", "trojan", "shadowsocks", "hysteria", "socks", "http", "wireguard", "tunnel":
+		return true
+	}
+	return false
 }
 
 // inboundIDList 复刻 syncInbounds 的兼容口径：单值也接受（旧数据/前端过渡）。
@@ -775,14 +797,19 @@ func (d *NodeDomain) submitInboundSync(c *gin.Context, n *NodeRecord, changed ma
 	}
 
 	changedJSON := jo()
-	for _, proto := range []string{"vless", "trojan"} {
-		if ids, ok := changed[proto]; ok {
-			arr := jsArr{}
-			for _, id := range ids {
-				arr = append(arr, id)
-			}
-			changedJSON.put(proto, arr)
+	// 遍历 changed 的全部协议键（不能写死 vless/trojan：hy2 等新入站会被丢掉，
+	// 保存节点后同步任务里没有它，那条入站就永远 0 客户端）。
+	protos := make([]string, 0, len(changed))
+	for proto := range changed {
+		protos = append(protos, proto)
+	}
+	sort.Strings(protos)
+	for _, proto := range protos {
+		arr := jsArr{}
+		for _, id := range changed[proto] {
+			arr = append(arr, id)
 		}
+		changedJSON.put(proto, arr)
 	}
 	meta := phpEncode(jo(
 		"action", "sync_inbounds",

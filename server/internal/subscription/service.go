@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,17 @@ type Service struct {
 	Now func() time.Time
 	// Concurrency 对齐 config/panel.php 的 subscription_concurrency（<=0 视为 1）。
 	Concurrency int
+	// Logf 是可注入的日志器（nil 时用标准库 log）。
+	Logf func(format string, args ...any)
+}
+
+// logf 输出一条诊断日志：订阅少节点这类问题全靠它留痕。
+func (s *Service) logf(format string, args ...any) {
+	if s.Logf != nil {
+		s.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // NewService 构造订阅生成器。
@@ -273,15 +285,16 @@ func (s *Service) fetchNodeLinks(ctx context.Context, node Node, inboundIDs []in
 	} else {
 		panelLinks, err := s.repo.PanelLinks(ctx, node, email)
 		if err != nil {
-			// 单节点失败：PHP 侧 catch + report 后返回空数组
+			// 取链接失败不是「该节点没链接」，必须留痕：否则用户看到订阅少一个节点却无从追查。
+			s.logf("[sub] 节点 %s 取链接失败 user=%d email=%s: %v", node.Name, user.ID, email, err)
 			return nil, nil
 		}
-		inbounds, err := s.repo.PanelInbounds(ctx, node)
-		if err != nil {
-			// 入站列表拿不到同样按单节点失败处理（PHP 侧整条链一起被 catch）
-			return nil, nil
+		raw = filterNodeLinks(panelLinks)
+		if len(raw) == 0 {
+			// 节点在线、入站也配了，但该用户在 3x-ui 侧一个 client 都没有 —— 建号没跟上，
+			// 这是「订阅里少节点」最常见的原因，留一条便于定位。
+			s.logf("[sub] 节点 %s 无任何链接 user=%d email=%s（3x-ui 上可能缺 client）", node.Name, user.ID, email)
 		}
-		raw = filterNodeLinks(panelLinks, inboundIDs, inbounds)
 	}
 
 	return s.withMultiplierSuffix(node, raw, cfg), nil
@@ -305,9 +318,7 @@ func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repos
 
 	uris := make([]string, 0, len(inbounds))
 	for _, inbound := range inbounds {
-		if user.Protocol != inbound.Protocol {
-			continue
-		}
+		// 用户全协议通用：节点上启用的每个入站都出一条链接，不按 users.protocol 过滤。
 		inboundHost, ok := subscriptionHostFor(host, hostV6, inbound.Listen)
 		if !ok {
 			// 两个地址都空 / v6 入站但只有 v4 地址：跳过，绝不产出 "host:port" 残缺链接。
@@ -353,27 +364,16 @@ func sanitizeLinks(raw []string) []string {
 	return out
 }
 
-// filterNodeLinks 对应 filterNodeLinks()：只保留配置了的入站端口（端口为空时不过滤）。
-func filterNodeLinks(raw []string, inboundIDs []int64, inbounds []PanelInbound) []string {
-	wanted := make(map[int64]bool, len(inboundIDs))
-	for _, id := range inboundIDs {
-		wanted[id] = true
-	}
-
-	var configuredPorts []int64
-	for _, inbound := range inbounds {
-		if !wanted[inbound.ID] {
-			continue
-		}
-		configuredPorts = append(configuredPorts, inbound.Port)
-	}
-
+// filterNodeLinks 过滤空串并去重。
+//
+// 曾经按「入站端口」二次过滤（对应 PHP 的 filterNodeLinks），但 3x-ui 的
+// /panel/api/clients/links/<email> 返回的链接本来就只属于该 client 的入站，
+// 而 hy2/hysteria2 链接的端口位置与 vless 不同，按端口匹配会把它们整条丢掉
+// （线上实测：hy2 入站已有 105 个 client，订阅里却一条 hy2 链接都没有）。
+func filterNodeLinks(raw []string) []string {
 	out := make([]string, 0, len(raw))
 	for _, link := range raw {
 		if link == "" {
-			continue
-		}
-		if len(configuredPorts) > 0 && !linkMatchesAnyPort(link, configuredPorts) {
 			continue
 		}
 		out = appendUnique(out, link)

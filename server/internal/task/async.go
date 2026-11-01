@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,13 @@ const (
 	defaultStaleAfterMinutes = 10
 	defaultNodeSyncBatch     = 2
 	defaultMaxLockReleases   = 5
+
+	// staleItemMinutes 是「未终态子项多久没动静就判定僵尸」的阈值。
+	//
+	// 取 6 分钟 = 队列单元时限（5 分钟）+ 1 分钟余量：正常单元最迟 5 分钟就会有终态，
+	// 超过 6 分钟还没动静、且队列也不认为在途（见 Queue.Inflight），只可能是退避定时器
+	// 随进程重启丢了，必须收尾，否则任务永远「执行中」。
+	staleItemMinutes = 6
 )
 
 // Task 是 async_tasks 一行。
@@ -558,6 +566,13 @@ func (s *Service) CompleteEmpty(ctx context.Context, taskID int64) (*Task, error
 
 // TimeoutStale 对齐 timeoutStale()：把超阈值未终态的任务标失败，防止永久 running。
 // 返回被清扫的任务数。
+//
+// 两条判据取并集：
+//   - 任务行本身太久没动（原判据）；
+//   - **未终态子项**太久没动 —— 任务行的 updated_at 会被子项聚合/认领刷新，只看任务行
+//     会漏掉「重试定时器随进程重启丢失」这种情形：子项永远停在 running、任务永远显示
+//     「执行中」、队列监控永远显示「运行中 N」（2026-10-31 实测：任务 429 的 4 台裸内核
+//     子项从 13:37 卡到 22:00 无人收尾，正是这个盲点）。
 func (s *Service) TimeoutStale(ctx context.Context, minutes int) (int, error) {
 	if minutes <= 0 {
 		minutes = s.StaleAfterMinutes
@@ -567,34 +582,81 @@ func (s *Service) TimeoutStale(ctx context.Context, minutes int) (int, error) {
 	}
 	cutoff := s.now().Add(-time.Duration(minutes) * time.Minute)
 
+	staleIDs := map[int64]bool{}
 	rows, err := s.DB.QueryContext(ctx,
-		"SELECT id, type, status, subject_type, subject_id, total, completed, failed, attempts, "+
-			"max_attempts, error, meta, started_at, finished_at FROM async_tasks "+
-			"WHERE status IN (?, ?) AND updated_at < ?",
+		"SELECT id FROM async_tasks WHERE status IN (?, ?) AND updated_at < ?",
 		StatusPending, StatusRunning, cutoff)
 	if err != nil {
 		return 0, err
 	}
-	var stale []*Task
 	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		stale = append(stale, t)
+		staleIDs[id] = true
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 
-	for _, t := range stale {
-		if _, err := s.FailPendingItems(ctx, t.ID, "任务超时未完成"); err != nil {
-			return len(stale), err
+	// 子项级判据：静默超过 staleItemMinutes 的未终态子项。
+	//
+	// 为什么要这一条：任务行的 updated_at 会被子项聚合/认领刷新，只看任务行会漏掉
+	// 「退避定时器随进程重启丢失」这种情形 —— 子项永远停在 running、任务永远显示
+	// 「执行中」、队列监控永远显示「运行中 N」（2026-10-31 任务 429 的 4 个裸内核
+	// 子项从 13:37 卡到 22:00 无人收尾，正是这个盲点）。
+	//
+	// 在途豁免：队列还在管的子项（正在执行 / 正在等退避）一律不动，避免把正常的重试
+	// 半路清掉；进程重启后队列的内存表是空的，僵尸子项才会落进来被收尾。
+	itemCutoff := s.now().Add(-staleItemMinutes * time.Minute)
+	irows, err := s.DB.QueryContext(ctx,
+		"SELECT DISTINCT task_id, item_key FROM async_task_items "+
+			"WHERE status IN (?, ?) AND updated_at < ?",
+		StatusPending, StatusRunning, itemCutoff)
+	if err != nil {
+		return len(staleIDs), err
+	}
+	type itemRef struct {
+		taskID int64
+		key    string
+	}
+	var itemRefs []itemRef
+	for irows.Next() {
+		var ref itemRef
+		if err := irows.Scan(&ref.taskID, &ref.key); err != nil {
+			irows.Close()
+			return len(staleIDs), err
+		}
+		itemRefs = append(itemRefs, ref)
+	}
+	irows.Close()
+	if err := irows.Err(); err != nil {
+		return len(staleIDs), err
+	}
+	for _, ref := range itemRefs {
+		// 队列还在管（执行中 / 等退避 / 已入队排队）就不清；取不到在途信息时保守跳过，
+		// 宁可少清一次也不误杀正常单元。
+		if reporter, ok := s.Queue.(InflightReporter); ok && reporter.Inflight(ref.taskID, ref.key) {
+			continue
+		}
+		staleIDs[ref.taskID] = true
+	}
+
+	ids := make([]int64, 0, len(staleIDs))
+	for id := range staleIDs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	for _, id := range ids {
+		if _, err := s.FailPendingItems(ctx, id, "任务超时未完成"); err != nil {
+			return len(ids), err
 		}
 	}
-	return len(stale), nil
+	return len(ids), nil
 }
 
 // FailPendingItems 对齐 failPendingItems()：未终态子项批量标失败后聚合。

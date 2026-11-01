@@ -216,15 +216,15 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) 
 		FROM nodes n
 		WHERE n.enabled = 1 AND n.status = 'online'
 		  AND (
-			EXISTS (SELECT 1 FROM node_inbounds ni WHERE ni.node_id = n.id AND ni.protocol = ?)
+			EXISTS (SELECT 1 FROM node_inbounds ni WHERE ni.node_id = n.id)
 			OR (n.driver_type = 'xray' AND EXISTS (
 				SELECT 1 FROM xray_inbounds xi
-				WHERE xi.node_id = n.id AND xi.protocol = ? AND xi.enabled = 1
+				WHERE xi.node_id = n.id AND xi.enabled = 1
 			))
 		  )
 		ORDER BY n.id`
 
-	rows, err := r.DB.QueryContext(ctx, query, protocol, protocol)
+	rows, err := r.DB.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("查询可订阅节点失败: %w", err)
 	}
@@ -288,10 +288,10 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) 
 	return out, nil
 }
 
-// NodeInboundIDs 返回该节点上协议匹配的 3x-ui 入站 id。
+// NodeInboundIDs 返回该节点勾选的全部 3x-ui 入站 id（不按协议过滤，用户全协议通用）。
 func (r *SQLRepository) NodeInboundIDs(ctx context.Context, nodeID int64, protocol string) ([]int64, error) {
 	rows, err := r.DB.QueryContext(ctx,
-		"SELECT inbound_id FROM node_inbounds WHERE node_id = ? AND protocol = ? ORDER BY id", nodeID, protocol)
+		"SELECT inbound_id FROM node_inbounds WHERE node_id = ? ORDER BY id", nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("查询 node_inbounds 失败: %w", err)
 	}

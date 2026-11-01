@@ -299,19 +299,8 @@ func (s *xraySource) RelayClients(ctx context.Context, nodeID int64) ([]xray.Rel
 type xrayEnqueuer struct{ c *Collector }
 
 func (e *xrayEnqueuer) Enqueue(ctx context.Context, cmd xray.Command) error {
-	payload := cmd.Payload
-	if len(payload) == 0 {
-		payload = []byte("null")
-	}
-	now := dbDateTime(e.c.now())
-	_, err := e.c.db.ExecContext(ctx,
-		"INSERT INTO node_api_commands (node_id, user_id, action, payload, status, created_at, updated_at) "+
-			"VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-		cmd.NodeID, cmd.UserID, cmd.Action, string(payload), now, now)
-	if err != nil {
-		return fmt.Errorf("写入节点指令失败: %w", err)
-	}
-	return nil
+	_, err := e.c.enqueueNodeCommand(ctx, cmd.NodeID, cmd.Action, cmd.Payload, cmd.UserID)
+	return err
 }
 
 func rawOrNil(s sql.NullString) json.RawMessage {

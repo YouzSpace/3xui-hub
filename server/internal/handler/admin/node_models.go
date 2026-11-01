@@ -189,6 +189,19 @@ type XrayCertificateInput struct {
 	KeyPEM  string
 }
 
+// XrayCertificatePEM 是一条证书的**解密**视图：只给「从证书库填充 PEM」那一处用。
+//
+// 与列表用的 XrayCertificate 分开是刻意的：列表接口绝不能带私钥（KeyEnc 是密文），
+// 私钥明文只在这一个响应里出现一次，调用方（admin 入站表单）拿完就填进 textarea。
+type XrayCertificatePEM struct {
+	ID       uint64
+	Name     string
+	Domain   *string
+	CertPEM  string
+	KeyPEM   string
+	NotAfter *time.Time
+}
+
 // XrayInboundInput 是入站落库字段（settings/stream/sniffing 已组装成 JSON）。
 type XrayInboundInput struct {
 	NodeID            uint64
@@ -442,7 +455,8 @@ type NodeStore interface {
 	UpdateNode(ctx context.Context, id uint64, in NodeUpdateInput) (*NodeRecord, error)
 	DeleteNode(ctx context.Context, id uint64) error
 	// ReplaceNodeInbounds 全量替换入站挂载，返回「确实变化的协议 → 新入站集合」。
-	ReplaceNodeInbounds(ctx context.Context, nodeID uint64, vless, trojan []int64) (map[string][]int64, error)
+	// 入参是「协议 → 入站 id」全集（含 hysteria / vmess / shadowsocks），不只 vless/trojan。
+	ReplaceNodeInbounds(ctx context.Context, nodeID uint64, inbounds map[string][]int64) (map[string][]int64, error)
 	// SetNodeSecret 加密写入 driver_config.node_secret。
 	SetNodeSecret(ctx context.Context, id uint64, secret string) error
 	// MergeDriverConfig 行锁内按键合并 driver_config（只 merge 自家键，不整块回写）。
@@ -480,7 +494,13 @@ type NodeStore interface {
 	XrayInboundTags(ctx context.Context, nodeID uint64, excludeID *uint64) ([]string, error)
 	// XrayCertificates 读 TLS 证书库（私钥为密文，渲染时解密）。
 	XrayCertificates(ctx context.Context) ([]XrayCertificate, error)
+	// XrayCertificatePEM 读一行的**解密** PEM（cert_pem + 私钥明文）。
+	// 只给「从证书库填充 PEM」用：这是私钥明文唯一的出口，不要拿它拼列表。
+	XrayCertificatePEM(ctx context.Context, id uint64) (*XrayCertificatePEM, error)
 	CreateXrayCertificate(ctx context.Context, in XrayCertificateInput) (*XrayCertificate, error)
+	// UpdateXrayCertificate 覆盖一行的 PEM / not_after（本机目录同步刷新续签后的证书用）。
+	// 就地更新而不是删了重建：入站的 tlsCertId 指着这一行的 id，重建会让引用悬空。
+	UpdateXrayCertificate(ctx context.Context, id uint64, in XrayCertificateInput) error
 	DeleteXrayCertificate(ctx context.Context, id uint64) error
 	CreateXrayInbound(ctx context.Context, in XrayInboundInput) (*XrayInboundRecord, error)
 	UpdateXrayInbound(ctx context.Context, id uint64, in XrayInboundInput) (*XrayInboundRecord, error)
@@ -650,6 +670,12 @@ type NodeConfig struct {
 	// 比 reality_scan 长：firewall_hop_apply 首次可能先 apt-get 装 iptables，
 	// 再写链 + 读回自验 + netfilter-persistent save，正常 2-5 秒，缺依赖时十几秒。
 	HopWait int
+	// CertIssueWait 是 cert_issue（远程证书签发）的等待上限（秒）。
+	//
+	// 比其他指令长得多：中间是真走一次 ACME（账号注册 + HTTP-01 校验 + 签发），
+	// 正常 10-40 秒，网络慢或要重试时更久。给太短会让面板先报「节点没回执」，
+	// 而节点随后其实签成功了 —— 管理员会重复点，直接撞 Let's Encrypt 的重复签发限流。
+	CertIssueWait int
 	// SysctlWait 是 sysctl_apply（系统调优 / BBR）的等待上限（秒）。
 	//
 	// 比端口跳跃短：写一个 conf + modprobe + sysctl -p + 读回 /proc/sys，正常 1-2 秒；
@@ -669,6 +695,8 @@ const (
 	defaultHopWait = 40
 	// defaultSysctlWait 覆盖「模块现加载 + sysctl -p + 读回」的正常路径。
 	defaultSysctlWait = 15
+	// defaultCertIssueWait 覆盖一次完整 ACME 签发（含账号注册与 HTTP-01 校验）。
+	defaultCertIssueWait = 120
 )
 
 // nodeConfigDefaults 补齐零值配置。
@@ -687,6 +715,9 @@ func nodeConfigDefaults(c NodeConfig) NodeConfig {
 	}
 	if c.SysctlWait <= 0 {
 		c.SysctlWait = defaultSysctlWait
+	}
+	if c.CertIssueWait <= 0 {
+		c.CertIssueWait = defaultCertIssueWait
 	}
 	return c
 }

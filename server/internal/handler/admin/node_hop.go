@@ -33,6 +33,11 @@ const (
 	defaultHopProbeCount = 200
 	// hopProbeMaxCount 与 agent 侧 hopCountMax 对齐，超了不必打扰节点。
 	hopProbeMaxCount = 4096
+	// hopExcludeMaxPorts 是 exclude 展开跳跃区间的上限（指令 payload 不能无限大）。
+	hopExcludeMaxPorts = 4096
+	// autoHopProbeWait 是「入站保存时自动分配区间」的等待上限（秒）。
+	// 节点在线时探测是秒级；等不到就按「无跳跃」降级 —— 建入站不能被离线节点拖到 HopWait。
+	autoHopProbeWait = 15
 )
 
 // hopProbe / hopApply / hopRemove / hopStatus 是四个转发入口。
@@ -292,6 +297,19 @@ func hopPortsOf(ib *XrayInboundRecord) string {
 // agent 只看 /proc/net 的监听表，主端口可能还没监听（入站刚建、内核未起），只靠它会
 // 挑到已有入站的端口。
 func (d *NodeDomain) hopExcludePorts(c *gin.Context, node *NodeRecord, focusInboundID int64) []int64 {
+	ports, _ := d.hopReservedPorts(c, node, focusInboundID)
+	return ports
+}
+
+// hopReservedPorts 收集「面板已分配」的端口：各入站的主端口 + 其它入站已配的跳跃区间
+// （整段展开），顺带把区间本身返回给调用方做重叠校验。
+//
+// 为什么跳跃区间也要排：区间里的端口在没被监听时 /proc/net 上看不见，agent 会再分配
+// 一次；两个 HY2 入站抢同一段端口时，后配的 REDIRECT 会把前一个的连接绕走。
+//
+// 展开有上限（hopExcludeMaxPorts）：exclude 要塞进指令 payload，宁可少排几个，
+// 也不能把一条指令撑成几十 KB。
+func (d *NodeDomain) hopReservedPorts(c *gin.Context, node *NodeRecord, focusInboundID int64) ([]int64, [][2]int64) {
 	inbounds, err := d.store.XrayInboundsByNode(ctxOf(c), node.ID)
 	if err != nil {
 		// 读不到就只排掉主端口，不阻断探测（agent 侧仍会避开真实占用）。
@@ -307,15 +325,28 @@ func (d *NodeDomain) hopExcludePorts(c *gin.Context, node *NodeRecord, focusInbo
 		seen[p] = true
 		out = append(out, p)
 	}
+	spans := make([][2]int64, 0, len(inbounds))
 	for i := range inbounds {
 		// 停用入站不占端口，但「本次要配跳跃的那个」无论启停都排掉（主端口绝不能进区间）。
 		if !inbounds[i].Enabled && int64(inbounds[i].ID) != focusInboundID {
 			continue
 		}
 		add(inbounds[i].Port)
+		// 本次要配跳跃的那个入站的旧区间不排：它正是要被替换掉的那段。
+		if int64(inbounds[i].ID) == focusInboundID {
+			continue
+		}
+		lo, hi, ok := parsePortSpan(hopPortsOf(&inbounds[i]))
+		if !ok {
+			continue
+		}
+		spans = append(spans, [2]int64{lo, hi})
+		for p := lo; p <= hi && len(out) < hopExcludeMaxPorts; p++ {
+			add(p)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
+	return out, spans
 }
 
 func hopPortsJSArr(ports []int64) jsArr {
@@ -337,18 +368,54 @@ func (d *NodeDomain) runHopCommand(c *gin.Context, node *NodeRecord, action stri
 // 返回体固定三态：result（成功，agent 回执原样转发）/ error（失败，agent 原文）/
 // pending（等不到回执，节点可能离线）。
 func (d *NodeDomain) runNodeCommand(c *gin.Context, node *NodeRecord, action string, payload any, wait int) {
+	out := d.runNodeCommandSync(c, node, action, payload, wait)
+	switch {
+	case out.FailErr != nil:
+		d.failServer(c, out.FailOp, out.FailErr)
+	case out.Pending:
+		d.success(c, jo(
+			"pending", true,
+			"message", "节点未在 "+strconv.Itoa(wait)+" 秒内回执（可能离线），稍后可重试",
+		))
+	case out.ErrMsg != "":
+		if out.Result != nil {
+			d.success(c, jo("result", out.Result, "error", out.ErrMsg))
+			return
+		}
+		d.success(c, jo("result", nil, "error", out.ErrMsg))
+	default:
+		d.success(c, jo("result", out.Result))
+	}
+}
+
+// nodeCommandOutcome 是一条同步等待的节点指令的三态结果。
+//
+// 单独抽出来是为了给「入站保存后自动下发」这类调用方用：那条路径要能拿到结果却
+// **不写响应** —— 节点离线不能把「入站保存失败」写给前端。
+type nodeCommandOutcome struct {
+	// Result 是 success 且回执可解析时的 agent 回执（保序对象）。
+	Result *jsObj
+	// ErrMsg 非空 = 这条指令没成（failed / 回执解析失败），已翻成给人看的文案。
+	ErrMsg string
+	// Pending 为真 = 等不到回执（节点可能离线）。
+	Pending bool
+	// FailOp / FailErr 是面板侧失败（入队 / 回读），报不报、怎么报由调用方决定。
+	FailOp  string
+	FailErr error
+}
+
+// runNodeCommandSync 是 runNodeCommand 的内核：入队 + 同步等回执，只返回结果不写响应。
+func (d *NodeDomain) runNodeCommandSync(c *gin.Context, node *NodeRecord, action string, payload any, wait int) nodeCommandOutcome {
 	command, err := d.store.CreateCommand(ctxOf(c), node.ID, action, payload)
 	if err != nil {
-		d.failServer(c, "入队节点指令", err)
-		return
+		return nodeCommandOutcome{FailOp: "入队节点指令", FailErr: err}
 	}
 
 	deadline := d.now().Add(timeDurationSeconds(wait))
 	for d.now().Before(deadline) {
 		fresh, err := d.store.CommandByID(ctxOf(c), command.ID)
 		if err != nil {
-			d.failServer(c, "回读指令状态", err)
-			return
+			return nodeCommandOutcome{FailOp: "回读指令状态", FailErr: err}
 		}
 		switch fresh.Status {
 		case "failed":
@@ -358,16 +425,14 @@ func (d *NodeDomain) runNodeCommand(c *gin.Context, node *NodeRecord, action str
 			}
 			// agent 的失败回执本身就是结果 JSON（带 reason），能解就一起给前端。
 			if obj, ok := parseHopResult(output); ok {
-				d.success(c, jo("result", obj, "error", hopResultReason(obj, "节点执行失败")))
-				return
+				return nodeCommandOutcome{Result: obj, ErrMsg: hopResultReason(obj, "节点执行失败")}
 			}
 			if strings.Contains(output, "unknown action") {
 				output = "该节点的 agent 版本过旧，请先在「节点」页升级 agent 后重试"
 			} else if output == "" {
 				output = "节点执行失败"
 			}
-			d.success(c, jo("result", nil, "error", output))
-			return
+			return nodeCommandOutcome{ErrMsg: output}
 		case "success":
 			raw := ""
 			if fresh.Result != nil {
@@ -375,19 +440,14 @@ func (d *NodeDomain) runNodeCommand(c *gin.Context, node *NodeRecord, action str
 			}
 			obj, ok := parseHopResult(raw)
 			if !ok {
-				d.success(c, jo("result", nil, "error", "节点回执解析失败"))
-				return
+				return nodeCommandOutcome{ErrMsg: "节点回执解析失败"}
 			}
-			d.success(c, jo("result", obj))
-			return
+			return nodeCommandOutcome{Result: obj}
 		}
 		d.sleep(d.pollInterval)
 	}
 
-	d.success(c, jo(
-		"pending", true,
-		"message", "节点未在 "+strconv.Itoa(wait)+" 秒内回执（可能离线），稍后可重试",
-	))
+	return nodeCommandOutcome{Pending: true}
 }
 
 // parseHopResult 把 agent 回执解析成保序对象（四个 action 都回单个 JSON 对象）。
@@ -406,4 +466,164 @@ func hopResultReason(obj *jsObj, fallback string) string {
 		return s
 	}
 	return fallback
+}
+
+// ---- 入站保存时的自动跳跃（面板侧编排） ----
+
+// hyHopAutoEnabled 判断这次保存要不要自动分配跳跃区间。
+//
+// hy_hop_auto 显式 false = 关掉（前端还没有这个开关，所以必须留这个逃生口）；
+// 字段缺省按**开启**处理 —— HY2 默认就该带跳跃，缺省不开启的话这个能力永远用不上。
+func hyHopAutoEnabled(input map[string]any) bool {
+	if v, present := input["hy_hop_auto"]; present && v != nil {
+		return inputBool(v)
+	}
+	return true
+}
+
+// autoAssignHysteriaHop 给「用户没配跳跃」的 HY2 入站在保存前自动分配一段空闲区间。
+//
+// 分配结果直接写回 payload（hy_hop_ports / hy_hop_interval）：后面 buildHysteriaStream
+// 与用户手填的区间走**同一条**校验与落库路径，不另开一条写库分支。
+//
+// 返回 (是否自动分配, 降级原因)。降级原因非空 = 这次没有跳跃，但保存照走 ——
+// agent 太旧 / 节点离线 / 池子满了都不该让用户建不出入站。
+func (d *NodeDomain) autoAssignHysteriaHop(c *gin.Context, node *NodeRecord, input map[string]any, existing *XrayInboundRecord) (bool, string) {
+	if nodeStringField(input, "protocol") != "hysteria" {
+		return false, ""
+	}
+	// 用户填了区间（或只填了间隔）= 显式配置，一切以请求为准。
+	if strings.TrimSpace(nodeStringField(input, "hy_hop_ports")) != "" ||
+		strings.TrimSpace(nodeStringField(input, "hy_hop_interval")) != "" {
+		return false, ""
+	}
+
+	focusID := int64(0)
+	if existing != nil {
+		focusID = int64(existing.ID)
+		// 编辑沿用：请求根本没带这个字段（脚本 / 老客户端）且原配置已有区间 → 保持原值，
+		// 不重扫、也不打扰节点。带了字段（哪怕是空串）= 用户在表单里动过它，按请求走。
+		if _, present := input["hy_hop_ports"]; !present {
+			if ports := hopPortsOf(existing); ports != "" {
+				input["hy_hop_ports"] = ports
+				prev, _ := parseOrderedJS(existing.StreamSettings)
+				if iv := strings.TrimSpace(jsonGetString(prev, "finalmask", "quicParams", "udpHop", "interval")); iv != "" {
+					input["hy_hop_interval"] = iv
+				}
+				return false, ""
+			}
+		}
+	}
+
+	if !hyHopAutoEnabled(input) {
+		return false, ""
+	}
+	// 老 agent 不认 port_probe，入队只会换回一条 unknown action 的垃圾指令。
+	if !agentSupportsHop(node) {
+		return false, "agent 版本过低"
+	}
+
+	exclude, spans := d.hopReservedPorts(c, node, focusID)
+	// 新建场景这个入站还不在库里，它的主端口得自己塞进 exclude，否则可能被探进区间。
+	port := inputInt(input["port"])
+	if port > 0 {
+		known := false
+		for _, p := range exclude {
+			if p == port {
+				known = true
+				break
+			}
+		}
+		if !known {
+			exclude = append(exclude, port)
+		}
+	}
+	payload := jo(
+		"pool", defaultHopProbePool,
+		"count", int64(defaultHopProbeCount),
+		"exclude", hopPortsJSArr(exclude),
+	)
+	out := d.runNodeCommandSync(c, node, nodeapi.ActionPortProbe, payload, autoHopProbeWait)
+	switch {
+	case out.FailErr != nil:
+		d.logger.Printf("admin 自动跳跃区间：探测指令入队/回读失败: %v", out.FailErr)
+		return false, "节点指令入队失败"
+	case out.Pending:
+		return false, "节点未在 " + strconv.Itoa(autoHopProbeWait) + " 秒内回执（可能离线）"
+	case out.ErrMsg != "":
+		return false, out.ErrMsg
+	}
+
+	picked := strings.TrimSpace(jsonGetString(out.Result, "picked"))
+	if picked == "" {
+		return false, "池子里凑不出所需连续端口"
+	}
+	lo, hi, ok := parsePortSpan(picked)
+	if !ok {
+		return false, "节点返回的区间格式不可用"
+	}
+	// 与手填同一套硬约束：主端口落在区间内会被自己的 REDIRECT 绕回去。
+	if port >= lo && port <= hi {
+		return false, "节点返回的区间包含主端口"
+	}
+	// agent 只认 exclude 里的端口，理论上不会撞；这里再兜一层（exclude 有展开上限）。
+	for _, s := range spans {
+		if lo <= s[1] && s[0] <= hi {
+			return false, "节点返回的区间与已有跳跃区间重叠"
+		}
+	}
+
+	input["hy_hop_ports"] = picked
+	input["hy_hop_interval"] = defaultHopInterval
+	return true, ""
+}
+
+// applyHysteriaHopAfterSave 入站保存成功后把跳跃区间的防火墙规则下发一次。
+//
+// 全程降级：入站这时已经落库了，节点离线 / agent 太旧 / 下发失败都不能把它判成失败 ——
+// 真实状态放进回执的 hop 段（applied / reason），前端据此提示「主端口照常可用、
+// 跳跃未生效」。返回 nil = 这个入站没有跳跃（回执里就不出现 hop 字段）。
+func (d *NodeDomain) applyHysteriaHopAfterSave(c *gin.Context, node *NodeRecord, ib *XrayInboundRecord, auto bool, degradeReason string) *jsObj {
+	if ib.Protocol != "hysteria" {
+		// 端口跳跃只对 HY2 有意义（其它协议的 stream_settings 里不会有 udpHop）。
+		return nil
+	}
+	ports := hopPortsOf(ib)
+	if ports == "" {
+		if degradeReason == "" {
+			return nil
+		}
+		return jo("auto", auto, "ports", "", "applied", false, "reason", degradeReason)
+	}
+
+	hop := jo("auto", auto, "ports", ports, "applied", false)
+	fail := func(reason string) *jsObj {
+		hop.put("reason", reason)
+		return hop
+	}
+	if degradeReason != "" {
+		return fail(degradeReason)
+	}
+	if !agentSupportsHop(node) {
+		return fail("agent 版本过低")
+	}
+
+	out := d.runNodeCommandSync(c, node, nodeapi.ActionFirewallHopApply, jo(
+		"inbound_id", int64(ib.ID),
+		"main_port", ib.Port,
+		"ports", ports,
+		"proto", "udp",
+	), d.cfg.HopWait)
+	switch {
+	case out.FailErr != nil:
+		d.logger.Printf("admin 端口跳跃：下发防火墙规则失败（inbound=%d）: %v", ib.ID, out.FailErr)
+		return fail("节点指令入队失败")
+	case out.Pending:
+		return fail("节点未在 " + strconv.Itoa(d.cfg.HopWait) + " 秒内回执（可能离线）")
+	case out.ErrMsg != "":
+		return fail(out.ErrMsg)
+	}
+
+	hop.put("applied", true)
+	return hop
 }

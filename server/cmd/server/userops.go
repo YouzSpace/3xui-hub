@@ -116,6 +116,46 @@ func (o *userPanelOps) DeleteUserClients(ctx context.Context, user *admin.UserRo
 	return nil
 }
 
+// RebuildUserCredentials 在凭据（uuid）换新后重建该用户在各节点的 client。
+//
+// 用户定稿：**先删旧的、再加新的**，不做原地 update —— 这样节点上不会残留任何旧凭据，
+// 订阅链接泄露后导入出去的旧配置当场失效。
+//
+//   - 3x-ui：DeleteClient(email, keepTraffic=false) → AddClient(新 uuid) 挂回各入站。
+//     刻意 keepTraffic=false：旧 client 的流量基线属于旧凭据，重置订阅是一次身份更换，
+//     不该把旧用量带进新身份。
+//   - xray（裸内核）：DeleteClient 投 rmu，随后 ProvisionUser 走 adu 按**新 uuid**重建；
+//     agent 重新拉配置时 users.uuid 已是新值，所以这里只需保证调用顺序。
+//
+// 单节点失败只记日志，不影响接口成功（与 PHP 对面板错误 report() 后继续的口径一致）。
+func (o *userPanelOps) RebuildUserCredentials(ctx context.Context, user *admin.UserRow) error {
+	drivers, err := o.col.NodeDrivers(ctx)
+	if err != nil {
+		return err
+	}
+	email := user.ClientEmail()
+	for _, nd := range drivers {
+		switch {
+		case nd.ThreeX != nil:
+			if err := nd.ThreeX.DeleteClient(ctx, email, false); err != nil {
+				// 旧 client 可能本就不存在（历史遗留），删失败不阻断后续新建。
+				o.logger.Printf("[userops] rebuild 删除旧 client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+			if err := o.provisionThreeX(ctx, nd.ThreeX, nd.NodeID, user, email); err != nil {
+				o.logger.Printf("[userops] rebuild 新建 client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+		case nd.Xray != nil:
+			if err := nd.Xray.DeleteClient(ctx, email, false); err != nil {
+				o.logger.Printf("[userops] rebuild 删除旧 xray client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+			if err := o.provisionXray(ctx, nd.Xray, user, email); err != nil {
+				o.logger.Printf("[userops] rebuild 新建 xray client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+			}
+		}
+	}
+	return nil
+}
+
 // SwitchProtocol 遍历节点切协议，对齐 ProtocolSwitchService::switch 的顺序与保护：
 //
 //  1. **该节点没有新协议入站 → 整个跳过**（什么都不动）。旧实现在这里仍然 detach 旧入站，
@@ -216,9 +256,13 @@ func idsExcept(all, exclude []int64) []int64 {
 
 // provisionThreeX 给 3x-ui 节点建 client（对齐 PHP prepareClientData + 存在则更新）。
 //
-// ⚠️ 更新分支必须「先取回节点上的完整 client，归一化后只覆盖我们要改的字段」：
-// 3x-ui 的 clients/update 是整条替换语义，只发 email/enable/totalGB/expiryTime/limitIp
-// 会把没带上的一串字段（uuid、flow、limitIp、subId…）按零值写掉。
+// 新建与更新走**两套不同**的负载，别合并：
+//   - 新建（clients/add）：用 threexui.ClientPayload 带协议凭据，否则 hysteria 的 client
+//     因缺 auth 建不出来（3x-ui 报 empty client ID），trojan/shadowsocks 缺 password 同理。
+//   - 更新（clients/update）：**不带凭据**，且必须「先取回节点上的完整 client、归一化后只
+//     覆盖我们要改的字段」。3x-ui 的 update 是整条替换语义，只发
+//     email/enable/totalGB/expiryTime/limitIp 会把没带上的一串字段（uuid、flow、limitIp、
+//     subId…）按零值写掉。
 func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Client, nodeID int64, user *admin.UserRow, email string) error {
 	inboundIDs, err := o.col.InboundIDs(ctx, nodeID, user.Protocol)
 	if err != nil {
@@ -237,21 +281,18 @@ func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Cli
 
 	existing, getErr := client.GetClient(ctx, email)
 	if getErr != nil || existing == nil {
-		clientData := map[string]any{
-			"email":   email,
-			"enable":  enable,
-			"totalGB": totalGB,
-			"limitIp": 0,
-		}
-		if expiryMs > 0 {
-			clientData["expiryTime"] = expiryMs
-		}
+		clientData := threexui.ClientPayload(email, enable, totalGB, expiryMs)
 		if _, err := client.AddClient(ctx, clientData, inboundIDs); err != nil {
 			return fmt.Errorf("AddClient: %w", err)
 		}
 		return nil
 	}
 
+	// 更新：**刻意不传凭据**。3x-ui 的 clients/update 是整条替换语义，但这里是
+	// 「先 GetClient 取回节点上的完整对象、归一化后只覆盖我们要改的字段」——
+	// 凭据（id/password/auth）由 NormalizeForUpdate 原样带回，节点上的 uuid 因此保持不变。
+	// 一旦在这里再显式塞 ClientPayload 的凭据，就会把存量用户的 uuid 换成 users.uuid，
+	// 订阅链接与客户端配置当场失效。
 	payload := collector.NormalizeForUpdate(existing)
 	payload["email"] = email
 	payload["enable"] = enable

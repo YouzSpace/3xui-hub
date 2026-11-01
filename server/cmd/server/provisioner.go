@@ -74,15 +74,15 @@ func handleProvisionClient(ctx context.Context, db *sql.DB, appKey []byte, logge
 	userID := *job.UserID
 
 	// 读用户（按当时的最新数据重算负载 —— 与 PHP 注释一致）
-	var email, protocol string
+	var email, protocol, uuid string
 	var planID sql.NullInt64
 	var trafficLimit int64
 	var expiredAt sql.NullTime
 	var enabled bool
 	err := db.QueryRowContext(ctx,
-		`SELECT email, protocol, plan_id, traffic_limit, expired_at, enabled
+		`SELECT email, protocol, uuid, plan_id, traffic_limit, expired_at, enabled
 		 FROM users WHERE id = ?`, userID).
-		Scan(&email, &protocol, &planID, &trafficLimit, &expiredAt, &enabled)
+		Scan(&email, &protocol, &uuid, &planID, &trafficLimit, &expiredAt, &enabled)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -113,10 +113,10 @@ func handleProvisionClient(ctx context.Context, db *sql.DB, appKey []byte, logge
 		return nil
 	}
 
-	// 读入站 ID
+	// 读入站 ID：该节点勾选的全部入站，不按协议过滤（用户全协议通用）
 	inboundRows, err := db.QueryContext(ctx,
-		`SELECT inbound_id FROM node_inbounds WHERE node_id = ? AND protocol = ?`,
-		job.NodeID, protocol)
+		`SELECT inbound_id FROM node_inbounds WHERE node_id = ?`,
+		job.NodeID)
 	if err != nil {
 		return fmt.Errorf("读入站失败: %w", err)
 	}
@@ -161,16 +161,10 @@ func handleProvisionClient(ctx context.Context, db *sql.DB, appKey []byte, logge
 	}
 
 	clientEmail := fmt.Sprintf("ch_user_%d", userID)
-	clientData := map[string]any{
-		"email":      clientEmail,
-		"enable":     enable,
-		"totalGB":    totalGB,
-		"expiryTime": expiryMs,
-		"limitIp":    0,
-	}
 
 	existing, getErr := client.GetClient(ctx, clientEmail)
 	if getErr != nil || existing == nil {
+		clientData := threexui.ClientPayload(clientEmail, enable, totalGB, expiryMs)
 		// ⚠️ AddClient 内部已经按 {"client": …, "inboundIds": …} 包了一层；这里再包一次
 		// 会让 3x-ui 解析出的 client.email 为空，节点直接回
 		// `Something went wrong (client email is required…)` —— 线上 23:18 user=251
@@ -181,8 +175,10 @@ func handleProvisionClient(ctx context.Context, db *sql.DB, appKey []byte, logge
 			return nil
 		}
 	} else {
-		// 3x-ui 的 clients/update 是整条替换：只发上面那 5 个字段会把 uuid/flow/subId
-		// 等按零值写掉。取回节点上的完整对象，归一化后只覆盖我们要改的字段。
+		// 更新（clients/update）：**刻意不传凭据**。3x-ui 的 update 是整条替换：只发
+		// email/enable/totalGB/expiryTime/limitIp 会把 uuid/flow/subId 等按零值写掉。
+		// 取回节点上的完整对象，归一化后只覆盖我们要改的字段 —— 凭据（id/password/auth）
+		// 由 NormalizeForUpdate 原样带回，存量用户的 uuid 因此保持不变（订阅不会失效）。
 		payload := collector.NormalizeForUpdate(existing)
 		payload["email"] = clientEmail
 		payload["enable"] = enable
