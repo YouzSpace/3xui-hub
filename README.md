@@ -2,12 +2,12 @@
 
 企业级跨境电商网络服务运营平台 | Enterprise Cross-border Network Service Platform
 
-**版本：2.6.1**
+**版本：2.7.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
 [![License][license-shield]][license-url]
-[![PHP][php-shield]][php-url]
+[![Go][go-shield]][go-url]
 [![Vue][vue-shield]][vue-url]
 
 ---
@@ -109,7 +109,7 @@ docker-compose up -d --build  # 更新并重启
 
 | 层级 | 技术 |
 |------|------|
-| 后端 | Laravel 13 + PHP 8.3+ + MySQL |
+| 后端 | Go 1.25 + MySQL |
 | 前端 | Vue 3.5 + Vite 8 + Pinia 3 + Tailwind CSS 3 |
 | 动画 | GSAP 3 |
 | 认证 | Session（管理员）+ Bearer Token（用户） |
@@ -118,7 +118,7 @@ docker-compose up -d --build  # 更新并重启
 
 ## 版本记录
 
-完整更新历史见 [CHANGELOG.md](CHANGELOG.md)。
+完整更新历史见 [Releases](https://github.com/YouzSpace/3xui-hub/releases)。
 
 ## 许可证
 
@@ -132,7 +132,7 @@ MIT License
 
 Enterprise cross-border network service platform — centralized management of nodes, users, plans, orders and payments.
 
-**Version: 2.6.1**
+**Version: 2.7.1**
 
 ## Screenshots
 
@@ -175,7 +175,7 @@ Visit http://localhost:8080
 
 ## Tech Stack
 
-- Backend: Laravel 13 + PHP 8.3+ + MySQL
+- Backend: Go 1.25 + MySQL
 - Frontend: Vue 3.5 + Vite 8 + Pinia 3 + Tailwind CSS 3
 - Animation: GSAP 3
 - Payment: MD5 signed third-party gateway
@@ -186,11 +186,11 @@ Visit http://localhost:8080
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-2.0.0-blue
+[version-shield]: https://img.shields.io/badge/version-2.7.1-blue
 [version-url]: https://github.com/YouzSpace/3xui-hub/releases
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
-[php-shield]: https://img.shields.io/badge/PHP-8.3+-777BB4
-[php-url]: https://php.net
+[go-shield]: https://img.shields.io/badge/Go-1.25-00ADD8
+[go-url]: https://go.dev
 [vue-shield]: https://img.shields.io/badge/Vue-3-4FC08D
 [vue-url]: https://vuejs.org
