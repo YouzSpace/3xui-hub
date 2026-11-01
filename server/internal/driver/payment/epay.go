@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,6 +90,28 @@ func submitURL(gateway string) string {
 	return strings.TrimRight(gateway, "/") + "/submit.php"
 }
 
+// epayRedirectRe 从 submit.php 返回的 HTML 跳转页里提取支付地址。
+//
+// 不少易支付实现下单成功后不回 JSON，而是 HTTP 200 + 一段前端跳转脚本
+// （实测：`<script>location.href='https://…/zfbpay?order_sn=…';</script>`，或 meta refresh 变体）。
+// 按优先级依次尝试：JS location 赋值 → meta refresh → 页面里第一个 https?:// 链接。
+var epayRedirectRe = []*regexp.Regexp{
+	regexp.MustCompile(`location(?:\.href)?\s*=\s*['"]([^'"]+)['"]`),
+	regexp.MustCompile(`location\.replace\(\s*['"]([^'"]+)['"]\s*\)`),
+	regexp.MustCompile(`(?i)<meta[^>]+http-equiv=['"]?refresh['"]?[^>]+url=([^'">]+)`),
+	regexp.MustCompile(`['"](https?://[^'"]{16,})['"]`),
+}
+
+// extractRedirectURL 从 HTML 响应体提取跳转地址；没有返回空串。
+func extractRedirectURL(body string) string {
+	for _, re := range epayRedirectRe {
+		if m := re.FindStringSubmatch(body); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+	return ""
+}
+
 // Pay 下单。
 func (d *EpayV1Driver) Pay(ctx context.Context, req PayRequest, cfg Config) PayResult {
 	order := req.Order
@@ -125,9 +148,13 @@ func (d *EpayV1Driver) Pay(ctx context.Context, req PayRequest, cfg Config) PayR
 	}
 
 	var data map[string]any
-	if err := json.Unmarshal(body, &data); err != nil {
-		// 非 JSON 响应按解析异常处理（临时故障，不得作废订单）
-		return PayResult{Err: err}
+	if jerr := json.Unmarshal(body, &data); jerr != nil {
+		// 非 JSON 响应：不少易支付实现下单成功后回 HTML 跳转页（平台侧已建单成功）。
+		// 提取跳转地址作为 pay_url；提取不到仍按解析异常（临时故障，不得作废订单）。
+		if u := extractRedirectURL(string(body)); u != "" {
+			return PayResult{Success: true, PayURL: u}
+		}
+		return PayResult{Err: jerr}
 	}
 
 	if codeIsOne(data["code"]) {
