@@ -95,10 +95,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout（拿 manifest.json 更新 agent 段并回写）
+      - name: Checkout main（回写 manifest 用，checkout 分支而非 tag 才能 push）
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: main
 
       - name: 提取版本号（tag 去 v 前缀）
         id: version
