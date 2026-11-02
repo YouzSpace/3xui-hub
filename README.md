@@ -106,6 +106,45 @@ docker-compose up -d --build  # 更新并重启
 3hub uninstall     # 卸载（--panel / --app / --all）
 ```
 
+## 默认账号
+
+- **管理员**: admin / admin123
+- 首次登录后请立即修改密码！
+
+## 从源码编译（专业用户）
+
+```bash
+# 加 FROM_SOURCE=1 改为源码编译（需联网下载 Go 工具链）
+curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh | FROM_SOURCE=1 bash
+```
+
+## 常见问题
+
+### 安装失败
+
+查看安装日志：`cat /tmp/3xui-hub-install.log`
+
+### 流量不同步
+
+检查同步状态：`3hub sync-status`，必要时手动同步：`3hub sync`
+
+### 节点任务一直 pending / 不执行
+
+```bash
+3hub status        # 查看后端服务状态
+3hub log           # 查看后端日志（journalctl -u controlhub）
+```
+
+### 500 错误
+
+查看日志：`3hub log` 或 `journalctl -u controlhub --no-pager -n 50`
+
+### 忘记密码
+
+```bash
+3hub admin-pass
+```
+
 ## 技术栈
 
 | 层级 | 技术 |
