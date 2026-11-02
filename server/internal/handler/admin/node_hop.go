@@ -14,6 +14,7 @@ package admin
 // agent_version 卡门槛：不够就 4xx 直接拒绝，**不产生任何指令记录**（issue #94 的验收硬指标）。
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"strconv"
@@ -406,14 +407,20 @@ type nodeCommandOutcome struct {
 
 // runNodeCommandSync 是 runNodeCommand 的内核：入队 + 同步等回执，只返回结果不写响应。
 func (d *NodeDomain) runNodeCommandSync(c *gin.Context, node *NodeRecord, action string, payload any, wait int) nodeCommandOutcome {
-	command, err := d.store.CreateCommand(ctxOf(c), node.ID, action, payload)
+	return d.runNodeCommandWait(ctxOf(c), node, action, payload, wait)
+}
+
+// runNodeCommandWait 与 runNodeCommandSync 同一套行为，但吃 context ——
+// 定时任务（证书自动续签等）没有 gin 上下文，用这个入口。
+func (d *NodeDomain) runNodeCommandWait(ctx context.Context, node *NodeRecord, action string, payload any, wait int) nodeCommandOutcome {
+	command, err := d.store.CreateCommand(ctx, node.ID, action, payload)
 	if err != nil {
 		return nodeCommandOutcome{FailOp: "入队节点指令", FailErr: err}
 	}
 
 	deadline := d.now().Add(timeDurationSeconds(wait))
 	for d.now().Before(deadline) {
-		fresh, err := d.store.CommandByID(ctxOf(c), command.ID)
+		fresh, err := d.store.CommandByID(ctx, command.ID)
 		if err != nil {
 			return nodeCommandOutcome{FailOp: "回读指令状态", FailErr: err}
 		}

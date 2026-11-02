@@ -267,5 +267,8 @@ func defaultScheduledEvents() []ScheduledEvent {
 		// Go 侧新增（PHP 没有对应条目）：本机证书目录 → TLS 证书库，
 		// acme.sh 续签后自动把新 PEM 刷进库，HY2 入站不用改。
 		{Command: "xray-certificates-sync", Expression: "0 */6 * * *", HasMutex: true},
+		// Go 侧新增：远程证书自动续签 —— 到期前 N 天把证书交给该域名落地的节点重签，
+		// 回执 PEM 覆盖证书库同一行并 bump 配置版本。排在每日既有任务之后（05:20 UTC）。
+		{Command: "xray-certificates-renew", Expression: "20 5 * * *", HasMutex: true},
 	}
 }
