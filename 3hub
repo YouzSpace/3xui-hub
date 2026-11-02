@@ -497,7 +497,7 @@ CMD_LABELS=(
     "查看自动同步状态"
     "数据库备份（导出到 /var/backups/3xui-hub，保留 7 份，每天 03:30 自动备份）"
     "查看最近错误日志"
-    "重启 PHP-FPM、Nginx 和队列 Worker"
+    "重启 controlhub 后端服务"
     "配置域名和 SSL 证书"
     "多域名管理 (add/renew/remove/status)"
     "补全 nginx 节点资产 location（老版本升级后用）"
