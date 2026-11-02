@@ -302,7 +302,8 @@ func buildHopPlan(spec hopSpec, r portRange, chainRules, prerouting [][]string) 
 	return plan
 }
 
-// verifyHopState 读回自验：PREROUTING 恰好一条指向本链且参数正确，链内恰好有主端口 REDIRECT。
+// verifyHopState 读回自验：PREROUTING 恰好一条指向本链且参数正确，
+// 链内恰好一条「-p udp -j REDIRECT --to-ports 主端口」且不带 --dport（issue #118）。
 // 返回 (verified, 原因)。
 func verifyHopState(spec hopSpec, r portRange, chainRules, prerouting [][]string) (bool, string) {
 	chain := hopChainName(spec.InboundID)
@@ -329,6 +330,9 @@ func verifyHopState(spec hopSpec, r portRange, chainRules, prerouting [][]string
 			matchedRule = true
 			continue
 		}
+		if f := ruleFields(rule); f["jump"] == "REDIRECT" && f["dport"] != "" {
+			return false, fmt.Sprintf("%s 残留带 --dport 的旧规则（恒 0 命中）: %s", chain, joinArgs(rule))
+		}
 		return false, fmt.Sprintf("%s 残留非预期规则: %s", chain, joinArgs(rule))
 	}
 
@@ -354,15 +358,21 @@ func ruleMatchesJump(args []string, proto string, r portRange, chain string) boo
 	return normalizePortExpr(f["dport"]) == normalizePortExpr(r.iptablesExpr())
 }
 
-// ruleMatchesRedirect 链内规则是否正是「--dport 主端口 -j REDIRECT --to-ports 主端口」。
+// ruleMatchesRedirect 链内规则是否正是「-p udp -j REDIRECT --to-ports 主端口」。
+//
+// 不能带 --dport：PREROUTING 已按跳跃段筛过包，进链的包 dport 恒为跳跃段端口，
+// 链内再限定主端口会恒 0 命中（issue #118）。带 --dport 的历史坏规则必须判为不匹配，
+// buildHopPlan 才会把它当 ExtraRules 删掉重加，旧节点幂等自愈。
 func ruleMatchesRedirect(args []string, mainPort int) bool {
 	f := ruleFields(args)
 	if f["jump"] != "REDIRECT" {
 		return false
 	}
-	want := strconv.Itoa(mainPort)
+	if f["dport"] != "" {
+		return false
+	}
 
-	return normalizePortExpr(f["dport"]) == want && normalizePortExpr(f["to-ports"]) == want
+	return normalizePortExpr(f["to-ports"]) == strconv.Itoa(mainPort)
 }
 
 // iptablesFlagAliases 规则里需要取值的短/长选项 → 规范键名。
@@ -858,6 +868,19 @@ type hopChangeResult struct {
 	Reason    string   `json:"reason,omitempty"`
 }
 
+// hopChainRuleArgs 链内 REDIRECT 规则的完整 iptables 参数（-t nat -A <chain> …）。
+// 生成命令与 Changes 文案共用这一处，避免两者各写一遍后漂移。
+//
+// 不带 --dport：PREROUTING 已按跳跃段筛过包，进链的包 dport 只可能是跳跃段端口，
+// 再限定主端口会恒 0 命中（issue #118）。
+func hopChainRuleArgs(chain, proto string, mainPort int) []string {
+	return []string{
+		"-t", "nat", "-A", chain,
+		"-p", proto,
+		"-j", "REDIRECT", "--to-ports", strconv.Itoa(mainPort),
+	}
+}
+
 func marshalHopAck(id int64, success bool, res any) AckResult {
 	raw, err := json.Marshal(res)
 	if err != nil {
@@ -921,12 +944,14 @@ func runFirewallHopApply(_ Paths, cmd Command) AckResult {
 		res.Changes = append(res.Changes, "-D "+chain+" "+joinArgs(extra))
 	}
 	if plan.AddChainRule {
-		args := []string{"-t", "nat", "-A", chain, "-p", spec.Proto, "--dport", strconv.Itoa(spec.MainPort), "-j", "REDIRECT", "--to-ports", strconv.Itoa(spec.MainPort)}
+		// 链内规则不带 --dport 主端口：PREROUTING 已按跳跃段筛过包，进入本链的包
+		// dport 只可能是跳跃段端口、不可能是主端口（issue #118）。
+		args := hopChainRuleArgs(chain, spec.Proto, spec.MainPort)
 		if _, err := iptRun(ctx, backend, args...); err != nil {
 			res.Reason = "写入 REDIRECT 规则失败: " + err.Error()
 			return marshalHopAck(cmd.ID, false, res)
 		}
-		res.Changes = append(res.Changes, "-A "+chain+" -p "+spec.Proto+" --dport "+strconv.Itoa(spec.MainPort)+" -j REDIRECT --to-ports "+strconv.Itoa(spec.MainPort))
+		res.Changes = append(res.Changes, "-A "+joinArgs(args[3:]))
 	}
 	if plan.AddJump {
 		args := []string{"-t", "nat", "-A", "PREROUTING", "-p", spec.Proto, "--dport", r.iptablesExpr(), "-j", chain}
