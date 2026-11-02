@@ -267,8 +267,10 @@ func (d *NodeDomain) upgradeOneAgent(ctx context.Context, n *NodeRecord, latest 
 			}
 		}
 
-		// 用 d.pollInterval 而不是包级常量：测试注入 1ms，用例不必真睡。
-		d.sleep(d.pollInterval)
+		// 用 agentUpgradePollInterval（2s）而非 d.pollInterval（300ms）：agent 心跳 5s 一次，
+		// 2s 轮询足够；300ms 会让单台 180s 内打 600 轮 × 2 次 DB 读（指令状态 + 节点版本），
+		// 几十台就是几万次查询，把 MySQL 压住、越等越慢（3hub update 收尾卡住的根因）。
+		d.sleep(agentUpgradePollInterval)
 	}
 
 	// 到点了还没确认：按「没升上来」收口，但要说清到底卡在哪一步。
