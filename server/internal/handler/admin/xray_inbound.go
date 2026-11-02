@@ -633,7 +633,9 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	case "vless":
 		settings = jo("decryption", "none")
 	case "shadowsocks":
-		method := "aes-256-gcm"
+		// 默认 2022-blake3-aes-256-gcm（多用户）：与前端 emptyForm 默认一致，
+		// 新建 ss 入站开箱即按用户区分流量（对齐 3x-ui 默认）。
+		method := "2022-blake3-aes-256-gcm"
 		if s, ok := inputString(input["ss_method"]); ok && s != "" {
 			method = s
 		}

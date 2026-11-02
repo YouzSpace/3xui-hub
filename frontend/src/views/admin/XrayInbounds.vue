@@ -178,7 +178,7 @@ const emptyForm = () => ({
   tls_server_name: '',
   tls_certificate: '',
   tls_key: '',
-  ss_method: 'aes-256-gcm',
+  ss_method: '2022-blake3-aes-256-gcm',
   ss_password: '',
   // socks / http（传统代理）：单组账号密码，密码编辑时留空 = 不改
   auth_user: '',
@@ -776,7 +776,7 @@ const openEdit = (ib) => {
     tls_server_name: ib.tls_server_name || '',
     tls_certificate: '',
     tls_key: '',
-    ss_method: ib.ss_method || 'aes-256-gcm',
+    ss_method: ib.ss_method || '2022-blake3-aes-256-gcm',
     // 回显落库的服务端 PSK：后端保存时可能自动生成（2022 档），编辑时必须带回来，
     // 否则「不改留空」会让人以为密码还在、实际提交空串。
     ss_password: ib.ss_password || '',
