@@ -23,9 +23,9 @@
       {
         "arch": "linux-64",
         "file": "controlhub-agent-linux-64",
-        "sha256": "8f7175325e6d9b71f610c1c946fa27ad40786d2c242900923550db58e70a6b36",
-        "size": 6643860,
-        "url": "https://github.com/YouzSpace/3xui-hub/releases/download/v2.10.0/controlhub-agent-linux-64"
+        "sha256": "d8b3310c2cab59fb6f7e40e950cda22a63b985bf5db4a3aa511f4a1e7db56538",
+        "size": 6733972,
+        "url": "https://github.com/YouzSpace/3xui-hub/releases/download/v2.10.1/controlhub-agent-linux-64"
       }
     ]
   }
