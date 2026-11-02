@@ -1292,7 +1292,6 @@ server {
     }
 }
 NGINX_SSL
-NGINX_SSL
         # 替换占位符
         sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
     else
@@ -1344,7 +1343,6 @@ server {
         return 404;
     }
 }
-NGINX_HTTP
 NGINX_HTTP
         sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
     fi
