@@ -14,7 +14,3 @@ server/*.exe
 server/controlhub-server-*
 # PHP 历史残留（Go 化后 backend/vendor 整个不该在仓库；issue #116 3.4）
 backend/vendor/
-
-# agent 二进制只放 GitHub Release 附件，不进 git（SHA256SUMS 配套校验文件一并出 git，权威 sha256 在 manifest）
-backend/storage/app/xray/node-bin/agent/controlhub-agent-*
-backend/storage/app/xray/node-bin/agent/SHA256SUMS

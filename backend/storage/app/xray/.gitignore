@@ -1,3 +1,5 @@
 # 放行 xray 资产目录全部内容（二进制/脚本/manifest 随面板入库）
 !*
 !.gitignore
+# 例外：agent 二进制只放 Release、不随面板入库（源码在仓库 agent/ 目录），sha256 权威在 manifest
+node-bin/agent/
