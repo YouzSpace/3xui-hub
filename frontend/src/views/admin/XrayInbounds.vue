@@ -250,6 +250,11 @@ const isWs = computed(() => form.value.network === 'ws')
 const isXhttp = computed(() => form.value.network === 'xhttp')
 const isHttpupgrade = computed(() => form.value.network === 'httpupgrade')
 const isSs = computed(() => form.value.protocol === 'shadowsocks')
+// SS-2022（2022-blake3-aes-*）：服务端密钥必须是 base64 固定长度（aes-256 32 字节 /
+// aes-128 16 字节），留空或长度不对后端会自动生成一把合法的。所以这一档用明文展示：
+// 它本来就明文出现在每个用户的订阅链接里（ss://method:服务端PSK:用户PSK），
+// 生成后的值管理员要能看到/复制，否则没法核对。
+const ssIs2022 = computed(() => String(form.value.ss_method || '').startsWith('2022-blake3-'))
 // 传统代理（socks / http）：单组账号密码，没有用户概念
 const isSocks = computed(() => form.value.protocol === 'socks')
 const isHttp = computed(() => form.value.protocol === 'http')
@@ -771,7 +776,9 @@ const openEdit = (ib) => {
     tls_certificate: '',
     tls_key: '',
     ss_method: ib.ss_method || 'aes-256-gcm',
-    ss_password: '',
+    // 回显落库的服务端 PSK：后端保存时可能自动生成（2022 档），编辑时必须带回来，
+    // 否则「不改留空」会让人以为密码还在、实际提交空串。
+    ss_password: ib.ss_password || '',
     // socks / http：用户名回显，密码永远不回显（留空=不改）
     auth_user: ib.auth_user || '',
     auth_pass: '',
@@ -1251,10 +1258,11 @@ const remove = async (ib) => {
 const protocolLabel = { vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'SS', hysteria: 'HY2', socks: 'SOCKS', http: 'HTTP', tunnel: 'Tunnel', wireguard: 'WG' }
 const protocolVariant = (p) => ({ vless: 'vless', trojan: 'trojan' }[p] || 'info')
 const securityVariant = (s) => ({ reality: 'info', tls: 'success' }[s] || 'info')
-// 用户数一列：这几种协议不按用户下发客户端（ss 是单凭据，其余是管理用的入口）
+// 用户数一列：这几种协议没有用户概念（凭据在入站级或根本没有），不按用户下发客户端，
+// 列表里显示「—」。ss 以前也走这个特判（单凭据），SS-2022 多用户后它同样是逐用户
+// client，跟其它协议一样显示真实 client_count。
 const CLIENTLESS_PROTOCOLS = ['socks', 'http', 'tunnel', 'wireguard']
 const clientLabel = (ib) => {
-  if (ib.protocol === 'shadowsocks') return '凭据模式'
   if (CLIENTLESS_PROTOCOLS.includes(ib.protocol)) return '—'
   return ib.client_count
 }
@@ -1936,9 +1944,20 @@ const clientLabel = (ib) => {
             </label>
             <label class="an-field">
               <span>密码{{ editing ? '（不改留空）' : '' }}</span>
-              <Input v-model="form.ss_password" type="password" placeholder="连接凭据" />
+              <Input
+                v-model="form.ss_password"
+                :type="ssIs2022 ? 'text' : 'password'"
+                :mono="ssIs2022"
+                :placeholder="ssIs2022 ? '留空自动生成（编辑时留空 = 不改）' : '连接凭据'"
+              />
             </label>
           </div>
+          <p v-if="ssIs2022" class="an-hint">
+            2022 加密方式的服务端密钥必须是 base64：aes-256 要 32 字节、aes-128 要 16 字节。
+            新建时留空或长度不对，后端会<code>自动生成</code>一把合法的并落库，保存后这里显示的就是实际生效的值；
+            编辑时留空 = 沿用原值（换 key 会让已经发出去的订阅链接全部失效）。
+            它明文出现在每个用户的订阅链接里（<code>ss://方式:服务端密钥:用户密钥</code>）。
+          </p>
         </template>
 
         <!-- socks / http：传统正向代理，一组账号密码（内核默认 noauth，面板强制认证） -->

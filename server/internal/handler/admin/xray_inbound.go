@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/driver/xray"
+	"controlhub-server/internal/ss2022"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/curve25519"
@@ -628,12 +629,30 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 			method = s
 		}
 		settings = jo("method", method)
-		if pw, ok := inputString(input["ss_password"]); ok && pw != "" {
-			settings.put("password", pw)
-		} else {
+		pw := strings.TrimSpace(nodeStringField(input, "ss_password"))
+		if pw == "" && existing != nil && existing.Protocol == "shadowsocks" {
+			// 编辑时留空 = 沿用原值（与 socks/http 的「不改不用重填」同口径）。
+			prev, _ := parseOrderedJS(existing.Settings)
+			pw = strings.TrimSpace(jsonGetString(prev, "password"))
+		}
+		if ss2022.KeyLen(method) > 0 {
+			// SS-2022：服务端 PSK 必须是 base64 且解码后正好 16/32 字节，
+			// 长度不对内核会 "bad key" 拒载**整份**节点配置。留空或非法就现场生成一把
+			// 合法的（前端会把落库的值回显出来，管理员能看到/复制）。
+			if !ss2022.ValidKey(method, pw) {
+				gen, err := ss2022.GenerateKey(method)
+				if err != nil {
+					d.failServer(c, "生成 Shadowsocks-2022 密钥", err)
+					return XrayInboundInput{}, false
+				}
+				pw = gen
+			}
+		} else if pw == "" {
+			// 传统 AEAD 的 password 是自由格式：不校验、不生成，只要求非空。
 			d.fail(c, "Shadowsocks 必须设置密码", 500)
 			return XrayInboundInput{}, false
 		}
+		settings.put("password", pw)
 	case "hysteria":
 		// 内核只接受 version=2；写 1 会让**整份节点配置**被拒（不是只挂这个入站）。
 		settings = jo("version", 2)
@@ -1838,12 +1857,11 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 
 	// 用户全协议通用：任何入站上的 client 都是「全部有套餐的可用用户」，不再按
 	// 入站协议去匹配 users.protocol（那样 hy2 入站永远显示 0，而实际它上面有 105 个）。
-	// shadowsocks 例外（历史行为：它的人数在订阅里走另一条路）。
+	// shadowsocks 以前恒 0（它只有入站级单凭据、没有逐用户 client）；SS-2022 多用户后
+	// ss 入站上也逐用户注入 client，那层特判已经没有依据，一并去掉。
 	clientCount := int64(0)
-	if ib.Protocol != "shadowsocks" {
-		for _, n := range userCounts {
-			clientCount += n
-		}
+	for _, n := range userCounts {
+		clientCount += n
 	}
 
 	var sniffing any
@@ -1930,6 +1948,11 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		"has_tls_cert", jsonArrayLen(jsonGet(stream, "tlsSettings", "certificates")) > 0,
 		"ss_method", ssMethod(ib, settings),
 		"ss_password_set", ssPasswordSet(ib, settings),
+		// ss 的服务端 PSK 回显原文：它不是「管理员私有」的密钥 —— 每个用户的订阅链接里
+		// 都带着它（ss://method:服务端PSK:用户PSK），编辑时要能看见、2022 自动生成的
+		// 那一把也要能看见，否则管理员没法核对/复制。其余协议（socks/http 账号密码、
+		// wireguard 私钥、salamander）仍然只回「已设置」。
+		"ss_password", ssPassword(ib, settings),
 		// socks / http（传统代理）：用户名回显，密码只回「已设置」
 		"auth_user", accountUser(ib, settings),
 		"auth_password_set", accountPasswordSet(ib, settings),
@@ -2052,6 +2075,18 @@ func ssPasswordSet(ib *XrayInboundRecord, settings any) bool {
 		return false
 	}
 	return nodeTruthy(jsonGet(settings, "password"))
+}
+
+// ssPassword 回显 ss 入站的服务端 PSK 原文（其余协议 null）。
+//
+// 为什么不藏着：ss 的 password 是**入站级**凭据，会明文出现在每个用户的订阅链接里
+// （"ss://method:服务端PSK:用户PSK"），只回「已设置」既挡不住谁，又让管理员在
+// 2022 自动生成密钥后看不见落库的那一把（改一次 method 就没法核对）。
+func ssPassword(ib *XrayInboundRecord, settings any) any {
+	if ib.Protocol != "shadowsocks" {
+		return nil
+	}
+	return nullableValue(settings, "password")
 }
 
 // accountUser 回显 socks / http 入站的代理账号（其余协议 null）。

@@ -8,6 +8,7 @@ import (
 
 	"controlhub-server/internal/driver/internal/phpjson"
 	"controlhub-server/internal/driver/internal/phpval"
+	"controlhub-server/internal/ss2022"
 )
 
 // 逐条复刻 XrayConfigService.php 的「订阅链接」段：
@@ -51,8 +52,8 @@ func SubscriptionURIs(node Node, inbounds []Inbound, user User) []string {
 		case "trojan":
 			uri = trojanURI(node, ib, user, host)
 		case "shadowsocks":
-			// shadowsocks 是入站级单凭据（密码在入站而非用户），链接对同协议用户通用
-			uri = ssURI(node, ib, host)
+			// SS-2022 多用户时链接按用户生成（每用户 PSK 不同），单凭据时同协议用户共用
+			uri = ssURI(node, ib, user, host)
 		case "hysteria":
 			uri = hysteriaURI(node, ib, user, host)
 		default:
@@ -267,8 +268,11 @@ func hopPortsOf(stream phpjson.Object) string {
 	return strings.TrimSpace(phpval.String(jsonField(hysteria, "udpHop", "ports")))
 }
 
-// ssURI 生成 Shadowsocks 链接（SIP002）：密码在入站侧，同协议用户共用同一链接。
-func ssURI(node Node, ib Inbound, host string) string {
+// ssURI 生成 Shadowsocks 链接（SIP002）。
+//
+// 单凭据（传统 AEAD）：密码在入站侧，同协议用户共用同一链接，base64(method:password)。
+// SS-2022 多用户：每用户一条，userinfo 是明文 method:服务端PSK:用户PSK（SIP022）。
+func ssURI(node Node, ib Inbound, user User, host string) string {
 	settingsVal, _ := phpjson.ParseOrdered(ib.Settings)
 	settings := phpval.ToObject(settingsVal)
 	method := jsonFieldString(settings, "method")
@@ -277,7 +281,16 @@ func ssURI(node Node, ib Inbound, host string) string {
 	}
 	password := jsonFieldString(settings, "password")
 
-	return "ss://" + base64.StdEncoding.EncodeToString([]byte(method+":"+password)) +
+	// SS-2022 多用户：客户端凭据 = 服务端 PSK + 该用户的 PSK（三段明文），
+	// 每用户链接不同。服务端 PSK 缺了就退回单凭据形态（那种入站本来也起不来）。
+	clientPSK := ss2022.ClientKey(method, user.UUID)
+	if clientPSK == "" || password == "" {
+		return "ss://" + ss2022.UserInfo(method, password, "") +
+			"@" + uriHostPort(host, ib.Port) +
+			"#" + phpval.RawURLEncode(InboundLabel(node, ib))
+	}
+
+	return "ss://" + ss2022.UserInfo(method, password, clientPSK) +
 		"@" + uriHostPort(host, ib.Port) +
 		"#" + phpval.RawURLEncode(InboundLabel(node, ib))
 }

@@ -20,10 +20,12 @@ import (
 //   - 全量 config 只在结构变更时由 agent 拉取（本包 Render 负责）；
 //   - 流量来自 agent 主动推送（WS report / HTTP push），本驱动不做面板侧轮询。
 //
-// 多入站口径：
-//   - adu/rmu 按「用户协议 == 入站协议」的启用入站逐条下发；
-//   - 订阅链接按协议匹配的入站逐条生成；
-//   - shadowsocks 入站为单凭据模式，不经用户级指令通道。
+// 多入站口径（用户全协议通用）：
+//   - adu/rmu 对节点上全部启用入站逐条下发，不按 users.protocol 过滤；
+//   - 订阅链接对全部启用入站逐条生成；
+//   - 只排除两类入站：①「单凭据协议」ss 非 2022（method+password 在入站级、所有用户
+//     共用）；②「无用户概念协议」socks / http / tunnel / wireguard（内核 adu/rmu 对它们
+//     一律 unsupported）。ss 2022 多用户凭据在用户维度，正常走 adu/rmu。
 //
 // 状态口径：
 //   - GetClient 从 users 表解析（email = ch_user_{id}），代表「该用户应在此节点上」；
@@ -446,7 +448,7 @@ func (d *Driver) enqueueAdd(ctx context.Context, email, uuid string) error {
 		user.UUID = uuid // 极端情况下用户表缺 uuid，用传入值渲染
 	}
 
-	inbounds, err := d.inboundsFor(ctx, user)
+	inbounds, err := d.inboundsFor(ctx)
 	if err != nil {
 		return err
 	}
@@ -488,7 +490,7 @@ func (d *Driver) enqueueRemove(ctx context.Context, email string) error {
 
 	var inboundTags []string
 	if user != nil {
-		inbounds, err := d.inboundsFor(ctx, user)
+		inbounds, err := d.inboundsFor(ctx)
 		if err != nil {
 			return err
 		}
@@ -522,22 +524,45 @@ func (d *Driver) enqueueRemove(ctx context.Context, email string) error {
 	return nil
 }
 
-// inboundsFor 对应 inboundsFor()：用户协议匹配的启用入站
-// （ss 单凭据模式排除 —— 不经用户级指令通道）。
-func (d *Driver) inboundsFor(ctx context.Context, user *UserRecord) ([]Inbound, error) {
+// inboundsFor 对应 inboundsFor()：该节点上**全部启用入站**，不按 users.protocol 过滤
+// （用户全协议通用：任何协议的用户都拿到每个入站的链接）。
+//
+// 只排除两类「不按用户走指令通道」的入站：
+//   - 单凭据协议：ss 非 2022 时 method+password 在入站级，所有用户共用一套；
+//   - 无用户概念协议：socks / http / tunnel / wireguard（见 userlessProtocols）。
+//
+// 这两类发 adu/rmu 都是空转：agent 把指令转给内核，内核回 unsupported，指令却仍记
+// success —— 看着「下发成功」，实际什么也没发生，白占指令队列与回执轮询。
+func (d *Driver) inboundsFor(ctx context.Context) ([]Inbound, error) {
 	all, err := d.cfg.Source.EnabledInbounds(ctx, d.cfg.NodeID)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Inbound, 0, len(all))
 	for _, ib := range all {
-		if ib.Protocol != user.Protocol || ib.Protocol == "shadowsocks" {
+		if userlessProtocol(ib.Protocol) {
+			continue
+		}
+		if ib.Protocol == "shadowsocks" && !SSIsMultiUser(ib) {
 			continue
 		}
 		out = append(out, ib)
 	}
 	return out, nil
 }
+
+// userlessProtocols 是「没有用户概念」的入站协议：凭据在入站级（socks/http 一组账号
+// 密码、wireguard 一份对端公钥清单），或者根本没有凭据（tunnel 是 dokodemo-door 的
+// 固定目标转发）。内核的 AddUser/RemoveUser 对它们一律 unsupported。
+var userlessProtocols = map[string]bool{
+	"socks":     true,
+	"http":      true,
+	"tunnel":    true,
+	"wireguard": true,
+}
+
+// userlessProtocol 判断该协议是否「无用户概念」（不走 adu/rmu 指令通道）。
+func userlessProtocol(protocol string) bool { return userlessProtocols[protocol] }
 
 // relayClientsFor 读该节点入站上的中转凭据（adu 载荷要和渲染口径一致地带上）。
 func (d *Driver) relayClientsFor(ctx context.Context) ([]RelayClient, error) {

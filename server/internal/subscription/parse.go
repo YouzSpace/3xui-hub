@@ -78,8 +78,25 @@ func bracketHost(host string) string {
 	return host
 }
 
-// parsedSsCredentials 对应 parseSsCredentials()：base64(method:password) → [method, password]。
+// parseSsCredentials 对应 parseSsCredentials()：userinfo → [method, password]。
+//
+// 两种形态都要认：
+//   - 传统 AEAD / 单凭据 2022：base64(method:password)（历史口径）；
+//   - SS-2022 多用户：明文百分号编码 `method:服务端PSK:用户PSK`（SIP022，本站 2022
+//     入站生成的就是这种）。多用户时 password 原样保留 "服务端:用户" 两段 ——
+//     mihomo / sing-box 的 2022 出口都按这个格式读。
 func parseSsCredentials(userInfo string) (string, string, bool) {
+	// base64 字母表里没有 ':'，所以「解码后含 ':'」就可以确定是明文形态。
+	// 这里只解 %XX 不动 '+'（base64 的 '+' 会被 PHP urldecode 变成空格，老链接解坏）。
+	if plain := percentDecode(userInfo); strings.Contains(plain, ":") {
+		colon := strings.IndexByte(plain, ':')
+		method, password := plain[:colon], plain[colon+1:]
+		if method == "" || password == "" {
+			return "", "", false
+		}
+		return method, password, true
+	}
+
 	decoded, ok := decodeBase64URL(userInfo)
 	if !ok {
 		return "", "", false
@@ -93,6 +110,28 @@ func parseSsCredentials(userInfo string) (string, string, bool) {
 		return "", "", false
 	}
 	return method, password, true
+}
+
+// percentDecode 只解 %XX，不把 '+' 当空格（与 PHP urldecode 的差别）。
+func percentDecode(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if hi, ok := hexVal(s[i+1]); ok {
+				if lo, ok2 := hexVal(s[i+2]); ok2 {
+					b.WriteByte(hi<<4 | lo)
+					i += 2
+					continue
+				}
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // parseHysteriaPassword 对应 parseHysteriaPassword()：base64(密码[:/aead]) → 明文密码。

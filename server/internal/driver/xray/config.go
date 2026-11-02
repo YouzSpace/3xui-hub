@@ -25,6 +25,7 @@ import (
 	"controlhub-server/internal/driver/internal/phpjson"
 	"controlhub-server/internal/driver/internal/phpval"
 	"controlhub-server/internal/driver/internal/secrets"
+	"controlhub-server/internal/ss2022"
 )
 
 // API_PORT 是 xray 内核 API 的本地回环端口（v26 CLI 必须显式 --server 指向这里）。
@@ -358,10 +359,18 @@ func listenOr(listen string) string {
 }
 
 // clientsFor 复刻 clientsFor()：shadowsocks 单凭据模式不注入 clients。
+//
+// SS-2022 多用户（2022-blake3-aes-*-gcm）例外：凭据在用户维度，每用户一把由
+// uuid 确定性派生的 PSK —— 内核靠它认人、按 email 统计流量。其余 ss 仍是入站级
+// 单凭据（所有用户共用一个 ss 链接），注入 clients 反而会让内核按用户重建。
 // 第二个返回值表示是否注入（对应 PHP 的 null）。
 func clientsFor(d *Data, ib Inbound) (phpjson.Array, bool, error) {
+	ssMethod := ""
 	if ib.Protocol == "shadowsocks" {
-		return nil, false, nil
+		ssMethod = SSMethodOf(ib)
+		if !ss2022.IsMultiUser(ssMethod) {
+			return nil, false, nil
+		}
 	}
 
 	clients := phpjson.Array{}
@@ -399,6 +408,15 @@ func clientsFor(d *Data, ib Inbound) (phpjson.Array, bool, error) {
 			// 沿用 uuid 作令牌，与订阅侧 hysteria2:// 链接的密码同源。
 			client = phpjson.Object{
 				{Key: "auth", Value: u.UUID},
+				{Key: "email", Value: ClientEmail(u.ID)},
+				{Key: "totalGB", Value: u.TrafficLimit},
+				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
+			}
+		case "shadowsocks":
+			// SS-2022 多用户：password 是该用户的 PSK（内核按它区分身份 / 统计流量）。
+			// 不能带 method —— 2022 多用户下内核拒绝 client 自带的 method。
+			client = phpjson.Object{
+				{Key: "password", Value: ss2022.ClientKey(ssMethod, u.UUID)},
 				{Key: "email", Value: ClientEmail(u.ID)},
 				{Key: "totalGB", Value: u.TrafficLimit},
 				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},

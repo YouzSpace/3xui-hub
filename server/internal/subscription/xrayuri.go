@@ -4,6 +4,8 @@ import (
 	"hash/crc32"
 	"net"
 	"strings"
+
+	"controlhub-server/internal/ss2022"
 )
 
 // 逐条复刻 app/Drivers/Xray/XrayConfigService.php 的「订阅链接」段：
@@ -33,8 +35,8 @@ func xrayInboundURI(node Node, inbound XrayInbound, user *User, host string) str
 	case "trojan":
 		return xrayTrojanURI(node, inbound, user, host)
 	case "shadowsocks":
-		// shadowsocks 是入站级单凭据（密码在入站而非用户），链接对同协议用户通用
-		return xraySSURI(node, inbound, host)
+		// SS-2022 多用户时链接按用户生成（每用户 PSK 不同），单凭据时同协议用户共用
+		return xraySSURI(node, inbound, user, host)
 	case "hysteria":
 		return xrayHysteriaURI(node, inbound, user, host)
 	default:
@@ -277,8 +279,12 @@ func xrayHopPorts(stream any) string {
 	return phpTrim(jsonFieldString(stream, "hysteriaSettings", "udpHop", "ports"))
 }
 
-// xraySSURI 生成 Shadowsocks 链接（SIP002）：密码在入站侧，同协议用户共用同一链接。
-func xraySSURI(node Node, inbound XrayInbound, host string) string {
+// xraySSURI 生成 Shadowsocks 链接（SIP002）。
+//
+// 单凭据（传统 AEAD）：密码在入站侧，同协议用户共用同一链接，base64(method:password)。
+// SS-2022 多用户：每用户一条，userinfo 是明文 method:服务端PSK:用户PSK（SIP022；
+// 本机实测只给用户 PSK 客户端握不上手）。
+func xraySSURI(node Node, inbound XrayInbound, user *User, host string) string {
 	settings := decodeJSONAny(inbound.Settings)
 	method := jsonFieldString(settings, "method")
 	if method == "" {
@@ -286,7 +292,15 @@ func xraySSURI(node Node, inbound XrayInbound, host string) string {
 	}
 	password := jsonFieldString(settings, "password")
 
-	return "ss://" + b64encode([]byte(method+":"+password)) + "@" + xrayURIHostPort(host, inbound.Port) +
+	clientPSK := ""
+	if user != nil {
+		clientPSK = ss2022.ClientKey(method, user.UUID)
+	}
+	if clientPSK == "" || password == "" {
+		return "ss://" + ss2022.UserInfo(method, password, "") + "@" + xrayURIHostPort(host, inbound.Port) +
+			"#" + rawurlencode(inboundLabel(node, inbound))
+	}
+	return "ss://" + ss2022.UserInfo(method, password, clientPSK) + "@" + xrayURIHostPort(host, inbound.Port) +
 		"#" + rawurlencode(inboundLabel(node, inbound))
 }
 
