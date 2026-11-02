@@ -46,8 +46,17 @@ const globeRef = ref(null)
 
 /** 本次浏览观测到的采样点：{ t, up, down, cpu, mem, online } */
 const samples = ref([])
-/** 每秒刷新的“现在”，用于让相对时间自己走字（否则只有轮询时才更新） */
+/** 每秒刷新的“现在”，只用于让相对时间（「更新于 N 秒前」）自己走字。 */
 const now = ref(Date.now())
+/**
+ * 图表专用的“现在”，只跟轮询同频（POLL_MS）更新。
+ *
+ * 为什么和 now 拆开：曲线窗口的滑动（windowSamples → liveChart / livePeak /
+ * cpuSpark / memSpark）会重算 SVG 路径，而采样点本来就是每 POLL_MS 一个。
+ * 若也挂在每秒的 now 上，就等于每秒白算 3 次 chartGeometry —— 节点多时肉眼可见地卡。
+ * 拆开后：now 每秒只 patch 那一处文本节点，图表仍保持 5 秒重算一次，两边都正确。
+ */
+const chartNow = ref(Date.now())
 
 let pollTimer = null
 let clockTimer = null
@@ -82,7 +91,7 @@ const liveUsers = computed(() => sumOrNull(onlineNodes.value.map((node) => node.
 
 /** 实时曲线窗口内的采样点。 */
 const windowSamples = computed(() => {
-  const from = now.value - liveWindow.value * 1000
+  const from = chartNow.value - liveWindow.value * 1000
 
   return samples.value.filter((sample) => sample.t >= from)
 })
@@ -151,6 +160,8 @@ function startTimers() {
     // 标签页不可见时不打接口（数据本来也没人看）
     if (!document.hidden) load()
   }, POLL_MS)
+  // 这个 1 秒时钟只驱动 relativeTime 那一段文本（「更新于 N 秒前」）。
+  // 它**不**参与任何图表计算 —— 图表窗口看的是 chartNow（见下）。
   clockTimer = setInterval(() => {
     now.value = Date.now()
   }, 1000)
