@@ -1,10 +1,20 @@
-# 发布仓只发运行时产物（Go 源码 + 前端 dist），不含测试与本地数据。
-# 测试文件由开发仓维护，同步到发布仓时一律排除。
-*_test.go
-**/testdata/
+docs/
+.hermes/
+MIGRATION.md
+# Go 后端运行时数据（geodata 下载的 geoip/geosite 等，非源码）
+server/storage/
+# Go 后端 air 热重载的编译产物（发布时 install.sh 在服务器编译，不用这个）
+server/tmp/
+# air 热重载配置（本地开发用，服务器不用 air）
+.air.toml
+server/.air.toml
+# 本地 go build 的编译产物（Windows 下 go build ./cmd/server 会在 server/ 生成 exe）
+server/*.exe
+# Linux 交叉编译产物（本地交叉编译上传服务器用，非源码，不提交）
+server/controlhub-server-*
+# PHP 历史残留（Go 化后 backend/vendor 整个不该在仓库；issue #116 3.4）
+backend/vendor/
 
-# 本地诊断/临时产物
-*.log
-
-# agent 二进制只放 GitHub Release 附件，不进 git（SHA256SUMS 文本保留）
+# agent 二进制只放 GitHub Release 附件，不进 git（SHA256SUMS 配套校验文件一并出 git，权威 sha256 在 manifest）
 backend/storage/app/xray/node-bin/agent/controlhub-agent-*
+backend/storage/app/xray/node-bin/agent/SHA256SUMS
