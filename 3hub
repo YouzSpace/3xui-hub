@@ -852,7 +852,52 @@ EOF
         chown root:root /etc/sudoers.d/3xui-hub 2>/dev/null || true
     fi
 
+    # 面板自己升完了，再看节点上的 agent 有没有跟上。
+    # 以前这一步完全缺失：update 只换面板二进制与前端，节点 agent 一直是旧版，
+    # 命令行里也看不出来 —— 只能进面板逐台翻。现在升级完自动检查一遍并打印结果。
+    check_agents_after_update
+
     echo -e "${GREEN}更新完成！${NC}"
+}
+
+# 升级后检查节点 agent 版本：逐台比对，落后就下发升级指令并**等到真正结束**
+# （agent 回执成功不算结束，要等它重启后心跳上报新版本；失败/超时都如实报出来）。
+#
+# 边界（由后端 --upgrade-agents 保证，这里只负责调用与呈现）：
+#   - 离线节点直接跳过，不入队、也不干等（避免给不在线的机器堆 pending 指令）；
+#   - 单台有等待上限（AGENT_UPGRADE_WAIT_SECONDS，默认 180s），整轮也有总预算
+#     （AGENT_UPGRADE_BUDGET_SECONDS，默认 900s），绝不让 update 无限挂起；
+#   - 有失败时本函数返回非 0，但不影响「面板已升级成功」这个事实，只提示。
+check_agents_after_update() {
+    local BIN="${INSTALL_DIR}/server/controlhub-server"
+    [ -x "$BIN" ] || return 0
+    # 老版本二进制没有这个子命令，跳过（不要因为「面板还没升级到这个能力」就让 update 报错）。
+    #
+    # ⚠️ 不能用 `--upgrade-agents` 字面量判断：Go 编译长字符串时会拆成两条立即数
+    # （实测二进制里是 `--upgrad` + `e-agents` 两段），grep 永远搜不到。
+    # 也不能用 `--help`：这个程序任何参数都会走 bootstrap 连库校验 APP_KEY，
+    # `--help` 直接以「启动失败」退出。
+    # 结论：拿**日志格式串**当特征（它只在本功能里出现，且是单条完整字符串）。
+    if ! LC_ALL=C grep -aq -- 'AGENT 最新=' "$BIN" 2>/dev/null; then
+        return 0
+    fi
+
+    echo
+    echo -e "${CYAN}检查节点 agent 版本...${NC}"
+    local OUT
+    # 超时兜底：即使后端自己没守住预算，这一层也不让 update 卡住。
+    OUT=$(cd "$INSTALL_DIR/server" && CONFIG_ENV="${INSTALL_DIR}/backend/.env" \
+        timeout "${AGENT_CHECK_TIMEOUT:-1200}" "$BIN" --upgrade-agents 2>&1)
+    local RC=$?
+
+    # 后端把结论打成 "AGENT ..." 行，原样透传（去掉时间戳前缀）。
+    echo "$OUT" | grep -E 'AGENT' | sed -E 's/^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} //'
+
+    if [ $RC -ne 0 ]; then
+        echo -e "${YELLOW}⚠ 有节点 agent 没升上来（见上面「失败」那几行）。${NC}"
+        echo -e "${YELLOW}  面板本身已升级成功，不受影响；节点会在下次 update 或手动重试时再检查。${NC}"
+    fi
+    return 0
 }
 
 # nginx 反代是否已就位（只读判断，供提示与 fix-nginx 复用）

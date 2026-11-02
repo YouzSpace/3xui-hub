@@ -18,13 +18,14 @@
     "note": "P1 预留：P4 实现节点自动升级时置 enabled=true，节点 agent 拉取本 manifest 的 default 与本地对比"
   },
   "agent": {
-    "version": "1.1.0",
+    "version": "1.2.0",
     "assets": [
       {
         "arch": "linux-64",
         "file": "controlhub-agent-linux-64",
-        "sha256": "39527c7281b057595bcb7e928d1fb8a87d2629e7653f5669fdcb2ce0a0667cd5",
-        "size": 6639800
+        "sha256": "500d358907b5825689067c902ed6ee92487c85a4707162f8ef2f8ed9a4fecd18",
+        "size": 6643896,
+        "url": "https://github.com/YouzSpace/3xui-hub/releases/download/v2.10.0/controlhub-agent-linux-64"
       }
     ]
   }

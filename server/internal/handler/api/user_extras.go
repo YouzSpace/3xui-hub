@@ -8,7 +8,10 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"controlhub-server/internal/task"
@@ -44,6 +47,8 @@ func (e *UserExtras) Register(r gin.IRouter) {
 	r.POST("/api/proxy-store/orders", e.handleProxyOrder)
 	r.GET("/api/proxy-store/entitlements", e.handleProxyEntitlements)
 	r.GET("/api/proxy-store/entitlements/:id/proxies", e.handleProxyEntitlementProxies)
+	// 用户自助重置订阅（换 token + uuid，旧链接失效；不动登录态）。见 user_reset_subscription.go。
+	r.POST("/api/reset-subscription", e.handleResetSubscription)
 }
 
 // handleSyncTraffic 对齐 ApiUserController::syncTraffic。
@@ -114,27 +119,58 @@ func (e *UserExtras) handleSyncTrafficStatus(c *gin.Context) {
 	success(c, jo("task_id", taskID, "status", status))
 }
 
-// handleInviteMe 对齐 ApiDiscountController::myInvite。
+// handleInviteMe 对齐 ApiDiscountController::myInvite（老 PHP 版逐字段复刻）。
+//
+// 返回形状与老 PHP 完全一致（前端按 data.invite.xxx 读，改字段两边同步）：
+//
+//	{
+//	  "invite": {
+//	    "code": "INV12345678",     // 我的邀请码（首次访问自动生成）
+//	    "discount": 0.9,           // 好友用我的码下单享几折
+//	    "next_refresh_at": "...",  // 邀请码下次刷新时间
+//	    "invited_count": 3,        // 已邀请并支付成功的人数
+//	    "enabled": true,           // 邀请功能总开关
+//	    "used_invite": false,      // 我是否已用过别人的邀请码
+//	    "used_invite_at": "..."    // 用码时间
+//	  },
+//	  "redeem_codes": [{code, discount, note, status, expires_at}, ...]
+//	}
+//
+// ⚠️ 2026-11-02 的教训：这个接口曾把 invite 对象拍平成 invite_code 直接返回，
+// 前端读 data.invite.code 拿不到 → 页面永远「加载失败」。老 PHP 的形状才是契约。
 func (e *UserExtras) handleInviteMe(c *gin.Context) {
 	u := currentUser(c)
+	ctx := c.Request.Context()
+	now := e.handler.now()
 
-	var inviteCode string
-	err := e.db.QueryRowContext(c.Request.Context(),
-		"SELECT code FROM discount_codes WHERE user_id = ? AND source = 'invite' ORDER BY id DESC LIMIT 1",
-		u.ID).Scan(&inviteCode)
-	if err != nil && err != sql.ErrNoRows {
+	cfg, err := e.handler.store.SiteConfigMany(ctx,
+		[]string{"invite_enabled", "invite_discount"})
+	if err != nil {
+		cfg = map[string]string{}
+	}
+	enabled := cfg["invite_enabled"] != "0"
+	discount := parseFloatDefault(cfg["invite_discount"], 0.90)
+
+	// ensureInviteCode：首次访问（库里还没有我的邀请码）就自动生成一张。
+	// 老 PHP 是 DiscountCodeService::ensureInviteCode + issueInviteCode，
+	// Go 版当年漏掉了这段，导致新用户进来永远显示「加载失败/正在生成」。
+	invite, err := e.ensureInviteCode(ctx, u.ID, now, discount)
+	if err != nil {
+		e.handler.logger.Printf("邀请码生成失败 user=%d: %v", u.ID, err)
 		fail(c, "服务器错误", 500)
 		return
 	}
 
+	// 已邀请成功人数：用我名下（含已刷新的历史码）任意邀请码下单且已支付的订单数。
+	// 只算当前码会在刷新后把历史邀请数清零 —— 老 PHP 注释原话。
 	var invitedCount int64
-	_ = e.db.QueryRowContext(c.Request.Context(),
+	_ = e.db.QueryRowContext(ctx,
 		`SELECT COUNT(DISTINCT o.id) FROM orders o
 		 JOIN discount_codes dc ON o.discount_code_id = dc.id
 		 WHERE dc.user_id = ? AND dc.source = 'invite' AND o.status = 'paid'`,
 		u.ID).Scan(&invitedCount)
 
-	rows, err := e.db.QueryContext(c.Request.Context(),
+	rows, err := e.db.QueryContext(ctx,
 		"SELECT code, status, expires_at FROM discount_codes WHERE user_id = ? AND source = 'redeem' ORDER BY id DESC",
 		u.ID)
 	if err != nil {
@@ -156,7 +192,166 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 		redeemCodes = append(redeemCodes, jo("code", code, "status", status))
 	}
 
-	success(c, jo("invite_code", inviteCode, "invited_count", invitedCount, "redeem_codes", redeemCodes))
+	var refreshAt any
+	if invite.NextRefreshAt.Valid {
+		refreshAt = invite.NextRefreshAt.Time.Format("2006-01-02 15:04:05")
+	}
+	// used_invite / used_invite_at：P0 的 User 结构不含邀请列，单独查一次
+	// （老 PHP 是 $user->used_invite_code_id，语义 = 我是否已用过别人的邀请码）。
+	usedInvite := false
+	usedInviteAt := any(nil)
+	var usedID sql.NullInt64
+	var usedAtRaw sql.NullTime
+	if err := e.db.QueryRowContext(ctx,
+		"SELECT used_invite_code_id, invite_code_used_at FROM users WHERE id = ?",
+		u.ID).Scan(&usedID, &usedAtRaw); err == nil && usedID.Valid && usedID.Int64 != 0 {
+		usedInvite = true
+		if usedAtRaw.Valid {
+			usedInviteAt = usedAtRaw.Time.UTC().Format("2006-01-02 15:04:05")
+		}
+	}
+
+	success(c, jo(
+		"invite", jo(
+			"code", invite.Code,
+			"discount", invite.Discount,
+			"next_refresh_at", refreshAt,
+			"invited_count", invitedCount,
+			"enabled", enabled,
+			"used_invite", usedInvite,
+			"used_invite_at", usedInviteAt,
+		),
+		"redeem_codes", redeemCodes,
+	))
+}
+
+// inviteCodeRow 是 ensureInviteCode 的产物。
+type inviteCodeRow struct {
+	ID            uint64
+	Code          string
+	Discount      float64
+	NextRefreshAt sql.NullTime
+}
+
+// ensureInviteCode 复刻 DiscountCodeService::ensureInviteCode + issueInviteCode：
+// 先查我名下 active 的邀请码，有就直接用；没有就**当场生成一张**（首次访问）。
+//
+// 发新码前把该用户已有的 active 邀请码置为 refreshed，在事务内完成 ——
+// 「同一用户最多一张 active 邀请码」这条不变量必须由这里保证
+// （老 PHP 注释原话：并发两个请求都查不到时，会各发一张）。
+// 防并发：事务内先 SELECT ... FOR UPDATE 锁 user 行，让并发请求串行。
+func (e *UserExtras) ensureInviteCode(ctx context.Context, userID uint64, now time.Time, discount float64) (inviteCodeRow, error) {
+	var existing inviteCodeRow
+	err := e.db.QueryRowContext(ctx,
+		"SELECT id, code, discount, next_refresh_at FROM discount_codes "+
+			"WHERE user_id = ? AND source = 'invite' AND status = 'active' ORDER BY id DESC LIMIT 1",
+		userID).Scan(&existing.ID, &existing.Code, &existing.Discount, &existing.NextRefreshAt)
+	if err == nil {
+		return existing, nil
+	}
+	if err != sql.ErrNoRows {
+		return inviteCodeRow{}, err
+	}
+
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return inviteCodeRow{}, err
+	}
+	defer tx.Rollback()
+
+	// 锁 user 行：两个并发请求都查不到 active 码时，串行后到的能看见先到的刚发的码。
+	if _, err := tx.ExecContext(ctx, "SELECT id FROM users WHERE id = ? FOR UPDATE", userID); err != nil {
+		return inviteCodeRow{}, err
+	}
+
+	// 锁内重读：可能另一个并发请求刚发过。
+	err = tx.QueryRowContext(ctx,
+		"SELECT id, code, discount, next_refresh_at FROM discount_codes "+
+			"WHERE user_id = ? AND source = 'invite' AND status = 'active' ORDER BY id DESC LIMIT 1",
+		userID).Scan(&existing.ID, &existing.Code, &existing.Discount, &existing.NextRefreshAt)
+	if err == nil {
+		return existing, tx.Commit()
+	}
+	if err != sql.ErrNoRows {
+		return inviteCodeRow{}, err
+	}
+
+	// 把历史 active 码作废（幂等冗余：正常应为 0 行）
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE discount_codes SET status = 'refreshed', refreshed_at = ?, updated_at = ? "+
+			"WHERE source = 'invite' AND user_id = ? AND status = 'active'",
+		dbTimeLiteral(now), dbTimeLiteral(now), userID); err != nil {
+		return inviteCodeRow{}, err
+	}
+
+	code, err := e.generateUniqueInviteCode(ctx, tx)
+	if err != nil {
+		return inviteCodeRow{}, err
+	}
+
+	// 刷新周期与定时任务同一口径：site_configs.invite_refresh_days（默认 30）。
+	// 硬编码 30 的话，后台改了刷新天数，首次生成的码会跟定时刷新的节奏对不上。
+	nextRefresh := now.Add(time.Duration(inviteRefreshDays(e)) * 24 * time.Hour)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO discount_codes (code, source, user_id, discount, max_uses, used_count,
+		 max_uses_per_user, expires_at, note, status, plan_id, source_order_id,
+		 refreshed_at, next_refresh_at, created_at, updated_at)
+		 VALUES (?, 'invite', ?, ?, 999999, 0, 1, NULL, NULL, 'active', NULL, NULL, NULL, ?, ?, ?)`,
+		code, userID, discount, dbTimeLiteral(nextRefresh), dbTimeLiteral(now), dbTimeLiteral(now)); err != nil {
+		return inviteCodeRow{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return inviteCodeRow{}, err
+	}
+	return inviteCodeRow{Code: code, Discount: discount, NextRefreshAt: sql.NullTime{Time: nextRefresh, Valid: true}}, nil
+}
+
+// generateUniqueInviteCode 复刻 DiscountCode::generateCode('INV')：
+// INV + 8 位随机大写（字符集去掉易混的 0/O/1/I/L），唯一冲突重试 32 次。
+func (e *UserExtras) generateUniqueInviteCode(ctx context.Context, tx *sql.Tx) (string, error) {
+	const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+	const codeLen = 8
+	for attempt := 0; attempt < 32; attempt++ {
+		code := "INV" + randomString(codeLen)
+		var n int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM discount_codes WHERE code = ?", code).Scan(&n); err != nil {
+			return "", err
+		}
+		if n == 0 {
+			return code, nil
+		}
+	}
+	return "", errors.New("生成邀请码：32 次重试后仍冲突")
+}
+
+// parseFloatDefault 解析配置里的浮点值；空串/非法值回退到默认。
+func parseFloatDefault(raw string, def float64) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v <= 0 {
+		return def
+	}
+	return v
+}
+
+// inviteRefreshDays 读邀请码刷新周期（天），与定时任务 runInviteRefresh 同一键、
+// 同一默认值（30）—— 后台改了 invite_refresh_days，首次生成的码要跟得上。
+func inviteRefreshDays(e *UserExtras) int {
+	cfg, err := e.handler.store.SiteConfigMany(context.Background(),
+		[]string{"invite_refresh_days"})
+	if err != nil {
+		return 30
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(cfg["invite_refresh_days"]))
+	if err != nil || n < 1 {
+		return 30
+	}
+	return n
 }
 
 // handleDiscountCheck 对齐 ApiDiscountController::check。

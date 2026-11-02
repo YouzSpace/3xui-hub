@@ -5,3 +5,6 @@
 
 # 本地诊断/临时产物
 *.log
+
+# agent 二进制只放 GitHub Release 附件，不进 git（SHA256SUMS 文本保留）
+backend/storage/app/xray/node-bin/agent/controlhub-agent-*

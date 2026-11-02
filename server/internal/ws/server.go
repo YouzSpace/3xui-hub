@@ -373,6 +373,10 @@ func cleanOutbounds(outbounds map[string]any) []OutboundRow {
 func reportConfig(data map[string]any, node nodeapi.Node, now time.Time) nodeapi.Object {
 	var cfg nodeapi.Object
 
+	// agent 段：指标 + client 名单指纹。指纹与 metrics 是两件独立的事 ——
+	// 心跳里的 metrics 块永远由 agent 带上（buildReportPayloads 的 base），但即便某版本
+	// 没带，也**不能**顺带把指纹丢掉（否则裸内核对账的短路在本轮悄悄失效）。
+	// clients_fp 缺键 → null，与 HTTP /alive 同一个补丁函数、同一套降级语义。
 	if metrics, ok := data["metrics"].(map[string]any); ok {
 		cfg.Set("agent", nodeapi.Object{
 			{Key: "cpu", Value: nullableNumber(metrics["cpu"])},
@@ -385,7 +389,13 @@ func reportConfig(data map[string]any, node nodeapi.Node, now time.Time) nodeapi
 			// 机器网卡累计收发：agent 读不到 /proc/net/dev（非 Linux）时不上报 → null，不当 0。
 			{Key: "net_total_up", Value: nullableInt(metrics["net_total_up"])},
 			{Key: "net_total_down", Value: nullableInt(metrics["net_total_down"])},
+			{Key: "clients_fp", Value: nodeapi.ClientsFingerprintPatch(data)},
 			{Key: "at", Value: iso8601(now)},
+		})
+	} else if _, hasFP := data["clients_fp"]; hasFP {
+		// 没有 metrics 块但带了指纹：只补指纹（不写其它指标，免得把上一轮的真实值抹成 null）。
+		cfg.Set("agent", nodeapi.Object{
+			{Key: "clients_fp", Value: nodeapi.ClientsFingerprintPatch(data)},
 		})
 	}
 

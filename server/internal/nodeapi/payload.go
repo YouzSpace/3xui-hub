@@ -2,6 +2,7 @@ package nodeapi
 
 import (
 	"fmt"
+	"strings"
 )
 
 // 请求体校验链：逐行对齐 NodeApiController 的 $request->validate([...])。
@@ -167,6 +168,33 @@ func BBRStatusPatch(data map[string]any) (Object, bool) {
 		}
 	}
 	return out, true
+}
+
+// ClientsFingerprintPatch 把心跳里的 clients_fp 转成 driver_config.agent.clients_fp 的值
+// （issue #115 3.5：面板据它短路「名单没变」时的 client_list 全量读回）。
+//
+// 返回 nil 的三种情况：心跳没带该键（老 agent）、显式传 null、形状不对（缺 sum 或 sum 为空）。
+// 三种都**写 null**：旧 agent 覆盖新 agent（降级）时，必须让上一轮留下的指纹基线失效，
+// 否则面板会拿一个没人再更新的旧指纹短路掉对账，节点漂移永远发现不了。
+//
+// 刻意不放进 validateAlive 的校验链：心跳里多一个形状不对的键就让整条心跳 500，会连带
+// status/last_check_at 不刷新（节点看起来掉线）。这里按「不认识就按 null 落库」处理。
+func ClientsFingerprintPatch(data map[string]any) any {
+	raw, ok := data["clients_fp"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	// sum 必须是字符串：md5 十六进制串。数字/布尔一律当「没有指纹」，
+	// 不能靠 stringOf 把 123 转成 "123" 当成一份真指纹。
+	sum, isStr := raw["sum"].(string)
+	sum = strings.TrimSpace(sum)
+	if !isStr || sum == "" {
+		return nil
+	}
+	return Object{
+		{Key: "n", Value: intOf(raw["n"])},
+		{Key: "sum", Value: sum},
+	}
 }
 
 // AckResult 是一条指令回执（对齐 ack 的 results.*）。

@@ -440,6 +440,9 @@ func (h *Handler) Alive(c *gin.Context) {
 		{Key: "down_speed", Value: nullableNumber(data["down_speed"])},
 		{Key: "net_total_up", Value: nullableInt(data["net_total_up"])},
 		{Key: "net_total_down", Value: nullableInt(data["net_total_down"])},
+		// issue #115 3.5：client 名单指纹（裸内核对账的短路基线，与 WS report 同键同名）。
+		// 旧 agent 不带 → null：必须让上一轮留下的基线失效，不能拿旧指纹短路。
+		{Key: "clients_fp", Value: ClientsFingerprintPatch(data)},
 		{Key: "at", Value: iso8601(h.now())},
 	}
 

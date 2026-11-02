@@ -85,14 +85,24 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 	if n.IsXray() {
 		data.put("reality_registered", presentRealityRegistered(n))
 		if n.NodeSecret != nil {
-			secret := []rune(*n.NodeSecret)
+			fullSecret := *n.NodeSecret
+			secret := []rune(fullSecret)
 			prefix := string(secret)
 			if len(secret) > 4 {
 				prefix = string(secret[:4])
 			}
 			data.put("node_secret_prefix", prefix+"…")
+			// 详情接口给全文，列表不给：密钥是 40 位定长串，前端挤在元信息行里只能看到
+			// 「VpM2…」，要单独拷贝时无从下手。列表（50 行）没必要把密钥全发下去。
+			// 注意这不是新增泄露面 —— 同一个响应里的 install_command 本来就明文带完整密钥。
+			if full {
+				data.put("node_secret", fullSecret)
+			}
 		} else {
 			data.put("node_secret_prefix", nil)
+			if full {
+				data.put("node_secret", nil)
+			}
 		}
 		data.put("xray_version", nodeDriverConfigString(n, "xray_version"))
 		// issue #88：IPv6 入口地址（编辑表单回显；null = 未配置）

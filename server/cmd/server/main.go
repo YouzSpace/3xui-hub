@@ -226,6 +226,43 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		os.Exit(0)
 	}
 
+	// 一次性运维入口：逐台检查并升级节点 agent（`3hub update` 收尾自动调用）：
+	//
+	//	controlhub-server --upgrade-agents
+	//
+	// 输出格式刻意做成「一台一行」，好让 `3hub update` 直接透传给用户：
+	//   AGENT 最新=1.1.0 检查=4 已升级=1 失败=0 跳过=3
+	//   AGENT   US2    1.0.8 → 1.1.0          升级完成
+	//   AGENT   KR01   1.1.0                  跳过（已是最新 1.1.0）
+	// 有失败时退出码 1（`3hub update` 据此提示，但不回滚已完成的升级）。
+	if len(os.Args) > 1 && os.Args[1] == "--upgrade-agents" {
+		res, err := nodeDomain.UpgradeAllAgents(context.Background())
+		if err != nil {
+			log.Printf("AGENT 出错: %v", err)
+			os.Exit(1)
+		}
+		log.Printf("AGENT 最新=%s 检查=%d 已升级=%d 失败=%d 跳过=%d",
+			res.Latest, res.Total, res.Upgraded, res.Failed, res.Skipped)
+		for _, o := range res.Outcomes {
+			from := o.From
+			if from == "" {
+				from = "未上报"
+			}
+			switch o.Action {
+			case "upgraded":
+				log.Printf("AGENT   %-8s %s → %s   升级完成", o.NodeName, from, o.To)
+			case "failed":
+				log.Printf("AGENT   %-8s %s → %s   失败：%s", o.NodeName, from, o.To, o.Reason)
+			default:
+				log.Printf("AGENT   %-8s %s   跳过（%s）", o.NodeName, from, o.Reason)
+			}
+		}
+		if res.HasProblem() {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// Geo 数据服务（geodata:update 命令用）。
 	// 目录必须与 assets.go 的 geoRoot 同一个（../backend/storage/app/xray/geo），
 	// 否则更新写到 server/storage、分发却从 backend/storage 读 → 节点侧 sha256 校验必失败。
