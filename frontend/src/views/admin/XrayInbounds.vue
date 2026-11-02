@@ -193,7 +193,8 @@ const emptyForm = () => ({
   // hysteria2（主端口就是上面的 port）：跳跃区间/伪装/拥塞控制/证书引用
   hy_hop_ports: '',
   hy_hop_interval: '',
-  hy_udp_idle_timeout: 0,
+  // 默认 60（内核默认值）：留 0 会被后端 min 校验拦下（历史 bug），这里直接给合法默认值
+  hy_udp_idle_timeout: 60,
   hy_congestion: '',
   hy_masquerade_type: '',
   hy_masquerade_url: '',
@@ -791,7 +792,7 @@ const openEdit = (ib) => {
     wg_peers: ib.wg_peers || '',
     hy_hop_ports: ib.hy_hop_ports || '',
     hy_hop_interval: ib.hy_hop_interval || '',
-    hy_udp_idle_timeout: ib.hy_udp_idle_timeout ?? 0,
+    hy_udp_idle_timeout: ib.hy_udp_idle_timeout || 60,
     hy_congestion: ib.hy_congestion || '',
     hy_masquerade_type: ib.hy_masquerade?.type || '',
     hy_masquerade_url: ib.hy_masquerade?.url || '',
@@ -1189,7 +1190,7 @@ const save = async (forceServerNames = false) => {
       // 全量提交：编辑时清空的项也要真的落空，不能被旧值残留。
       payload.hy_hop_ports = String(form.value.hy_hop_ports || '').trim()
       payload.hy_hop_interval = String(form.value.hy_hop_interval || '').trim()
-      payload.hy_udp_idle_timeout = Number(form.value.hy_udp_idle_timeout) || 0
+      payload.hy_udp_idle_timeout = Number(form.value.hy_udp_idle_timeout) || 60
       payload.hy_congestion = form.value.hy_congestion || ''
       payload.hy_masquerade_type = form.value.hy_masquerade_type || ''
       payload.hy_masquerade_url = form.value.hy_masquerade_url || ''
@@ -1805,8 +1806,8 @@ const clientLabel = (ib) => {
               <Select v-model="form.hy_congestion" :options="hyCongestionOptions" />
             </label>
             <label class="an-field">
-              <span>UDP 空闲超时（秒，0 = 默认 60）</span>
-              <Input v-model.number="form.hy_udp_idle_timeout" type="number" placeholder="0" />
+              <span>UDP 空闲超时（秒，默认 60）</span>
+              <Input v-model.number="form.hy_udp_idle_timeout" type="number" placeholder="60" />
             </label>
           </div>
           <p class="an-hint">

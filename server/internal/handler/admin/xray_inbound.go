@@ -495,6 +495,15 @@ func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any
 	// hy_hop_auto：可选总开关。缺省（不带这个字段）按开启处理 —— HY2 默认自动分配跳跃区间；
 	// 只有显式 false 才关掉（见 autoAssignHysteriaHop）。
 	v.field("hy_hop_auto", "nullable", "boolean")
+	// hy_udp_idle_timeout：**0 = 用内核默认 60**（见 buildHysteriaStream 的 `inputInt(v) != 0`
+	// 判据），所以先把 0 归一成「不带这个字段」，再按真实取值校验。
+	//
+	// 为什么不直接把下界写成 0：那会放行 1 —— 内核不接受小于 2 的值，等于把非法配置下发到节点。
+	// 也不能只留 min:2：前端历史上默认就提交 0，「不改动直接保存」会被拦成
+	// 「must be at least 2」，与界面文案、渲染逻辑三方打架（2026-11-02 用户实测踩到）。
+	if raw, ok := input["hy_udp_idle_timeout"]; ok && inputInt(raw) == 0 {
+		delete(input, "hy_udp_idle_timeout")
+	}
 	v.field("hy_udp_idle_timeout", "nullable", "integer", "min:2", "max:600")
 	v.field("hy_masquerade_type", "nullable", "in:,proxy,file,string")
 	v.field("hy_masquerade_url", "nullable", "string", "max:255")
