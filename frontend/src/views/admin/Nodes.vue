@@ -291,6 +291,14 @@ const agentOutdated = computed(() => {
   return info.agent_version !== info.agent_latest
 })
 
+// ── 列表行的 agent 版本角标（与详情弹窗的 agentOutdated 是两套口径，别混）──
+// 行级判断：have 与 want 都拿得到才比较 —— 缺任何一个都显示「未上报」，不能误报「落后」。
+const rowAgentOutdated = (n) => Boolean(n?.agent_version && n?.agent_latest && n.agent_version !== n.agent_latest)
+const rowAgentTitle = (n) => {
+  if (!n?.agent_latest) return '面板还没拿到最新版本号（manifest 未加载）'
+  return `节点上报 ${n.agent_version || '未上报'} / 面板最新 ${n.agent_latest}`
+}
+
 const upgradeAgent = async () => {
   if (!editing.value) return
   upgradingAgent.value = true
