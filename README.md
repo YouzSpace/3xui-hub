@@ -2,7 +2,7 @@
 
 企业级跨境电商网络服务运营平台 | Enterprise Cross-border Network Service Platform
 
-**版本：2.7.1**
+**版本：2.10.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -59,7 +59,7 @@ docker-compose up -d --build  # 更新并重启
 
 - **仪表盘**：用户与收入统计、节点状态与实时指标；流量排行支持"用户口径"与"机器口径"对照，可展开单个用户在各机器上的分布，支持 CSV 导出
 - **用户管理**：增删改查、分配套餐、续费、重置流量、重置密码、切换协议、重置订阅（换 token + uuid，不动账号套餐流量）
-- **节点管理**：面板节点（兼容 3x-ui）与裸内核节点（agent 自动部署、自升级、实时指标）；节点可同时配置 IPv4 与 IPv6 地址，入站按地址族绑定，订阅按入站地址族出链接，agent 连面板 v4 优先、v6 兜底
+- **节点管理**：面板节点（兼容 3x-ui）与裸内核节点（agent 自动部署、自升级、批量升级、实时指标）；节点可同时配置 IPv4 与 IPv6 地址，入站按地址族绑定，订阅按入站地址族出链接，agent 连面板 v4 优先、v6 兜底
 - **节点配置**：入站 / 出站 / 路由规则 / WARP 出口，支持多协议（含 Hysteria2 全链路）、多传输方式与伪装配置；TLS 从证书库填充 PEM、远程节点证书签发；入站列表支持多选批量删除
 - **套餐与订单**：周期 / 总量套餐、流量倍率、第三方订阅捆绑、多渠道支付与回调；支付签名规则可配置（签名字段 / 编码方式，平台改版改配置即可）
 - **优惠码与邀请**：文件夹分组（可改名，删文件夹只退回未归档）、搜索命中文件夹内的码只显示文件夹、勾选批量导出 CSV（文件名自填）与批量删除、生成时自定义码前缀、单次最多生成 500 个；邀请返利
@@ -72,8 +72,9 @@ docker-compose up -d --build  # 更新并重启
 
 - 登录 / 注册 / 找回密码（邮箱 + Token 双登录方式）
 - 仪表盘：流量统计、订阅地址与二维码、节点列表、使用文档入口
-- 订阅导出：Clash / Sing-box / Base64 三种格式，支持节点旗帜与重命名；协议通用（不限协议，节点上开什么入站就出什么线路）
+- 订阅导出：Clash / Sing-box / Base64 三种格式，支持节点旗帜与重命名；协议通用（不限协议，节点上开什么入站就出什么线路）；Shadowsocks 2022 多用户（每客户端独立密钥）
 - 订购与支付：套餐选择、在线支付、流量重置包、历史订单查询
+- 自助重置订阅：用户端一键换 token + uuid（旧链接失效、不动账号套餐流量）
 - 公告与文档：全屏公告页、分类教程二级页面
 - 邀请返利、问题反馈入口
 
@@ -83,7 +84,7 @@ docker-compose up -d --build  # 更新并重启
 - 超量 / 到期只关流量，永不封禁账号，用户仍可登录续费
 - 到期与超量提醒：同一场景只提醒一次，续费或重置后恢复
 - 队列分流：节点任务与邮件任务独立队列，不阻塞定时任务
-- 节点 client 对账：每 5 分钟把「面板认为该开、节点上却被关掉」的 client 自动恢复；裸内核节点真比对期望集合，不一致自动重推（`users:reconcile-enable`）
+- 节点 client 对账：每 5 分钟把「面板认为该开、节点上却被关掉」的 client 自动恢复；裸内核节点真比对期望集合（回执按 email 扁平去重 + 心跳指纹短路，指纹没变就跳过全量读），不一致自动重推（`users:reconcile-enable`）
 - 节点 agent 自升级、php-fpm 并发自动调优
 
 ## 3hub 管理命令
@@ -132,7 +133,7 @@ MIT License
 
 Enterprise cross-border network service platform — centralized management of nodes, users, plans, orders and payments.
 
-**Version: 2.7.1**
+**Version: 2.10.1**
 
 ## Screenshots
 
@@ -186,7 +187,7 @@ Visit http://localhost:8080
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-2.7.1-blue
+[version-shield]: https://img.shields.io/badge/version-2.10.1-blue
 [version-url]: https://github.com/YouzSpace/3xui-hub/releases
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
