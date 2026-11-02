@@ -482,6 +482,13 @@ type NodeStore interface {
 	CreateCommand(ctx context.Context, nodeID uint64, action string, payload any) (*CommandRecord, error)
 	CommandByID(ctx context.Context, id uint64) (*CommandRecord, error)
 	HasInFlightUpgrade(ctx context.Context, nodeID uint64) (bool, error)
+	// UpgradeAttemptStats 按「节点 + 目标版本」统计历史升级尝试（从 node_api_commands 现算）。
+	// Attempts = 该目标版本已下发过的指令条数（离线恢复后下发的同样算一次）；
+	// 自动补跑用它卡「总共 3 次机会」，离线恢复不额外加次数。
+	UpgradeAttemptStats(ctx context.Context, nodeID uint64, targetVersion string) (UpgradeAttemptStats, error)
+	// RecordSystemAuditOnce 幂等写系统审计（operation_logs，type=system）：
+	// 同一 (action, path) 只写一条；返回是否真的写入了。
+	RecordSystemAuditOnce(ctx context.Context, action, actor, path, errMsg string) (bool, error)
 
 	// xray 入站
 	XrayInboundsByNode(ctx context.Context, nodeID uint64) ([]XrayInboundRecord, error)

@@ -226,31 +226,33 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		os.Exit(0)
 	}
 
-	// 一次性运维入口：逐台检查并升级节点 agent（`3hub update` 收尾自动调用）：
+	// 一次性运维入口：逐台比对 agent 版本并**只下发**升级指令（`3hub update` 收尾自动调用）：
 	//
 	//	controlhub-server --upgrade-agents
 	//
+	// 只入队、不等回执：节点取走指令后自己下载 → 校验 → 替换 → 重启，面板不在这儿干等
+	// （离线/失败的节点由进程内的周期补跑收拾，见 startScheduler 里的 runAgentUpgradeReconciler）。
 	// 输出格式刻意做成「一台一行」，好让 `3hub update` 直接透传给用户：
-	//   AGENT 最新=1.1.0 检查=4 已升级=1 失败=0 跳过=3
-	//   AGENT   US2    1.0.8 → 1.1.0          升级完成
-	//   AGENT   KR01   1.1.0                  跳过（已是最新 1.1.0）
-	// 有失败时退出码 1（`3hub update` 据此提示，但不回滚已完成的升级）。
+	//   AGENT 最新=1.2.1 检查=5 已下发=4 失败=0 跳过=1
+	//   AGENT   US2    1.1.0 → 1.2.1   已下发（节点取走后自动升级）
+	//   AGENT   KR01   1.2.1           跳过（已是最新 1.2.1）
+	// 只有「连指令都下不去」才算失败（退出码 1），节点执行结果不在这里等。
 	if len(os.Args) > 1 && os.Args[1] == "--upgrade-agents" {
 		res, err := nodeDomain.UpgradeAllAgents(context.Background())
 		if err != nil {
 			log.Printf("AGENT 出错: %v", err)
 			os.Exit(1)
 		}
-		log.Printf("AGENT 最新=%s 检查=%d 已升级=%d 失败=%d 跳过=%d",
-			res.Latest, res.Total, res.Upgraded, res.Failed, res.Skipped)
+		log.Printf("AGENT 最新=%s 检查=%d 已下发=%d 失败=%d 跳过=%d",
+			res.Latest, res.Total, res.Dispatched, res.Failed, res.Skipped)
 		for _, o := range res.Outcomes {
 			from := o.From
 			if from == "" {
 				from = "未上报"
 			}
 			switch o.Action {
-			case "upgraded":
-				log.Printf("AGENT   %-8s %s → %s   升级完成", o.NodeName, from, o.To)
+			case "dispatched":
+				log.Printf("AGENT   %-8s %s → %s   已下发（节点取走后自动升级）", o.NodeName, from, o.To)
 			case "failed":
 				log.Printf("AGENT   %-8s %s → %s   失败：%s", o.NodeName, from, o.To, o.Reason)
 			default:
@@ -318,6 +320,35 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 
 	sched.Start(ctx)
 	logger.Printf("[schedule] 调度器已启动（%d 条任务）", len(sched.Entries()))
+
+	// 节点 agent 自动补跑：离线/失败的节点上线后自动再试（同一目标版本总共 3 次机会、
+	// 两次之间至少间隔 10 分钟，可经 AGENT_UPGRADE_MAX_ATTEMPTS / _RETRY_INTERVAL_SECONDS 调）。
+	// 为什么用进程内 ticker 而不是调度器里的 DB 任务：现有安装的 task 表里没有这一条，
+	// 加 DB 任务就得迁移；ticker 升级到即生效，而它只做「比对版本 + 入队」，开销极小。
+	go runAgentUpgradeReconciler(ctx, nodeDomain, logger)
+}
+
+// runAgentUpgradeReconciler 周期补跑节点 agent 自动升级，只下发、不等回执。
+func runAgentUpgradeReconciler(ctx context.Context, d *admin.NodeDomain, logger *log.Logger) {
+	const interval = 5 * time.Minute
+	timer := time.NewTimer(time.Minute) // 启动 1 分钟后首跑，先让心跳/清单就位
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			res, err := d.ReconcileAgentUpgrades(ctx)
+			switch {
+			case err != nil:
+				logger.Printf("[agent] 自动补跑出错: %v", err)
+			case res.Dispatched > 0 || res.Failed > 0:
+				logger.Printf("[agent] 自动补跑：检查=%d 已下发=%d 失败=%d 跳过=%d（目标 %s）",
+					res.Total, res.Dispatched, res.Failed, res.Skipped, res.Latest)
+			}
+			timer.Reset(interval)
+		}
+	}
 }
 
 // certSyncAdapter 把 admin 的「本机证书目录同步」结果转成调度层的口径。
