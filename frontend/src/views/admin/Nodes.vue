@@ -368,6 +368,121 @@ const remove = async (n) => {
   }
 }
 
+// ── TLS 证书库管理（「新建服务器」左侧的「证书」按钮）────────────
+// 目的：不用进 Xray 入站页就能看到库里全部证书 + 删掉没用的。
+// 铁律：source === 'local-dir'（面板机本机 acme.sh 维护）的一律禁删 ——
+// 删了同步任务 6 小时内会原样搬回来，白删一次还误以为「删不干净」；
+// 只有「远程签发/手工导入」的行允许删。
+// 引用关系：入站列表接口按节点给，弹窗打开时逐台 xray 节点拉一遍，
+// 统计每个 tls_cert_id 被哪几台「服务器（节点）」引用 —— 删除确认里点名。
+const certsOpen = ref(false)
+const certsLoading = ref(false)
+const certs = ref([])
+const certRefs = ref({}) // certId → [节点名]
+const certDeletingId = ref(null)
+const certConfirm = ref(null) // 待二次确认的证书行
+const certConfirmOpen = ref(false) // 二次确认弹层（v-model 给 Modal）
+
+const openCerts = async () => {
+  certsOpen.value = true
+  await loadCerts()
+}
+
+const loadCerts = async () => {
+  certsLoading.value = true
+  try {
+    const [certRes, nodeRes] = await Promise.all([
+      adminApi.listXrayCertificates(),
+      adminApi.listNodes({ all: 1 }),
+    ])
+    certs.value = certRes?.certificates || []
+    const allNodes = nodeRes || []
+    const xrayNodes = allNodes.filter((n) => n.driver_type === 'xray')
+    // 并发拉每台 xray 节点的入站，统计 tls_cert_id → 节点名
+    const refs = {}
+    await Promise.all(
+      xrayNodes.map(async (n) => {
+        try {
+          const res = await adminApi.listXrayInbounds(n.id)
+          for (const ib of res?.inbounds || []) {
+            const cid = ib.tls_cert_id
+            if (!cid) continue
+            if (!refs[cid]) refs[cid] = []
+            if (!refs[cid].includes(n.name)) refs[cid].push(n.name)
+          }
+        } catch (e) {
+          /* 单台节点拉失败不阻塞整个弹窗，引用统计少一台而已 */
+        }
+      }),
+    )
+    certRefs.value = refs
+  } catch (e) {
+    toast.error(e.message || '证书列表加载失败')
+  } finally {
+    certsLoading.value = false
+  }
+}
+
+const certSourceLabel = (s) =>
+  s === 'local-dir' ? '本机（面板机 acme.sh 维护）' : s === 'manual' ? '手工导入' : '远程签发'
+
+const certExpiryText = (c) => {
+  if (!c.not_after) return '—'
+  const d = new Date(c.not_after)
+  if (Number.isNaN(d.getTime())) return '—'
+  const days = Math.floor((d.getTime() - Date.now()) / 86400000)
+  if (days < 0) return `${String(c.not_after).slice(0, 10)}（已过期）`
+  return `${String(c.not_after).slice(0, 10)}（剩 ${days} 天）`
+}
+
+/** 被哪些服务器引用（逗号串）；没引用返回空。 */
+const certRefText = (c) => (certRefs.value[c.id] || []).join('、')
+
+const canDeleteCert = (c) => c.source !== 'local-dir'
+
+/** 删除前的说明文案（确认弹层里展示）：引用关系 + 本机保护写在明面上。 */
+const certDeleteWarn = (c) => {
+  const refs = certRefText(c)
+  const base =
+    c.source === 'local-dir'
+      ? '本机（面板机 acme.sh 维护）的证书不能在这里删 —— 删了 6 小时内同步任务会原样搬回。'
+      : '删除后不可恢复；自动续签任务会跳过它，正在引用它的入站 TLS 会握手失败。'
+  return refs ? `${base} 当前正在被这些服务器引用：${refs}。` : base
+}
+
+const askDeleteCert = (c) => {
+  if (!canDeleteCert(c)) {
+    toast.error('本机（面板机 acme.sh 维护）的证书不能在这里删')
+    return
+  }
+  certConfirm.value = c
+  certConfirmOpen.value = true
+}
+
+const doDeleteCert = async () => {
+  const c = certConfirm.value
+  if (!c) return
+  certDeletingId.value = c.id
+  try {
+    await adminApi.deleteXrayCertificate(c.id)
+    toast.success(`已删除证书 ${c.name}`)
+    certConfirmOpen.value = false
+    certConfirm.value = null
+    await loadCerts()
+  } catch (e) {
+    toast.error(e.message || '删除失败')
+  } finally {
+    certDeletingId.value = null
+  }
+}
+
+/** 到期时间已过（列表行标红 + 角标）。 */
+const isCertExpired = (c) => {
+  if (!c?.not_after) return false
+  const t = new Date(c.not_after).getTime()
+  return Number.isFinite(t) && t < Date.now()
+}
+
 const statusVariant = (s) => ({ online: 'success', offline: 'danger', maintenance: 'warning' }[s] || 'info')
 
 // 速率格式化（监控快照用）
@@ -386,7 +501,12 @@ onActivated(load)
   <div class="an">
     <div class="an-head">
       <h1 class="an-title">节点服务器</h1>
-      <Button variant="primary" size="sm" @click="openCreate"><Icon name="plus" :size="16" /> 新建服务器</Button>
+      <div class="an-head-actions">
+        <Button variant="secondary" size="sm" @click="openCerts">
+          <Icon name="key" :size="16" /> 证书
+        </Button>
+        <Button variant="primary" size="sm" @click="openCreate"><Icon name="plus" :size="16" /> 新建服务器</Button>
+      </div>
     </div>
 
     <Card padding="false">
@@ -644,10 +764,148 @@ onActivated(load)
         <Button variant="primary" size="sm" :success="saved" @click="save">保存</Button>
       </template>
     </Modal>
+
+    <!-- ── TLS 证书库管理：列表 + 删除（本机来源禁删；被引用的点名提醒）── -->
+    <Modal v-model="certsOpen" title="TLS 证书库" width="680px">
+      <div v-if="certsLoading" class="ac-loading">加载中…</div>
+      <template v-else>
+        <p v-if="!certs.length" class="ac-empty">
+          证书库还是空的。HY2 入站的证书在这里统一管理：在入站表单里点「签发证书」，
+          或从「TLS 证书库」手动导入后，就会出现在这里。
+        </p>
+        <div v-else class="ac-list">
+          <div v-for="c in certs" :key="c.id" class="ac-row" :class="{ 'ac-row--expired': isCertExpired(c) }">
+            <div class="ac-main">
+              <p class="ac-name">
+                {{ c.name }}
+                <Badge v-if="c.source === 'local-dir'" variant="info" size="sm">本机</Badge>
+                <Badge v-else-if="c.source === 'manual'" variant="secondary" size="sm">手工</Badge>
+                <Badge v-else variant="secondary" size="sm">远程</Badge>
+                <Badge v-if="isCertExpired(c)" variant="danger" size="sm">已过期</Badge>
+              </p>
+              <p class="ac-meta">
+                <span v-if="c.domain" class="mono">{{ c.domain }}</span>
+                <span>· 到期 {{ certExpiryText(c) }}</span>
+                <span v-if="certRefText(c)">· 被 <strong>{{ certRefText(c) }}</strong> 引用</span>
+                <span v-else>· 暂无入站引用</span>
+              </p>
+            </div>
+            <div class="ac-actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                :disabled="!canDeleteCert(c)"
+                :title="canDeleteCert(c) ? '删除这张证书' : '本机（面板机 acme.sh 维护）的证书不能在这里删'"
+                @click="askDeleteCert(c)"
+              >
+                <Icon name="trash" :size="14" />
+              </Button>
+            </div>
+          </div>
+        </div>
+        <p class="ac-hint">
+          标「本机」的证书由面板机 acme.sh 维护（每 6 小时同步进库），这里不能删；
+          「远程」是各节点通过「签发证书」签的，「手工」是手动导入的 —— 这两类可以删，
+          删掉后自动续签会跳过它，正在引用的入站 TLS 会握手失败。
+        </p>
+      </template>
+      <template #footer>
+        <Button variant="secondary" size="sm" @click="certsOpen = false">关闭</Button>
+      </template>
+    </Modal>
+
+    <!-- 删除证书：二次确认（引用关系 + 后果写在明面上） -->
+    <Modal v-model="certConfirmOpen" title="删除证书" width="460px">
+      <div v-if="certConfirm" class="ac-confirm">
+        <p>确定删除证书 <strong>{{ certConfirm.name }}</strong>？</p>
+        <p class="ac-confirm-warn">{{ certDeleteWarn(certConfirm) }}</p>
+      </div>
+      <template #footer>
+        <Button variant="secondary" size="sm" :disabled="certDeletingId" @click="certConfirmOpen = false">取消</Button>
+        <Button variant="danger" size="sm" :loading="!!certDeletingId" @click="doDeleteCert">确认删除</Button>
+      </template>
+    </Modal>
   </div>
 </template>
 
 <style scoped>
+/* 头部按钮组（证书 + 新建服务器） */
+.an-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* ── TLS 证书库弹窗 ── */
+.ac-loading,
+.ac-empty {
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.ac-empty {
+  line-height: 1.7;
+}
+.ac-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.ac-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, 12px);
+}
+.ac-row--expired {
+  background: rgba(255, 69, 58, 0.06);
+}
+.ac-row--expired .ac-name {
+  color: var(--text-muted);
+}
+.ac-main {
+  min-width: 0;
+}
+.ac-name {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.ac-meta {
+  margin: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.ac-actions {
+  flex: none;
+}
+.ac-hint {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+.ac-confirm p {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.ac-confirm-warn {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+}
 .an-head {
   display: flex;
   align-items: center;
