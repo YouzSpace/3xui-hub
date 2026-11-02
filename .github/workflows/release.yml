@@ -76,7 +76,7 @@ jobs:
           cd agent
           AGENT_VER=$(python3 -c "import json; print(json.load(open('../backend/storage/app/xray/manifest.json'))['agent']['version'])")
           echo "agent 版本：$AGENT_VER"
-          go build -trimpath \
+          go build -trimpath -buildvcs=false \
             -ldflags "-s -w -buildid= -X main.agentVersion=$AGENT_VER" \
             -o controlhub-agent-linux-64 .
 

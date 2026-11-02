@@ -15,7 +15,7 @@ build() { # <goarch> <goarm> <目标文件名>
   local goarch="$1" goarm="$2" name="$3"
   echo "==> $name"
   GOOS=linux GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
-    go build -trimpath -ldflags "-s -w -buildid= -X main.agentVersion=$VER" -o "$OUT/$name" .
+    go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X main.agentVersion=$VER" -o "$OUT/$name" .
 }
 
 build amd64 "" controlhub-agent-linux-64
