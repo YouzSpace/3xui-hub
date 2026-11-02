@@ -64,6 +64,30 @@ jobs:
           path: server/controlhub-server-linux-${{ matrix.arch }}
           if-no-files-found: error
 
+      # agent 版本号独立于面板：从 manifest.json 的 agent.version 读（本地只在 agent
+      # 源码真变时手动 bump），不跟 tag 走。这样面板发版而 agent 没变时，节点不重复升级。
+      - name: 编译 agent（版本号从 manifest 读，不跟 tag）
+        if: matrix.arch == 'amd64'
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          cd agent
+          AGENT_VER=$(python3 -c "import json; print(json.load(open('../backend/storage/app/xray/manifest.json'))['agent']['version'])")
+          echo "agent 版本：$AGENT_VER"
+          go build -trimpath \
+            -ldflags "-s -w -X main.agentVersion=$AGENT_VER" \
+            -o controlhub-agent-linux-64 .
+
+      - name: 上传 agent 产物
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: controlhub-agent-linux-64
+          path: agent/controlhub-agent-linux-64
+          if-no-files-found: error
+
   release:
     name: Publish Release
     needs: build
@@ -71,17 +95,57 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout（拿 manifest.json 更新 agent 段并回写）
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: 提取版本号（tag 去 v 前缀）
+        id: version
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
       - name: 收集产物
         uses: actions/download-artifact@v4
         with:
-          pattern: controlhub-server-linux-*
+          pattern: controlhub-*-linux-*
           merge-multiple: true
           path: dist/
 
       - name: 生成 checksum
         run: |
           cd dist
-          sha256sum controlhub-server-linux-* > checksums.txt
+          sha256sum controlhub-server-linux-* controlhub-agent-linux-* > checksums.txt
+
+      - name: 更新 manifest 的 agent 段（version 保持，只更新 sha256/size/url）
+        run: |
+          python3 - <<'PY'
+          import hashlib, json
+          tag = "${{ steps.version.outputs.version }}"
+          fname = "controlhub-agent-linux-64"
+          data = open(f"dist/{fname}", "rb").read()
+          sha = hashlib.sha256(data).hexdigest()
+          size = len(data)
+          p = "backend/storage/app/xray/manifest.json"
+          with open(p, encoding="utf-8") as f:
+              m = json.load(f)
+          ver = m["agent"]["version"]  # agent 版本保持（本地只在 agent 源码变时 bump）
+          m["agent"] = {
+              "version": ver,
+              "assets": [{
+                  "arch": "linux-64",
+                  "file": fname,
+                  "sha256": sha,
+                  "size": size,
+                  "url": f"https://github.com/YouzSpace/3xui-hub/releases/download/v{tag}/{fname}",
+              }],
+          }
+          with open(p, "w", encoding="utf-8") as f:
+              json.dump(m, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          print(f"manifest agent 段已更新（version={ver}，sha256={sha[:16]}…）")
+          PY
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
@@ -89,6 +153,15 @@ jobs:
           files: |
             dist/controlhub-server-linux-amd64
             dist/controlhub-server-linux-arm64
+            dist/controlhub-agent-linux-64
             dist/checksums.txt
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: 回写 manifest 到仓库
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add backend/storage/app/xray/manifest.json
+          git commit -m "chore(release): agent manifest v${{ steps.version.outputs.version }}" || echo "manifest 无变化"
+          git push
