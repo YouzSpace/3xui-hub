@@ -48,6 +48,10 @@ type NodeDomain struct {
 	// pollInterval 是同步等待指令回执的轮询间隔（PHP usleep(300_000) / 500_000）。
 	// 测试注入小值加速。
 	pollInterval time.Duration
+
+	// sleepFn 是等待点（默认 time.Sleep）。测试注入空实现，用例不必真睡；
+	// 也可用来在「等待期间」制造副作用（如让节点版本在循环中变化）。
+	sleepFn func(time.Duration)
 }
 
 // NodeTaskDispatcher 把异步任务派进执行队列（对齐 PHP 的 dispatchAfterCommit）。
@@ -305,6 +309,10 @@ func (d *NodeDomain) loadXrayNode(c *gin.Context) (*NodeRecord, bool) {
 
 // sleep 是同步等待指令回执的等待点（测试注入 0 间隔避免拖慢用例）。
 func (d *NodeDomain) sleep(dur time.Duration) {
+	if d.sleepFn != nil {
+		d.sleepFn(dur)
+		return
+	}
 	if dur > 0 {
 		time.Sleep(dur)
 	}

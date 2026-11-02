@@ -14,6 +14,9 @@ const props = defineProps({
   placeholder: { type: String, default: '' },
   mono: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
+  // readonly：可选中复制但不可改（如节点密钥这类只供拷贝的值）。
+  // 与 disabled 的区别：disabled 会变半透明、且无法选中文本。
+  readonly: { type: Boolean, default: false },
   size: { type: String, default: 'md', validator: (v) => ['sm', 'md'].includes(v) },
   valid: { type: Boolean, default: false },
   invalid: { type: Boolean, default: false },
@@ -39,6 +42,7 @@ const onInput = (e) => emit('update:modelValue', e.target.value)
       :value="modelValue"
       :placeholder="placeholder"
       :disabled="disabled"
+      :readonly="readonly"
       @input="onInput"
     />
     <Icon v-if="valid" name="check" :size="16" class="ch-input-check" aria-hidden="true" />

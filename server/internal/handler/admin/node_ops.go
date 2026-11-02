@@ -111,6 +111,10 @@ func (o *RealNodeOps) HealthCheck(ctx context.Context, n *NodeRecord) (HealthRes
 }
 
 // healthCheckXray 对齐 XrayDriver::healthCheck（心跳超时判定 + TCP 延迟）。
+//
+// 两条路径都要给延迟：定时任务走 collector 的 xray 驱动，而「测试」按钮走这里 ——
+// 之前这里只判心跳、恒返回 lattecy=0，于是面板上点测试永远显示「—」，
+// 定时任务那边补的 TCP 握手延迟根本到不了前端。
 func (o *RealNodeOps) healthCheckXray(ctx context.Context, n *NodeRecord) (HealthResult, error) {
 	if n.LastCheckAt == nil {
 		return HealthResult{Error: "节点尚未注册（无心跳）"}, nil
@@ -119,7 +123,23 @@ func (o *RealNodeOps) healthCheckXray(ctx context.Context, n *NodeRecord) (Healt
 	if age > 120*time.Second {
 		return HealthResult{Error: fmt.Sprintf("心跳超时（%.0fs 未上报）", age.Seconds())}, nil
 	}
-	return HealthResult{OK: true}, nil
+	return HealthResult{OK: true, LatencyMs: o.tcpLatencyXray(ctx, n)}, nil
+}
+
+// tcpLatencyXray 量「面板 → 节点第一个 TCP 入站端口」的握手延迟。
+//
+// 只挑 TCP 协议：hysteria 走 QUIC/UDP，对它 dial TCP 永远失败（这正是之前
+// 四个裸内核节点延迟恒为 0 的原因 —— 它们的最小端口全是 HY2）。
+// 测不到就返回 0，前端显示「—」，不影响 online 判定（心跳才是主判据）。
+func (o *RealNodeOps) tcpLatencyXray(ctx context.Context, n *NodeRecord) int64 {
+	inbounds := make([]xray.TCPInbound, 0, len(n.XrayInbounds))
+	for _, ib := range n.XrayInbounds {
+		if !ib.Enabled {
+			continue
+		}
+		inbounds = append(inbounds, xray.TCPInbound{Protocol: ib.Protocol, Port: ib.Port})
+	}
+	return xray.TCPLatencyMs(ctx, n.Host, inbounds)
 }
 
 // ProbeInbounds 用表单参数临时连 3x-ui 拉入站清单。

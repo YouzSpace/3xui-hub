@@ -181,6 +181,28 @@ function statusText(status) {
   return { online: '在线', offline: '离线', maintenance: '维护' }[status] || status
 }
 
+/**
+ * agent 版本是否落后于面板（manifest 里的最新版）。
+ *
+ * 只有【上报了版本 + 面板也给了最新版 + 两者不等】才算落后：
+ * 老 agent 不上报版本时显示「未上报」，不标黄（那不是「落后」，是「不知道」）。
+ */
+function agentOutdated(node) {
+  const have = node.agent_version
+  const want = node.agent_latest
+  return !!have && !!want && have !== want
+}
+
+/** agent 那格的悬浮说明：把「现在多少、面板多少」讲清楚。 */
+function agentTitle(node) {
+  const have = node.agent_version || '未上报'
+  const want = node.agent_latest
+  if (!want) return `节点 agent ${have}`
+  if (!node.agent_version) return `节点还没上报 agent 版本；面板最新 ${want}`
+  if (have === want) return `已是最新 ${have}`
+  return `节点 ${have}，面板最新 ${want}（可在「节点列表」里升级）`
+}
+
 /** 进度条宽度：没有数据就不画（不是 0%）。 */
 function barWidth(value) {
   if (!finite(value) || value < 0) return '0%'
@@ -355,8 +377,21 @@ onBeforeUnmount(() => {
           <div class="nm-node-title">
             <h3>{{ node.name }}</h3>
             <p>
-              {{ node.region ? regionName(node.region) : '未识别地区' }} ·
-              {{ node.driver_type === 'xray' ? 'xray 节点' : '面板节点' }}
+              <span class="nm-node-sub">
+                {{ node.region ? regionName(node.region) : '未识别地区' }} ·
+                {{ node.driver_type === 'xray' ? 'xray 节点' : '面板节点' }}
+              </span>
+              <!-- agent 版本挂在副标题这一行的右端：点 + 版本号作为一组右对齐，
+                   与 manifest 不一致时版本号标黄。 -->
+              <span v-if="node.driver_type === 'xray'" class="nm-agent-group">
+                <span class="nm-agent-sep" aria-hidden="true">·</span>
+                <span
+                  :class="['nm-agent', { 'is-outdated': agentOutdated(node) }]"
+                  :title="agentTitle(node)"
+                >
+                  agent {{ node.agent_version || '未上报' }}
+                </span>
+              </span>
             </p>
           </div>
           <Badge :variant="statusVariant(node.status)" dot>{{ statusText(node.status) }}</Badge>
@@ -648,9 +683,17 @@ onBeforeUnmount(() => {
   margin: 2px 0 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
+  /* 副标题 + 右端 agent 版本同一行：左边可省略，右边不换行 */
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.nm-node-sub {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .nm-meters {
   display: flex;
@@ -711,6 +754,17 @@ onBeforeUnmount(() => {
 }
 .nm-fresh {
   margin-left: auto;
+}
+/* agent 版本：默认低调，靠右；落后于面板时标黄，标题里写明「现在多少 / 面板多少」 */
+.nm-agent {
+  cursor: help;
+  /* 推到副标题这一行的右端：左边地区那串可以省略，版本号不许被挤掉 */
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.nm-agent.is-outdated {
+  color: var(--warning);
 }
 .nm-empty {
   grid-column: 1 / -1;

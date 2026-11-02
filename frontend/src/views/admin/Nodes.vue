@@ -187,6 +187,9 @@ const openEdit = async (n) => {
     ? {
         install_command: detail.install_command || '',
         node_secret_prefix: detail.node_secret_prefix || null,
+        // 详情接口给全文（列表只给前 4 位）。密钥是 40 位定长串，挤在元信息行里看不全，
+        // 所以单独占一行并配复制按钮。
+        node_secret: detail.node_secret || null,
         reality_registered: !!detail.reality_registered,
         has_inbounds: hasInbounds(detail),
         xray_version: detail.xray_version || null,
@@ -407,6 +410,18 @@ onActivated(load)
                 <div v-if="n.driver_type === 'xray' && n.agent" class="an-metrics">
                   CPU {{ n.agent.cpu != null ? Math.round(n.agent.cpu) + '%' : '—' }} · 内存
                   {{ n.agent.mem != null ? Math.round(n.agent.mem) + '%' : '—' }} · 连接 {{ n.agent.conns ?? 0 }}
+                  <!-- agent 版本：只有 xray 节点有；落后于面板 manifest 时标黄 -->
+                  <span
+                    :class="['an-agent-ver', { 'is-outdated': rowAgentOutdated(n) }]"
+                    :title="rowAgentTitle(n)"
+                  > · agent {{ n.agent_version || '未上报' }}</span>
+                </div>
+                <!-- 还没上报指标（agent 刚开始跑/刚上线）时，agent 版本仍要能看见 -->
+                <div v-else-if="n.driver_type === 'xray'" class="an-metrics">
+                  <span
+                    :class="['an-agent-ver', { 'is-outdated': rowAgentOutdated(n) }]"
+                    :title="rowAgentTitle(n)"
+                  >agent {{ n.agent_version || '未上报' }}</span>
                 </div>
               </td>
               <td class="mono">{{ n.latency > 0 ? `${n.latency}ms` : '—' }}</td>
@@ -484,13 +499,25 @@ onActivated(load)
               <CopyButton :text="xrayInfo.install_command" label="复制安装命令" />
             </div>
             <div class="an-xray-meta">
-              <span>密钥 {{ xrayInfo.node_secret_prefix || '—' }}</span>
               <span>内核 {{ xrayInfo.xray_version || '未上报' }}</span>
               <span>{{ xrayInfo.ws_connected ? 'WS 长连接' : 'HTTP 降级通道' }}</span>
               <span>{{ xrayInfo.has_inbounds ? '已配置入站' : '未建入站' }}</span>
               <span>agent {{ xrayInfo.agent_version || '未上报' }}</span>
               <span v-if="xrayInfo.lag_seconds > 60">配置滞后 {{ xrayInfo.lag_seconds }}s</span>
             </div>
+            <!-- 密钥单独一行：它是 40 位定长串，和上面四项挤一行会被截成「VpM2…」看不全。
+                 能复制完整值（仅详情接口返回全文；列表接口仍只给前 4 位）。 -->
+            <label class="an-field">
+              <span>节点密钥（安装命令里已带，需要单独拷贝时用这条）</span>
+              <div class="an-secret">
+                <Input :model-value="xrayInfo.node_secret || xrayInfo.node_secret_prefix || '—'" mono readonly />
+                <CopyButton
+                  v-if="xrayInfo.node_secret"
+                  :text="xrayInfo.node_secret"
+                  label="复制密钥"
+                />
+              </div>
+            </label>
             <!-- agent 自升级：面板上这份二进制比节点新时才提示；点一下只入队指令，节点自己换并重启 -->
             <div v-if="agentOutdated" class="an-agent-upgrade">
               <span>面板上已有新版 agent {{ xrayInfo.agent_latest }}，升级不会中断用户连接</span>
@@ -736,6 +763,16 @@ onActivated(load)
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   resize: vertical;
+}
+/* 密钥行：输入框占满剩余宽度，复制按钮固定宽度不换行 */
+.an-secret {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.an-secret > :first-child {
+  flex: 1;
+  min-width: 0;
 }
 .an-xray-meta {
   display: flex;

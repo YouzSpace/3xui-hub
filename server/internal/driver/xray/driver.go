@@ -391,7 +391,51 @@ func (d *Driver) tcpLatencyMs(ctx context.Context) int64 {
 	return probeTCPLatency(ctx, host, port)
 }
 
-// firstEnabledPort 取该节点最小端口的启用入站。
+// TCPInbound 是量延迟所需的最小入站信息（协议 + 端口）。
+//
+// 单独抽出来是为了让 collector（走 xray 驱动）和后台「测试」按钮（走 RealNodeOps）
+// 用同一套口径 —— 两条路径各写一份迟早会分叉，第一版就分叉了。
+type TCPInbound struct {
+	Protocol string
+	Port     int64
+}
+
+// TCPLatencyMs 量一次「面板 → 节点第一个 TCP 入站端口」的握手延迟（毫秒）。
+//
+// 返回 0 表示「测不到」（无 host / 没有 TCP 入站 / 连不上）—— 前端据此显示「—」。
+// 只挑 TCP 协议的入站：hysteria 走 QUIC/UDP，对它 dial TCP 永远失败。
+func TCPLatencyMs(ctx context.Context, host string, inbounds []TCPInbound) int64 {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return 0
+	}
+	port := firstTCPPort(inbounds)
+	if port <= 0 {
+		return 0
+	}
+	return probeTCPLatency(ctx, host, port)
+}
+
+// firstTCPPort 取入站清单里最小端口的 TCP 协议入站；没有则返回 0。
+func firstTCPPort(inbounds []TCPInbound) int64 {
+	best := int64(0)
+	for _, ib := range inbounds {
+		if ib.Port <= 0 || !isTCPProtocol(ib.Protocol) {
+			continue
+		}
+		if best == 0 || ib.Port < best {
+			best = ib.Port
+		}
+	}
+	return best
+}
+
+// firstEnabledPort 取该节点最小端口的**TCP** 启用入站。
+//
+// ⚠️ 必须排除 UDP 协议（hysteria）：延迟是用 TCP 握手量的，连 UDP 端口必然失败 →
+// 恒返回 0 → 前端只能显示「—」。只按最小端口挑会踩这个坑：一个节点同时有
+// hy2(2083/udp) 和 vless(6443/tcp) 时，2083 更小，于是一直测不到延迟。
+// 实测四个裸内核节点的最小端口全是 HY2，面板侧延迟全部为 0。
 func (d *Driver) firstEnabledPort(ctx context.Context) int64 {
 	if d.cfg.Source == nil {
 		return 0
@@ -400,16 +444,19 @@ func (d *Driver) firstEnabledPort(ctx context.Context) int64 {
 	if err != nil {
 		return 0
 	}
-	best := int64(0)
+	ports := make([]TCPInbound, 0, len(inbounds))
 	for _, ib := range inbounds {
-		if ib.Port <= 0 {
-			continue
-		}
-		if best == 0 || ib.Port < best {
-			best = ib.Port
-		}
+		ports = append(ports, TCPInbound{Protocol: ib.Protocol, Port: ib.Port})
 	}
-	return best
+	return firstTCPPort(ports)
+}
+
+// isTCPProtocol 判断该入站协议是否走 TCP（可用来量 TCP 握手延迟）。
+//
+// hysteria 是 QUIC/UDP，对它做 TCP dial 永远失败；其余（vless / vmess / trojan /
+// shadowsocks）都是 TCP。未知协议按 TCP 处理：宁可多试一次，也不要让延迟恒为 0。
+func isTCPProtocol(protocol string) bool {
+	return !strings.EqualFold(strings.TrimSpace(protocol), "hysteria")
 }
 
 // probeTCPLatency 测 host:port 的 TCP 连接耗时（毫秒），失败返回 0。
