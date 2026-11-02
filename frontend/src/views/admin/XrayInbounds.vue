@@ -191,7 +191,12 @@ const emptyForm = () => ({
   wg_mtu: 1420,
   wg_peers: '',
   // hysteria2（主端口就是上面的 port）：跳跃区间/伪装/拥塞控制/证书引用
+  // 跳跃区间拆成两个数字框（起点/终点），中间的「-」写死 —— 用户手敲连字符常敲成
+  // 全角或 en-dash，后端校验只认半角 20000-30000，直接报「区间格式错误」。
+  // 两个框都空 = 不跳跃；填了就把两半拼回 a-b 提交（提交口径不变）。
   hy_hop_ports: '',
+  hy_hop_start: '',
+  hy_hop_end: '',
   hy_hop_interval: '',
   // 默认 60（内核默认值）：留 0 会被后端 min 校验拦下（历史 bug），这里直接给合法默认值
   hy_udp_idle_timeout: 60,
@@ -270,6 +275,33 @@ const hideTransport = computed(() => isWg.value || isTunnel.value)
 const hideSecurity = computed(() => hideTransport.value || isProxyProto.value)
 // hysteria2：QUIC 传输，强制 TLS（跳过了 TLS 就没有加密层），证书走证书库引用
 const isHy = computed(() => form.value.protocol === 'hysteria')
+
+// ── HY2 跳跃区间：UI 是起点/终点两个数字框，中间「-」写死 ──
+// 背景：整个输入框让用户手敲连字符时，中文输入法常打成全角「－」或 en-dash「–」，
+// 后端只认半角 a-b，直接报「跳跃区间格式错误：应形如 20000-30000」。
+// 拆两框后用户只碰数字，符号由代码生成 —— 这类提交错误从根上消失。
+//
+// hopSplitRe 半角 a-b（允许首尾空格）；同时把全角－／en-dash／em-dash 归一成半角，
+// 兼容历史数据里已经存进去的错字符（回显时还能拆得开）。
+const HOP_DASH_RE = /[–—－]/g
+const hopSplitRe = /^(\d{1,5})\s*-\s*(\d{1,5})$/
+
+/** "20000-20199" → { hy_hop_start: "20000", hy_hop_end: "20199" }；解析不了就两框留空。 */
+function splitHopRange(raw) {
+  const s = String(raw || '').trim().replace(HOP_DASH_RE, '-')
+  const m = hopSplitRe.exec(s)
+  if (!m) return { hy_hop_start: '', hy_hop_end: '' }
+  return { hy_hop_start: m[1], hy_hop_end: m[2] }
+}
+
+/** 起点/终点 → "a-b"。只填一边视为没填全（返回空串=不跳跃），两边都填才拼。 */
+function joinHopRange(start, end) {
+  const a = String(start ?? '').trim()
+  const b = String(end ?? '').trim()
+  if (!a && !b) return ''
+  if (!a || !b) return ''
+  return `${a}-${b}`
+}
 // brutal 带宽只在这两种拥塞算法下有意义（后端同样只在这两种下写入 quicParams）
 const isHyBrutal = computed(
   () => isHy.value && ['brutal', 'force-brutal'].includes(form.value.hy_congestion),
@@ -791,6 +823,7 @@ const openEdit = (ib) => {
     wg_mtu: ib.wg_mtu || 1420,
     wg_peers: ib.wg_peers || '',
     hy_hop_ports: ib.hy_hop_ports || '',
+    ...splitHopRange(ib.hy_hop_ports || ''),
     hy_hop_interval: ib.hy_hop_interval || '',
     hy_udp_idle_timeout: ib.hy_udp_idle_timeout || 60,
     hy_congestion: ib.hy_congestion || '',
@@ -1188,7 +1221,10 @@ const save = async (forceServerNames = false) => {
     if (isHy.value) {
       // 主端口就是 payload.port；这里补跳跃/伪装/拥塞控制/证书引用。
       // 全量提交：编辑时清空的项也要真的落空，不能被旧值残留。
-      payload.hy_hop_ports = String(form.value.hy_hop_ports || '').trim()
+      // 跳跃区间：UI 是起点/终点两个数字框，提交时拼回半角 a-b（提交口径不变）。
+      // 边界：只填一边 = 视为没填全，当作空提交（后端对残缺串必然报格式错，
+      // 与其让报错信息难懂，这里直接当「不跳跃」；真想跳就得填全两边）。
+      payload.hy_hop_ports = joinHopRange(form.value.hy_hop_start, form.value.hy_hop_end)
       payload.hy_hop_interval = String(form.value.hy_hop_interval || '').trim()
       payload.hy_udp_idle_timeout = Number(form.value.hy_udp_idle_timeout) || 60
       payload.hy_congestion = form.value.hy_congestion || ''
@@ -1788,7 +1824,27 @@ const clientLabel = (ib) => {
           <div class="an-grid">
             <label class="an-field">
               <span>跳跃区间（留空 = 不跳跃）</span>
-              <Input v-model="form.hy_hop_ports" placeholder="20000-20199" />
+              <!-- 起点/终点拆两框，「-」写死：用户只填数字，杜绝全角/en-dash 连字符导致的
+                   「跳跃区间格式错误」（真实踩过：30000–30099 用了 en-dash 直接被后端拒）。 -->
+              <div class="an-hop-range">
+                <Input
+                  v-model="form.hy_hop_start"
+                  type="number"
+                  inputmode="numeric"
+                  placeholder="30000"
+                  :min="1"
+                  :max="65535"
+                />
+                <span class="an-hop-dash">–</span>
+                <Input
+                  v-model="form.hy_hop_end"
+                  type="number"
+                  inputmode="numeric"
+                  placeholder="30099"
+                  :min="1"
+                  :max="65535"
+                />
+              </div>
             </label>
             <label class="an-field">
               <span>跳跃间隔（缺省 5-10）</span>
@@ -2446,6 +2502,23 @@ const clientLabel = (ib) => {
 .an-hop {
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+/* 跳跃区间：起点框 – 终点框，「-」写死在中间（用户只填数字） */
+.an-hop-range {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.an-hop-range > * {
+  flex: 1;
+  min-width: 0;
+}
+.an-hop-dash {
+  flex: none;
+  color: var(--text-muted);
+  user-select: none;
+  /* 用半角连字符渲染，视觉上短横居中 */
+  font-family: var(--font-mono);
 }
 /* ── 端口跳跃面板 ── */
 .an-hop-panel {

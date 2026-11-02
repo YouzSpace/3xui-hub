@@ -13,6 +13,9 @@ import { useToast } from '@/components/ui/Toast.vue'
 const toast = useToast()
 
 const loading = ref(true)
+// loadError 非空表示真的失败（网络/500）。与「没开邀请功能」要分开显示 ——
+// 原来不论哪种情况都显示「邀请码加载失败」，把真实原因盖住了。
+const loadError = ref('')
 const invite = ref(null)
 const redeemCodes = ref([])
 const copied = ref(false)
@@ -106,13 +109,19 @@ const copyCode = async () => {
 }
 
 const load = async () => {
+  loading.value = true
+  loadError.value = ''
   try {
+    // 后端契约与老 PHP 一致：{ invite: {...}, redeem_codes: [...] }。
+    // 2026-11-02 的教训：这个接口曾把 invite 对象拍平，前端拿不到 → 永远「加载失败」。
     const data = await userApi.myInvite()
     invite.value = data?.invite || null
     redeemCodes.value = data?.redeem_codes || []
   } catch (e) {
+    // 不静默吞掉：把真实原因带给用户（能看出是网络还是服务端）
     invite.value = null
     redeemCodes.value = []
+    loadError.value = e?.message || '请求失败'
   } finally {
     loading.value = false
   }
@@ -137,16 +146,19 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
     <section v-else-if="invite" class="iv-hero">
       <div class="iv-hero-top">
         <p class="iv-hero-label">我的邀请码</p>
-        <span class="iv-hero-badge">{{ discountLabel }}</span>
+        <span v-if="discountLabel" class="iv-hero-badge">{{ discountLabel }}</span>
       </div>
 
-      <button type="button" class="iv-code uu-press" @click="copyCode">
+      <!-- 邀请码可能还没生成（新用户/刚关再开）：此时不能显示一个空框 -->
+      <!-- 后端 ensureInviteCode 保证首次访问就生成，正常不会走到空码；留兜底防万一 -->
+      <button v-if="invite.code" type="button" class="iv-code uu-press" @click="copyCode">
         <span class="iv-code-text">{{ invite.code }}</span>
         <span class="iv-code-copy" :class="{ 'iv-code-copy--done': copied }">
           <UserIcon :name="copied ? 'check' : 'copy'" :size="16" />
           <span>{{ copied ? '已复制' : '复制' }}</span>
         </span>
       </button>
+      <p v-else class="iv-hero-generating">邀请码还没有生成，稍后刷新本页即可看到</p>
 
       <p v-if="!invite.enabled" class="iv-hero-off">邀请机制当前已关闭，邀请码暂不可用</p>
 
@@ -161,13 +173,16 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
         </div>
         <div class="iv-hero-stat">
           <p class="iv-hero-stat-k">已邀请成功</p>
-          <p class="iv-hero-stat-v">{{ invite.invited_count }} 人</p>
+          <p class="iv-hero-stat-v">{{ invite.invited_count ?? 0 }} 人</p>
         </div>
       </div>
     </section>
 
+    <!-- 真失败：显示真实原因 + 重试按钮（不再只给一句「请稍后重试」） -->
     <section v-else class="iv-hero iv-hero--empty">
-      <p class="iv-empty">邀请码加载失败，请稍后重试</p>
+      <p class="iv-empty">邀请信息加载失败</p>
+      <p v-if="loadError" class="iv-empty-reason">{{ loadError }}</p>
+      <button type="button" class="iv-retry uu-press" @click="load">重新加载</button>
     </section>
 
     <!-- 规则说明 -->
@@ -377,6 +392,39 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
 .iv-empty { margin: 0; padding: 24px 16px; text-align: center; font-size: 13px; color: var(--lbl3); }
 .iv-empty--inset { padding: 20px 16px; }
 .iv-hero--empty { padding: 32px 20px; }
+/* 失败时把真实原因也显示出来（原来只有一句「请稍后重试」，看不出是网络还是服务端） */
+.iv-empty-reason {
+  margin: 6px 0 0;
+  padding: 0 16px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--lbl3);
+  opacity: 0.8;
+  word-break: break-all;
+}
+.iv-retry {
+  display: block;
+  margin: 14px auto 0;
+  padding: 9px 22px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--blue, #0a84ff);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* 邀请码还没生成时占位（不能显示一个空框） */
+.iv-hero-generating {
+  margin: 0;
+  padding: 18px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--lbl3);
+  border-radius: 14px;
+  background: var(--sep, rgba(120, 120, 128, 0.12));
+}
 
 @media (max-width: 480px) {
   .iv-code-text { font-size: 18px; }

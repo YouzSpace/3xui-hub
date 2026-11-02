@@ -1087,8 +1087,11 @@ func nodeHostName(node *NodeRecord) string {
 	return strings.ToLower(h)
 }
 
-// defaultHopInterval 是端口跳跃的缺省重拨间隔（秒）：缺省 5 秒；用户不需要手填。
-const defaultHopInterval = "5"
+// defaultHopInterval 是端口跳跃的缺省重拨间隔（秒）：缺省 30 秒；用户不需要手填。
+// 取 30 与两主流客户端对齐：mihomo defaultHopInterval=30（min 5）；v2rayN 订阅导入兜底
+// Hysteria2DefaultHopInt=30（Global.cs）。面板填别的值客户端也不认（URI scheme 无此键），
+// 与客户端默认一致可保证「面板所见 = 客户端所行」。
+const defaultHopInterval = "30"
 
 // buildHysteriaStream 组装 hysteria 入站的 streamSettings 专有段。
 //
@@ -1110,7 +1113,7 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 	hopPorts := strings.TrimSpace(nodeStringField(input, "hy_hop_ports"))
 	hopInterval := strings.TrimSpace(nodeStringField(input, "hy_hop_interval"))
 	if hopPorts != "" {
-		// interval 只在配了跳跃区间时才有意义；缺省 5 秒（defaultHopInterval）。
+		// interval 只在配了跳跃区间时才有意义；缺省 30 秒（defaultHopInterval）。
 		if hopInterval == "" {
 			hopInterval = defaultHopInterval
 		}

@@ -438,7 +438,6 @@ onUnmounted(stopSyncWatch)
                 <div class="au-actions">
                   <Button variant="ghost" size="sm" title="查看/复制 Token" @click="viewDetail(u)"><Icon name="copy" :size="14" /></Button>
                   <Button variant="ghost" size="sm" title="编辑" @click="openEdit(u)"><Icon name="edit" :size="14" /></Button>
-                  <Button variant="ghost" size="sm" title="重置订阅（换 token/uuid，旧链接失效）" @click="openSubReset(u)"><Icon name="key" :size="14" /></Button>
                   <Button v-if="u.plan_type === 'period'" variant="ghost" size="sm" title="重置当月流量" @click="resetTraffic(u)"><Icon name="refresh" :size="14" /></Button>
                   <Button v-if="u.plan_type === 'total'" variant="ghost" size="sm" title="续费" @click="renewUser(u)"><Icon name="refresh" :size="14" /></Button>
                   <Button variant="ghost" size="sm" title="删除" @click="remove(u)"><Icon name="trash" :size="14" /></Button>
@@ -566,7 +565,19 @@ onUnmounted(stopSyncWatch)
           <CopyButton :text="detail.token" label="复制" />
         </div>
         <div class="au-detail-row au-detail-row-stack">
-          <span class="au-detail-label">订阅地址</span>
+          <!-- 「重置订阅」按钮紧跟在「订阅地址」四个字右边：它作用的对象就是这条链接，
+               放在这一行比塞进列表操作列更好找，也不占操作列的位置。 -->
+          <span class="au-detail-label au-detail-label-inline">
+            订阅地址
+            <Button
+              variant="ghost"
+              size="sm"
+              title="重置订阅（换 token/uuid，旧订阅链接立即失效）"
+              @click="openSubReset(detail)"
+            >
+              <Icon name="refresh" :size="12" /> 重置
+            </Button>
+          </span>
           <code class="au-detail-code">{{ detailSubUrl }}</code>
           <CopyButton :text="detailSubUrl" label="复制订阅" />
           <Button variant="secondary" size="sm" @click="openPasswordReset">修改密码</Button>
@@ -765,6 +776,13 @@ onUnmounted(stopSyncWatch)
   min-width: 80px;
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+/* 标签里带按钮时（如「订阅地址 + 重置」），按钮要贴着文字、不要被 min-width 撑开 */
+.au-detail-label-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
 .au-detail-value {
   flex: 1;

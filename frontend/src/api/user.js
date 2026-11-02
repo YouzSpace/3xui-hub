@@ -51,6 +51,10 @@ export const userApi = {
   // 网站信息（公开）
   siteConfig: () => client.get('/api/site-config'),
 
+  // 用户自助重置订阅：换 token + uuid（旧订阅链接失效），**不影响当前登录态**。
+  // 返回值里有新 token 与 sub_path —— 前端必须用它拼地址，不能复用页面里的旧 token。
+  resetSubscription: () => client.post('/api/reset-subscription').then((r) => r),
+
   // 代理商城（与节点套餐完全独立）
   proxyProducts: () => client.get('/api/proxy-store/products'),
   createProxyOrder: (skuId, paymentConfigId) =>
