@@ -1,0 +1,53 @@
+# ControlHub 后端 lint 配置 / golangci-lint config
+#
+# 用法 / Usage:  make lint          （等价于 cd server && golangci-lint run ./...）
+#
+# 说明 / Notes:
+#   - 配置为 golangci-lint v2 格式（`version: "2"`）；v1 的二进制读不了本文件。
+#   - 只做「代码真会出错」的检查，不做风格强制：仓库在 Windows 上工作，
+#     gofmt/goimports 会因 CRLF 把全部文件标成未格式化，所以 formatters 不开。
+#   - 默认的 standard 集合已含 errcheck / govet / ineffassign / staticcheck / unused，
+#     下面只额外补几个长期有用的检查。
+
+version: "2"
+
+run:
+  timeout: 5m
+  concurrency: 0
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # HTTP 响应体没关，长期跑会漏连接
+    - errorlint      # errors.Is/As 与 %w 的用法错误
+    - misspell       # 注释里的拼写错误
+    - nilerr         # err != nil 却 return nil
+    - unconvert      # 多余的显式类型转换
+    - wastedassign   # 赋值后从未使用的变量
+  settings:
+    errcheck:
+      check-type-assertions: true   # 忽略 err 的类型断言也要报
+      check-blank: false            # _ = f() 视为显式忽略
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment   # 结构体字段对齐属性能微调，不该阻塞合入
+        - shadow           # 变量遮蔽在现有代码里普遍存在，先把规则跑绿再开
+    staticcheck:
+      checks:
+        - all
+        - -ST1000        # 包注释（历史包没有，不强制）
+        - -ST1003        # 命名缩写（ws / id / url 等历史命名，不强改）
+        - -ST1020        # 注释格式
+        - -ST1021
+  exclusions:
+    presets:
+      - comments               # 注释风格类告警
+      - std-error-handling     # 未检查 os.Close / fmt.Fprint 等标准库错误
+    rules:
+      # 测试代码里忽略错误是常态，不阻塞
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+          - wastedassign

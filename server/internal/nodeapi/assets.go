@@ -38,7 +38,7 @@ import (
 
 // AssetHandler 提供节点资产端点。
 type AssetHandler struct {
-	// Root 是 storage/app/xray 的绝对路径。
+	// Root 是资产目录（发布仓根目录 assets/）的绝对路径。
 	Root string
 	// GeoRoot 是 geo 数据目录（PANEL_GEODATA_DIR；空则 <Root>/geo）。
 	GeoRoot string
@@ -63,10 +63,10 @@ func newAssetHTTPClient() *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// NewAssetHandler 构造 AssetHandler；root 为空时用 ../backend/storage/app/xray。
+// NewAssetHandler 构造 AssetHandler；root 为空时用 ../assets（发布仓根目录资产）。
 func NewAssetHandler(root, geoRoot string) *AssetHandler {
 	if strings.TrimSpace(root) == "" {
-		root = filepath.Join("..", "backend", "storage", "app", "xray")
+		root = filepath.Join("..", "assets")
 	}
 	return &AssetHandler{Root: root, GeoRoot: geoRoot, httpClient: newAssetHTTPClient()}
 }
@@ -212,10 +212,10 @@ func (h *AssetHandler) Geo(c *gin.Context) {
 	c.FileAttachment(p, name)
 }
 
-// NodeInstall 复刻 nodeInstall()：storage/app/xray/node-install.sh。
+// NodeInstall 复刻 nodeInstall()：assets/node-install.sh。
 func (h *AssetHandler) NodeInstall(c *gin.Context) { h.serveScript(c, "node-install.sh") }
 
-// NodeAgent 复刻 nodeAgent()：storage/app/xray/node-agent.sh。
+// NodeAgent 复刻 nodeAgent()：assets/node-agent.sh。
 func (h *AssetHandler) NodeAgent(c *gin.Context) { h.serveScript(c, "node-agent.sh") }
 
 func (h *AssetHandler) serveScript(c *gin.Context, name string) {

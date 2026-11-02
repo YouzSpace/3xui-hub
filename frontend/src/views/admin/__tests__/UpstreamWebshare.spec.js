@@ -117,6 +117,9 @@ describe('UpstreamWebshare.vue — 前端接线', () => {
     wrapper.vm.accountForm.label = '新用户代理'
     wrapper.vm.accountForm.proxy_limit = 10
     await wrapper.vm.saveAccount()
+    // saveAccount 先把按钮切成对勾（成功反馈 900ms）再弹凭据弹窗，
+    // 所以等这段延时走完再看 DOM —— 之前漏了这一步，断言永远落在定时器前面。
+    await new Promise((r) => setTimeout(r, 950))
     await flushPromises()
 
     // 请求体只发后端认识的字段

@@ -1,7 +1,7 @@
 package admin
 
 // GeodataService 真实实现：对齐 backend/app/Services/GeodataService.php。
-// 面板从白名单源下载 geoip.dat/geosite.dat → 落盘 storage/app/xray/geo/
+// 面板从白名单源下载 geoip.dat/geosite.dat → 落盘 ../assets/geo/
 // → 分发到 enabled xray 节点（node_api_commands 指令通道）。
 
 import (
@@ -35,10 +35,10 @@ type geodataServiceImpl struct {
 	now     func() time.Time
 }
 
-// NewGeodataService 构造 Geo 数据服务。geoDir 空则用 storage/app/xray/geo。
+// NewGeodataService 构造 Geo 数据服务。geoDir 空则用 ../assets/geo。
 func NewGeodataService(db *sql.DB, geoDir string, now func() time.Time) GeodataService {
 	if geoDir == "" {
-		geoDir = filepath.Join("storage", "app", "xray", "geo")
+		geoDir = filepath.Join("..", "assets", "geo")
 	}
 	if now == nil {
 		now = time.Now

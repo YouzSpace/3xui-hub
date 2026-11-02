@@ -1,0 +1,97 @@
+# ============================================================
+# GoReleaser —— 发布仓 github 的唯一发布入口（.github/workflows/release.yml 调用它）
+#
+# 两个独立 Go module：
+#   server/  面板后端，-tags=embed 把前端产物打进二进制
+#   agent/   节点 agent，版本号独立于面板：从 assets/manifest.json 的 agent.version 读
+#
+# 产物名（3hub / install.sh / node-install.sh 按这些名字下载，改名必须同步改脚本）：
+#   controlhub-server-linux-amd64
+#   controlhub-server-linux-arm64
+#   controlhub-agent-linux-64
+#   checksums.txt
+# ============================================================
+version: 2
+
+project_name: controlhub
+
+before:
+  hooks:
+    # server 的 -tags=embed 要 embed server/internal/web/dist，前端必须先构建。
+    # npm --prefix 而不是 cd，Windows 本机（cmd）与 Linux CI 都能跑。
+    - npm --prefix frontend ci
+    - npm --prefix frontend run build
+
+builds:
+  # 面板后端：版本号 = tag 去 v 前缀（workflow 里由 GoReleaser 从 git tag 取）
+  - id: server
+    dir: server
+    main: ./cmd/server
+    binary: controlhub-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -tags=embed
+      - -trimpath
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{ .Version }}
+
+  # 节点 agent：版本号不跟 tag，由 workflow 从 manifest 读出后经 AGENT_VERSION 传入
+  # （hooks 是子进程，导出的变量无法回传给 goreleaser 进程，所以用环境变量而不是 hook 提取）。
+  # -buildvcs=false + -buildid= 固定二进制哈希，保证同一个 agent 版本重复编译 sha256 不变。
+  - id: agent
+    dir: agent
+    main: .
+    binary: controlhub-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+      - -buildid=
+      # AGENT_VERSION 没设（本地随手 build）时保留代码里的默认 "dev"，不写空字符串。
+      # 用 index .Env 而不是 .Env.AGENT_VERSION：后者在变量缺失时模板直接报错。
+      - '{{ if index .Env "AGENT_VERSION" }}-X main.agentVersion={{ index .Env "AGENT_VERSION" }}{{ end }}'
+
+# 不做 tar.gz：用户服务器直接 wget 裸二进制，脚本按上面那些固定名字拼 URL。
+archives:
+  - id: server-binary
+    ids:
+      - server
+    formats:
+      - binary
+    name_template: controlhub-server-linux-{{ .Arch }}
+  - id: agent-binary
+    ids:
+      - agent
+    formats:
+      - binary
+    # agent 只有一个架构，名字沿用历史的「linux-64」（不是 linux-amd64）
+    name_template: controlhub-agent-linux-64
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  # 仓库从 git remote 自动推断（不写死 owner/name，fork 后也能发自己的 Release）
+  draft: false
+  # 带 -rc/-beta 后缀的 tag 自动标为预发布
+  prerelease: auto
+  name_template: '{{ .Tag }}'
+
+# Release notes 交给 GitHub 自动生成（等价于旧 release.yml 的 generate_release_notes）
+changelog:
+  use: github-native

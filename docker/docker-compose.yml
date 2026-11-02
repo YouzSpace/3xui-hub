@@ -18,8 +18,8 @@ services:
     volumes:
       # 数据持久化
       - mysql_data:/var/lib/mysql
-      # 环境配置（可选，覆盖默认值）
-      - ../.env:/var/www/html/backend/.env:ro
+      # 环境配置（可选，覆盖默认值）：根 .env，Go 按 ../.env 从 /var/www/html/server 解析
+      - ../.env:/var/www/html/.env:ro
     environment:
       - DB_HOST=127.0.0.1
       - DB_PORT=3306

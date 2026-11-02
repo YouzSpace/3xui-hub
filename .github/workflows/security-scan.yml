@@ -1,0 +1,56 @@
+name: Security Scan
+
+# 依赖漏洞扫描（govulncheck），两个 Go module 分别扫：
+#   server/ 与 agent/ 各有独立 go.mod，不能在仓库根一次扫完。
+#
+# 现状（2026-11，本机实测）：两个 module 都有存量漏洞——
+#   server 44 条（golang.org/x/net@v0.51.0 等依赖 + go1.25 标准库）
+#   agent  36 条（全部是 go1.24 标准库，升 Go 版本即消除）
+# 所以先只「报告不拦路」：扫描步骤 continue-on-error + 报告落 artifact。
+# 存量清零后把 continue-on-error 去掉，就是阻塞门。
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: '0 20 * * 0' # 每周一 04:00（UTC+8）复查：漏洞库持续更新
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck · ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [server, agent]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 用 release.yml 同一个 Go 版本扫，报告才代表用户实际跑的二进制
+      - name: 扫描 ${{ matrix.module }}
+        continue-on-error: true
+        uses: golang/govulncheck-action@v1
+        with:
+          repo-checkout: false # 上面已 checkout
+          go-version-input: '1.25'
+          work-dir: ${{ matrix.module }}
+          go-package: ./...
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+          output-format: text
+          output-file: govulncheck-${{ matrix.module }}.txt
+
+      - name: 上传报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: govulncheck-${{ matrix.module }}
+          path: govulncheck-${{ matrix.module }}.txt
+          if-no-files-found: warn
+          retention-days: 30

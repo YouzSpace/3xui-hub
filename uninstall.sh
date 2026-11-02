@@ -94,15 +94,16 @@ detect_os() {
 
 # ------------------------------------------------------------
 # 收集已安装的 PHP 包名
-# install.sh 装了一堆 php8.4-* 包，这里逐一检测哪些真的装了，
-# 只卸载实际存在的包，避免 apt/yum 报错。
+# 老版本（Laravel 时代）的 install.sh 装过一堆 php8.4-* 包，这里逐一检测哪些真的装了，
+# 只卸载实际存在的包，避免 apt/yum 报错。新版本 install.sh 已改为 Go 后端、不再装 PHP，
+# 这段保留是为老机器卸载时清理残留。
 # 同时兼容两种安装方式：Debian 的 php8.4-* 和 CentOS Remi 的 php84-php-*
 # ------------------------------------------------------------
 detect_php_pkgs() {
     PHP_PKGS=()  # 清空数组
     case "$PKG_MANAGER" in
         apt)
-            # Debian/Ubuntu 安装脚本会装这些包（见 install.sh line 207）
+            # 老版本（Laravel 时代）安装脚本会装这些包；现在 install.sh 已改为 Go 后端
             for p in php8.4 php8.4-fpm php8.4-cli php8.4-mbstring \
                      php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql \
                      php8.4-xml php8.4-zip php8.4-curl; do
@@ -266,7 +267,8 @@ remove_domain_support() {
 
 # ------------------------------------------------------------
 # 清理 cron 定时任务
-# install.sh 配了 `* * * * * cd ... && php artisan schedule:run` 用于流量同步
+# 老版本（Laravel 时代）install.sh 配过 `* * * * * cd ... && php artisan schedule:run` 用于流量同步；
+# 新版本 Go 后端内置调度、不再配 cron，这里保留只为老机器卸载时清理残留。
 # 只删包含 "3xui-hub" 的行，保留用户其他 cron 任务
 # ------------------------------------------------------------
 remove_cron() {

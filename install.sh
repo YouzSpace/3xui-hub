@@ -15,7 +15,7 @@ NC='\033[0m'
 
 # 配置
 INSTALL_DIR="/www/wwwroot/3xui-hub"
-# 数据库备份目录：与 backend/config/backup.php 默认值、3hub 的 BACKUP_DIR 一致
+# 数据库备份目录：与 3hub 的 BACKUP_DIR 一致（Go 调度器 backup 落同一处）
 BACKUP_DIR="/var/backups/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
 REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
@@ -348,7 +348,7 @@ After=network.target mysqld.service mariadb.service mysql.service
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}/server
-Environment=CONFIG_ENV=${INSTALL_DIR}/backend/.env
+Environment=CONFIG_ENV=${INSTALL_DIR}/.env
 Environment=LISTEN_ADDR=:8080
 ExecStart=${INSTALL_DIR}/server/controlhub-server
 Restart=always
@@ -500,14 +500,20 @@ setup_env() {
     info "配置环境..."
 
     cd "$INSTALL_DIR"
-    mkdir -p backend
 
-    # 生成 .env（APP_KEY 用 openssl 生成 base64:32字节，与 Laravel key:generate 同格式；
-    # Go 后端用同一个 APP_KEY 解 AES-256-CBC 密文）。已存在则不覆盖（重跑/升级幂等）。
-    if [ ! -f backend/.env ]; then
+    # 老版本把 .env 放在 backend/（PHP 时代位置），Go 后端读仓库根 .env：先就位搬迁。
+    # 幂等：根 .env 已存在时不动它。
+    if [ ! -f .env ] && [ -f backend/.env ]; then
+        mv -f backend/.env .env
+        info "环境文件已迁移: backend/.env → .env"
+    fi
+
+    # 生成 .env（APP_KEY 用 openssl 生成 base64:32字节，Go 后端用同一个 APP_KEY 解
+    # AES-256-CBC 密文）。已存在则不覆盖（重跑/升级幂等）。
+    if [ ! -f .env ]; then
         info "生成 .env..."
         APP_KEY="base64:$(openssl rand -base64 32)"
-        cat > backend/.env << EOF
+        cat > .env << EOF
 APP_NAME=ControlHub
 APP_ENV=production
 APP_KEY=${APP_KEY}
@@ -524,7 +530,7 @@ DB_PASSWORD=
 SESSION_DRIVER=database
 SESSION_LIFETIME=120
 EOF
-        chmod 640 backend/.env
+        chmod 640 .env
     else
         info ".env 已存在，跳过生成"
     fi
@@ -589,7 +595,7 @@ setup_nginx() {
             DOMAIN=$(grep -oP 'server_name \K[^;]+' "$NGINX_CONF" | head -1)
             if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "_" ]; then
                 PROTO="https"
-                sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
+                sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$INSTALL_DIR/.env"
                 info "APP_URL 已更新为: ${PROTO}://${DOMAIN}"
             fi
             # 把现有 nginx server_name 回填 domains 表（多域名：第一个设主域）
@@ -603,14 +609,19 @@ setup_nginx() {
     info "使用 IP: $DOMAIN"
 
     # 设置 APP_URL
-    sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
+    sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/.env"
 
     # 生成 Nginx 配置
     NGINX_CONF="${NGINX_CONF_DIR}3xui-hub.conf"
     mkdir -p "$NGINX_CONF_DIR"
+    # ACME 挑战目录（3hub ssl / acme.sh --webroot 落盘处，必须真实存在）
+    mkdir -p "${INSTALL_DIR}/frontend/dist/.well-known/acme-challenge"
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
+# controlhub: nginx 仅反代（前端 / 接口 / 节点资产全部由 Go 内置服务提供）
+# 前端已 go:embed 进 Go 二进制：nginx 不再持有静态 root，缓存头也由 Go 输出
+#（assets 长缓存、index.html no-cache）。
 # Go 后端连接池（keepalive 复用，消除短连接 TIME_WAIT 堆积）
 upstream controlhub_backend {
     server 127.0.0.1:8080;
@@ -620,17 +631,22 @@ upstream controlhub_backend {
 server {
     listen 80;
     server_name ${DOMAIN};
-    return 301 https://\$host\$request_uri;
+
+    # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；3hub ssl 续期靠它，别删）
+    location /.well-known/acme-challenge/ {
+        root ${INSTALL_DIR}/frontend/dist;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
 server {
     listen 443 ssl http2;
     server_name ${DOMAIN};
-    root ${INSTALL_DIR}/frontend/dist;
-    index index.html;
 
-    # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
-    # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
+    # 文本资源 gzip：Go 不压缩，由 nginx 压代理回来的响应
     gzip on;
     gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
     gzip_min_length 1024;
@@ -641,7 +657,12 @@ server {
     ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
+    # ACME HTTP-01 挑战（同 80 段）
+    location /.well-known/acme-challenge/ {
+        root ${INSTALL_DIR}/frontend/dist;
+    }
+
+    # xray 节点 WS 长连接（agent 主通道；Go 内置，必须保留 Upgrade 头）
     location /node-ws {
         proxy_pass http://controlhub_backend;
         proxy_http_version 1.1;
@@ -655,41 +676,15 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
-    location ~ ^/(node-install\\.sh|node-agent\\.sh|node-bin/) {
-        proxy_pass http://controlhub_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    location ~ ^/(api|admin-api) {
-        proxy_pass http://controlhub_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
-    location /assets/ {
-        add_header Cache-Control "public, max-age=2592000, immutable";
-        access_log off;
-    }
-
-    # SPA 入口：绝不能缓存。它决定去加载哪批 chunk，一旦被浏览器启发式缓存，
-    # 升级后就会拿旧 index 去找旧 chunk（若旧文件恰好还在则静默跑新旧混杂的前端）。
-    location = /index.html {
-        add_header Cache-Control "no-cache, must-revalidate";
-    }
-
+    # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
     location / {
-        try_files \$uri \$uri/ /index.html;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location ~* \\.(env|git) {
@@ -699,6 +694,8 @@ server {
 NGINX
     else
         cat > "$NGINX_CONF" << NGINX
+# controlhub: nginx 仅反代（前端 / 接口 / 节点资产全部由 Go 内置服务提供）
+# 前端已 go:embed 进 Go 二进制：nginx 不再持有静态 root，缓存头由 Go 输出。
 # Go 后端连接池（keepalive 复用，消除短连接 TIME_WAIT 堆积）
 upstream controlhub_backend {
     server 127.0.0.1:8080;
@@ -708,18 +705,20 @@ upstream controlhub_backend {
 server {
     listen 80;
     server_name ${DOMAIN};
-    root ${INSTALL_DIR}/frontend/dist;
-    index index.html;
 
-    # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
-    # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
+    # 文本资源 gzip：Go 不压缩，由 nginx 压代理回来的响应
     gzip on;
     gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
     gzip_min_length 1024;
     gzip_vary on;
     gzip_proxied any;
 
-    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
+    # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；3hub ssl 续期靠它，别删）
+    location /.well-known/acme-challenge/ {
+        root ${INSTALL_DIR}/frontend/dist;
+    }
+
+    # xray 节点 WS 长连接（agent 主通道；Go 内置，必须保留 Upgrade 头）
     location /node-ws {
         proxy_pass http://controlhub_backend;
         proxy_http_version 1.1;
@@ -733,40 +732,15 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
-    location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
-        proxy_pass http://controlhub_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    location ~ ^/(api|admin-api) {
-        proxy_pass http://controlhub_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
-    location /assets/ {
-        add_header Cache-Control "public, max-age=2592000, immutable";
-        access_log off;
-    }
-
-    # SPA 入口：绝不能缓存（理由同 HTTPS 段）。
-    location = /index.html {
-        add_header Cache-Control "no-cache, must-revalidate";
-    }
-
+    # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
     location / {
-        try_files \$uri \$uri/ /index.html;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location ~* \\.(env|git) {
@@ -833,17 +807,6 @@ NODE_QUEUE_INSTANCES_FILE="/etc/3xui-hub/node-queue-instances"
 # （指令秒级下发 / 配置变更即时通知），Workerman 常驻进程由 systemd 看护。
 # 连不上 WS 时 agent 会自动降级到 HTTP 六端点通道，面板核心功能不依赖本服务，
 # 因此启动失败只告警不阻断安装。
-
-# 修复 storage / bootstrap/cache 属主（幂等自愈）
-#
-# 为什么安装末尾要单独修一遍：任何以 root 身份跑过 artisan / composer 的动作，都会在这两个
-# 目录里留下 root 属主文件 —— 本脚本 setup_env 里的 composer install（会以 root 触发
-# package:discover，往 bootstrap/cache 写 packages.php / services.php）、key:generate、
-# migrate、db:seed 全都是 root 跑的。装完之后以网站运行用户跑的调度器 / 队列 worker 再往
-# storage/framework/cache 写缓存就 Permission denied，schedule:run 静默失败 → 定时任务全停
-# + 面板显示 worker 离线（BanCheckJob 不再写心跳缓存）。所以装完必须把属主收回来。
-#
-# 安静且幂等：先扫一遍有没有非目标属主的文件，没有就一声不响地返回，不做多余动作。
 
 # 安装 3hub 命令
 install_3hub() {

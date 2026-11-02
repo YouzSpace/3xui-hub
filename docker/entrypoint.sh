@@ -26,10 +26,18 @@ echo "[3/5] 创建数据库..."
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
 # ── 生成 .env（Go 后端复用；APP_KEY base64:32字节，与 Laravel 同格式）──
-if [ ! -f "/var/www/html/backend/.env" ]; then
+# 路径与 Go 的默认一致：工作目录 /var/www/html/server，配置读 ../.env
+ENV_FILE="/var/www/html/.env"
+if [ -d "$ENV_FILE" ]; then
+    # 挂载源文件不存在时 Docker 会把挂载点建成空目录，这里给出可操作的提示，别让它继续跑
+    echo "错误: $ENV_FILE 是目录（宿主 .env 不存在时 docker 会这样创建挂载点）"
+    echo "      请在仓库根目录执行: cp .env.example .env   然后重新 docker-compose up -d"
+    exit 1
+fi
+if [ ! -f "$ENV_FILE" ]; then
     echo "[4/5] 生成 .env..."
     APP_KEY_GEN="base64:$(openssl rand -base64 32)"
-    cat > /var/www/html/backend/.env << EOF
+    cat > "$ENV_FILE" << EOF
 APP_NAME=ControlHub
 APP_ENV=production
 APP_KEY=${APP_KEY:-${APP_KEY_GEN}}

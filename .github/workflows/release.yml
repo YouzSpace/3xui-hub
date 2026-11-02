@@ -1,10 +1,12 @@
 name: Release
 
-# 打 tag（v*）或手动触发时，在 CI（大机器）上编译 linux 多架构二进制并发布到
+# 打 tag（v*）或手动触发时，在 CI（大机器）上用 GoReleaser 编译 linux 多架构二进制并发布到
 # GitHub Release。用户服务器只下载二进制、不编译，避免小服务器 go build OOM。
 #
-# 版本号来源：tag 名去 v 前缀（v2.0.0 → 2.0.0），与 frontend/package.json 的
-# version 对齐。二进制内通过 -X main.Version 烙进版本号，供启动日志排查。
+# 编译配置全在 .goreleaser.yaml（本文件只负责环境准备 + 触发 + 发布后的 manifest 回写）。
+# 版本号：tag 名去 v 前缀（v2.0.0 → 2.0.0），由 GoReleaser 从 git tag 取，烙进 main.Version。
+# agent 版本独立：从 assets/manifest.json 的 agent.version 读，不跟 tag 走——面板发版而
+# agent 没变时，节点不重复升级。
 
 on:
   push:
@@ -13,112 +15,99 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: '要编译的分支或 tag（默认当前默认分支）'
-        required: false
+        description: '要编译的 tag（必须 v 开头）'
+        required: true
         type: string
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build linux-${{ matrix.arch }}
+  release:
+    name: GoReleaser
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
+    permissions:
+      contents: write # GoReleaser 创建 Release 并上传产物
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0 # GoReleaser 要完整历史与 tag 来算版本号
+
+      # 手动触发时 github.ref_name 是分支名，版本号必须来自输入的那个 tag
+      - name: 校验 ref 是 v* tag
+        env:
+          REF: ${{ inputs.ref || github.ref_name }}
+        run: |
+          case "$REF" in
+            v*) echo "OK：$REF" ;;
+            *) echo "::error::只能对 v* tag 发版（当前 ref：$REF）"; exit 1 ;;
+          esac
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-          cache-dependency-path: server/go.sum
+          cache-dependency-path: |
+            server/go.sum
+            agent/go.sum
 
-      - name: 提取版本号（tag 去 v 前缀）
-        id: version
-        run: |
-          V="${GITHUB_REF_NAME#v}"
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-
-      - name: 编译 Go 后端（静态链接，无 CGO）
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: ${{ matrix.arch }}
-        run: |
-          cd server
-          go build -trimpath \
-            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.version }}" \
-            -o "controlhub-server-linux-${{ matrix.arch }}" ./cmd/server
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
+      # 前端由 .goreleaser.yaml 的 before.hooks 编译（npm ci && npm run build），
+      # 这里只装 Node 并启用 npm 依赖缓存
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          name: controlhub-server-linux-${{ matrix.arch }}
-          path: server/controlhub-server-linux-${{ matrix.arch }}
-          if-no-files-found: error
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      # agent 版本号独立于面板：从 manifest.json 的 agent.version 读（本地只在 agent
-      # 源码真变时手动 bump），不跟 tag 走。这样面板发版而 agent 没变时，节点不重复升级。
-      - name: 编译 agent（版本号从 manifest 读，不跟 tag）
-        if: matrix.arch == 'amd64'
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: amd64
+      # agent 版本号从 manifest 读。hooks 是子进程，导出变量回传不到 goreleaser 进程，
+      # 所以在 step 里读出来写进 GITHUB_ENV，由 .goreleaser.yaml 的 {{ .Env.AGENT_VERSION }} 用。
+      - name: 读取 agent 版本（manifest 的 agent.version，不跟 tag）
         run: |
-          cd agent
-          AGENT_VER=$(python3 -c "import json; print(json.load(open('../backend/storage/app/xray/manifest.json'))['agent']['version'])")
+          AGENT_VER=$(python3 -c "import json;print(json.load(open('assets/manifest.json'))['agent']['version'])")
           echo "agent 版本：$AGENT_VER"
-          go build -trimpath -buildvcs=false \
-            -ldflags "-s -w -buildid= -X main.agentVersion=$AGENT_VER" \
-            -o controlhub-agent-linux-64 .
+          echo "AGENT_VERSION=$AGENT_VER" >> "$GITHUB_ENV"
 
-      - name: 上传 agent 产物
-        if: matrix.arch == 'amd64'
-        uses: actions/upload-artifact@v4
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          name: controlhub-agent-linux-64
-          path: agent/controlhub-agent-linux-64
-          if-no-files-found: error
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  release:
-    name: Publish Release
-    needs: build
+  manifest:
+    name: 回写 agent manifest
+    needs: release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 回写 assets/manifest.json 需要 push
     steps:
-      - name: Checkout main（回写 manifest 用，checkout 分支而非 tag 才能 push）
+      # tag 是游离头，回写必须 checkout 分支（沿用旧流程：写 main）
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: 提取版本号（tag 去 v 前缀）
+      - name: 取版本号（tag 去 v 前缀）
         id: version
+        env:
+          REF: ${{ inputs.ref || github.ref_name }}
+        run: echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 下载 agent 产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.version.outputs.version }}
         run: |
-          V="${GITHUB_REF_NAME#v}"
-          echo "version=$V" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          gh release download "$TAG" --pattern controlhub-agent-linux-64 --dir dist --clobber
 
-      - name: 收集产物
-        uses: actions/download-artifact@v4
-        with:
-          pattern: controlhub-*-linux-*
-          merge-multiple: true
-          path: dist/
-
-      - name: 生成 checksum
-        run: |
-          cd dist
-          sha256sum controlhub-server-linux-* controlhub-agent-linux-* > checksums.txt
-
-      - name: 更新 manifest 的 agent 段（version 保持，只更新 sha256/size/url）
+      # 只更新 sha256/size/url，version 保持（本地只在 agent 源码真变时 bump）
+      - name: 更新 manifest 的 agent 段
         run: |
           python3 - <<'PY'
           import hashlib, json
@@ -127,7 +116,7 @@ jobs:
           data = open(f"dist/{fname}", "rb").read()
           sha = hashlib.sha256(data).hexdigest()
           size = len(data)
-          p = "backend/storage/app/xray/manifest.json"
+          p = "assets/manifest.json"
           with open(p, encoding="utf-8") as f:
               m = json.load(f)
           ver = m["agent"]["version"]  # agent 版本保持（本地只在 agent 源码变时 bump）
@@ -147,21 +136,10 @@ jobs:
           print(f"manifest agent 段已更新（version={ver}，sha256={sha[:16]}…）")
           PY
 
-      - name: 发布 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/controlhub-server-linux-amd64
-            dist/controlhub-server-linux-arm64
-            dist/controlhub-agent-linux-64
-            dist/checksums.txt
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-
       - name: 回写 manifest 到仓库
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add backend/storage/app/xray/manifest.json
+          git add assets/manifest.json
           git commit -m "chore(release): agent manifest v${{ steps.version.outputs.version }}" || echo "manifest 无变化"
           git push

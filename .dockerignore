@@ -1,0 +1,27 @@
+# Docker 构建上下文裁剪：只带构建需要的东西进镜像，本机依赖 / 产物 / 仓库元数据一律排除。
+# 注意 frontend/node_modules 必须排除：本机是 Windows 版依赖，混进 Linux 构建会装错原生模块。
+
+.git
+.github
+
+# 前端依赖与旧产物（前端由镜像内的 node 阶段重新构建，产物落 server/internal/web/dist）
+frontend/node_modules
+frontend/dist
+
+# 前端构建产物由构建阶段生成：防止本机产物混进镜像（也避免 COPY server/ 带进来一份旧的）
+server/internal/web/dist
+
+# Go 本机编译产物
+server/controlhub-server
+server/controlhub-server-*
+server/*.exe
+server/tmp
+
+# 配置与密钥：运行时挂载或 entrypoint 生成，绝不进镜像
+.env
+.env.*
+
+# 与镜像无关
+agent
+screenshots
+docs

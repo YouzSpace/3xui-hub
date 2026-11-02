@@ -24,6 +24,7 @@ import (
 	"controlhub-server/internal/subscription"
 	"controlhub-server/internal/task"
 	"controlhub-server/internal/tgbot"
+	"controlhub-server/internal/web"
 	"controlhub-server/internal/ws"
 
 	"github.com/gin-gonic/gin"
@@ -108,11 +109,11 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	nodeHandler := nodeapi.NewHandler(nodeRepo, cfg.AppKey)
 	nodeHandler.RegisterRoutes(r)
 
-	// 节点资产（公开，无鉴权）。默认路径对齐 NewAssetHandler 的空默认（../backend/storage/app/xray）：
-	// 资产自持在发布仓 backend/storage/app/xray/（Xray 内核 zip + agent 二进制 + 安装脚本），
+	// 节点资产（公开，无鉴权）。默认路径对齐 NewAssetHandler 的空默认（../assets）：
+	// 资产自持在发布仓根目录 assets/（Xray 内核 zip + agent 二进制 + 安装脚本），
 	// 相对 server/ 工作目录一层 .. 即可定位。历史默认 storage/app/node-bin 是错的（少了 xray 且多套 node-bin）。
-	assetRoot := envOr("NODE_ASSET_ROOT", filepath.Join("..", "backend", "storage", "app", "xray"))
-	geoRoot := envOr("NODE_GEO_ROOT", filepath.Join("..", "backend", "storage", "app", "xray", "geo"))
+	assetRoot := envOr("NODE_ASSET_ROOT", filepath.Join("..", "assets"))
+	geoRoot := envOr("NODE_GEO_ROOT", filepath.Join("..", "assets", "geo"))
 	assetHandler := nodeapi.NewAssetHandler(assetRoot, geoRoot)
 	assetHandler.RegisterRoutes(r)
 
@@ -249,7 +250,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			Username: cfg.DB.Username,
 			Password: cfg.DB.Password,
 		},
-		EnvPath: envOr("CONFIG_ENV", "backend/.env"),
+		EnvPath: envOr("CONFIG_ENV", filepath.Join("..", ".env")),
 		Logger:  logger,
 	})
 	backupDomain.Register(adminGroup)
@@ -257,7 +258,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// 系统域
 	// geo 目录必须与上面 assetHandler 的 geoRoot 同一个，否则「更新写 A、分发读 B」，
 	// 节点下载到的文件与指令里的 sha256 对不上，每次同步都失败。
-	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "backend", "storage", "app", "xray", "geo")), nil)
+	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "assets", "geo")), nil)
 	systemDomain := admin.NewSystemDomain(admin.SystemDeps{
 		Store:     admin.NewSystemSQLStore(db),
 		Geo:       geoService,
@@ -274,14 +275,24 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	adminExtras := admin.NewAdminExtras(db, asyncSvc)
 	adminExtras.Register(adminGroup)
 
+	// 前端静态服务：生产由 go:embed 打进二进制（-tags=embed），本地开发从磁盘读 dist。
+	// dist 为空（只有 .gitkeep 占位、前端没构建）时返回 nil，下面的 NoRoute 退回 API 口径 404。
+	frontend := web.FrontendServer()
+
 	// 管理端 404 兜底（PHP bootstrap/app.php 口径）
 	r.NoRoute(func(c *gin.Context) {
-		if len(c.Request.URL.Path) >= 11 && c.Request.URL.Path[:11] == "/admin-api/" {
+		p := c.Request.URL.Path
+		if len(p) >= 11 && p[:11] == "/admin-api/" {
 			adminHandler.NoRouteHandler()(c)
 			return
 		}
-		// 其他路径返回 API 口径 404
-		writeAPI404(c)
+		// /api、/admin-api、/node-* 是后端路径，不参与 SPA fallback
+		if frontend == nil || web.IsAPIPath(p) {
+			writeAPI404(c)
+			return
+		}
+		// 其余路径回 index.html，交给 Vue Router（刷新 /admin/users 这类深链不再 404）
+		frontend.ServeHTTP(c.Writer, c.Request)
 	})
 
 	return wsServer, mailDomain

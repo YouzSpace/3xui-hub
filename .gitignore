@@ -12,5 +12,12 @@ server/.air.toml
 server/*.exe
 # Linux 交叉编译产物（本地交叉编译上传服务器用，非源码，不提交）
 server/controlhub-server-*
-# PHP 历史残留（Go 化后 backend/vendor 整个不该在仓库；issue #116 3.4）
-backend/vendor/
+# 密钥配置：根目录 .env 由 install.sh 生成（APP_KEY/DB_*/支付密钥），绝不入库
+.env
+# 前端构建产物：由 vite 直接产出到 server/internal/web/dist，生产用 go:embed 打进二进制，不入 Git
+server/internal/web/dist/*
+!server/internal/web/dist/.gitkeep
+# 旧前端输出目录（vite outDir 已改到 server/internal/web/dist，这里只剩历史残留）
+frontend/dist/
+# 前端依赖（npm install 产出，不入 Git）
+frontend/node_modules/

@@ -7,7 +7,8 @@
 #   sudo -n /usr/local/bin/3hub-domain {apply|renew|remove|status} <域名>
 #
 # 设计：表驱动、幂等。加/删域名都走「读 domains 表 → 整份重写 conf → nginx -t → reload」，
-# 不会加一个丢一个。acme.sh 走 webroot（${INSTALL_DIR}/frontend/dist/，/.well-known 挑战）。
+# 不会加一个丢一个。前端已 go:embed 进 Go 二进制，生成的 conf 是纯反代（443 → 8080）；
+# webroot（${INSTALL_DIR}/frontend/dist/）只留给 acme.sh 落 /.well-known 挑战文件。
 #
 # 环境：自动检测宝塔(BT)面板 / 标准 nginx，路径与 reload 命令双路径切换（见 detect_env）。
 # 我们的 conf 始终是独立自有文件 <conf目录>/3xui-hub-domains.conf，幂等整份重建；
@@ -19,8 +20,10 @@ set -euo pipefail
 
 # 与 install.sh / 3hub 的 INSTALL_DIR 保持一致
 INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/3xui-hub}"
+# ACME 挑战目录：沿用旧路径，老机器的 acme.sh 已把 Le_Webroot 记在自家 conf 里，
+# 换路径会让自动续期静默失败。前端不在这里，只放 .well-known/acme-challenge。
 WEBROOT="${WEBROOT:-${INSTALL_DIR}/frontend/dist}"
-ENV_FILE="${ENV_FILE:-${INSTALL_DIR}/backend/.env}"
+ENV_FILE="${ENV_FILE:-${INSTALL_DIR}/.env}"
 ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
 ACME_BIN="${ACME_BIN:-${ACME_HOME}/acme.sh}"
 PHP_FPM_PASS="${PHP_FPM_PASS:-unix:/run/php/php8.4-fpm.sock}"
@@ -399,9 +402,6 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:SSL:10m;
 
-    root ${WEBROOT};
-    index index.html;
-
     # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
     # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
     gzip on;
@@ -442,21 +442,16 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
-    location /assets/ {
-        add_header Cache-Control "public, max-age=2592000, immutable";
-        access_log off;
-    }
-
-    # SPA 入口：绝不能缓存。它决定去加载哪批 chunk，一旦被浏览器启发式缓存，
-    # 升级后就会拿旧 index 去找旧 chunk（若旧文件恰好还在则静默跑新旧混杂的前端，
-    # 表现为页面能开、不报错、但功能区块空白）。
-    location = /index.html {
-        add_header Cache-Control "no-cache, must-revalidate";
-    }
-
+    # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产。
+    # 缓存头也由 Go 输出（assets 长缓存、index.html no-cache），这里不再声明。
     location / {
-        try_files \$uri \$uri/ /index.html;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 

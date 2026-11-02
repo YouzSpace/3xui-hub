@@ -110,7 +110,10 @@ describe('XrayInbounds — 协议白名单与 HY2 表单', () => {
       protocol: 'hysteria',
       tag: 'hy2',
       port: 443,
-      hy_hop_ports: '20000-20199',
+      // 跳跃区间在表单里已拆成起点/终点两个框（提交时才拼回 "a-b"），
+      // 直接写 hy_hop_ports 已经不会进 payload 了。
+      hy_hop_start: '20000',
+      hy_hop_end: '20199',
       hy_hop_interval: '5-10',
       hy_congestion: 'bbr',
       hy_masquerade_type: 'string',

@@ -1,6 +1,6 @@
 // Package config 加载 .env 配置，与 Laravel 的 env() 命名保持一致。
 //
-// 默认读取 backend/.env（与 PHP 后端共用同一份配置），进程环境变量优先于文件值，
+// 默认读取仓库根 .env（install.sh 写入 APP_KEY / DB_*，与 PHP 后端历史配置同源），进程环境变量优先于文件值，
 // 与 Laravel 的 env() 语义一致（已存在的环境变量不会被 .env 覆盖）。
 package config
 
@@ -60,7 +60,7 @@ type SessionConfig struct {
 
 // Load 从指定 .env 路径加载配置。
 //
-// path 为空时默认 backend/.env（相对 server/ 工作目录）；文件不存在不是致命错误——
+// path 为空时默认 ../.env（相对 server/ 工作目录，指向仓库根 .env）；文件不存在不是致命错误——
 // 生产环境可能只注入环境变量，此时与 Laravel 一样以环境变量为准。
 func Load(envPath string) (*Config, error) {
 	if envPath == "" {
@@ -109,8 +109,8 @@ func Load(envPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// DefaultEnvPath 是 server/ 目录启动时使用的默认 .env 路径（复用 PHP 后端配置）。
-const DefaultEnvPath = "../backend/.env"
+// DefaultEnvPath 是 server/ 目录启动时使用的默认 .env 路径（仓库根 .env，install.sh 写入）。
+const DefaultEnvPath = "../.env"
 
 // absOrSelf 仅用于错误文案：拿到绝对路径便于定位，失败时退回原路径。
 func absOrSelf(path string) string {

@@ -8,8 +8,8 @@ Type=simple
 # Go 单进程：HTTP(:8080) + scheduler 内置 + 节点 WS 升级，均在同一进程内
 User=root
 WorkingDirectory=/www/wwwroot/3xui-hub/server
-# CONFIG_ENV 显式指定 .env 绝对路径（不依赖工作目录），复用 PHP 时代的 backend/.env
-Environment=CONFIG_ENV=/www/wwwroot/3xui-hub/backend/.env
+# CONFIG_ENV 显式指定 .env 绝对路径（不依赖工作目录），指向仓库根 .env
+Environment=CONFIG_ENV=/www/wwwroot/3xui-hub/.env
 Environment=LISTEN_ADDR=:8080
 ExecStart=/www/wwwroot/3xui-hub/server/controlhub-server
 Restart=always

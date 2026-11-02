@@ -1,1 +1,0 @@
-var e=`/images/clash.png`,t=`/images/singbox.svg`;export{e as n,t};

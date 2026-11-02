@@ -2,13 +2,13 @@
 # ============================================================
 # ControlHub agent 交叉编译（仅 linux-64）→ 面板资产目录
 # 用法：VERSION=1.0.0 ./build.sh
-# 产物直进 backend/storage/app/xray/node-bin/agent/（随面板分发）
+# 产物直进 assets/node-bin/agent/（随面板分发）
 # ============================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 
 VER="${VERSION:-1.0.0}"
-OUT="${OUT:-../backend/storage/app/xray/node-bin/agent}"
+OUT="${OUT:-../assets/node-bin/agent}"
 mkdir -p "$OUT"
 
 build() { # <goarch> <goarm> <目标文件名>

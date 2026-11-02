@@ -97,7 +97,7 @@ func main() {
 }
 
 // bootstrap 加载配置并连接数据库。
-// CONFIG_ENV 指定 .env 路径，缺省复用 backend/.env（含 APP_KEY 与 DB_*）。
+// CONFIG_ENV 指定 .env 路径，缺省复用仓库根 .env（含 APP_KEY 与 DB_*）。
 func bootstrap() (*httpx.App, *sql.DB, error) {
 	cfg, err := config.Load(envOr("CONFIG_ENV", config.DefaultEnvPath))
 	if err != nil {
@@ -266,9 +266,9 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 	}
 
 	// Geo 数据服务（geodata:update 命令用）。
-	// 目录必须与 assets.go 的 geoRoot 同一个（../backend/storage/app/xray/geo），
-	// 否则更新写到 server/storage、分发却从 backend/storage 读 → 节点侧 sha256 校验必失败。
-	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "backend", "storage", "app", "xray", "geo")), nil)
+	// 目录必须与 assets.go 的 geoRoot 同一个（../assets/geo），
+	// 否则更新写到 server/storage、分发却从 assets 读 → 节点侧 sha256 校验必失败。
+	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "assets", "geo")), nil)
 
 	// 命令运行器（13 个 artisan 命令）
 	cmdRunner := task.NewCommandRunner(task.CommandDeps{
