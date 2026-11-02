@@ -1008,6 +1008,93 @@ func (s *nodeSQLStore) HasInFlightUpgrade(ctx context.Context, nodeID uint64) (b
 	return n > 0, err
 }
 
+// UpgradeAttemptStats 按「节点 + 目标版本」统计历史升级尝试。
+//
+// 为什么现算而不建表：每次升级都在 node_api_commands 留了 payload(version)/status/result，
+// 按节点取最近若干条、用 payload.version 过滤即可，少一张表就少一处状态漂移。
+//
+// 口径（用户定稿）：Attempts 数的是**已下发过的指令条数** —— 节点离线恢复后下发的同样算一次，
+// 离线恢复后的更新失败也不额外加次数，总机会就是 3 次。
+func (s *nodeSQLStore) UpgradeAttemptStats(ctx context.Context, nodeID uint64, targetVersion string) (UpgradeAttemptStats, error) {
+	var st UpgradeAttemptStats
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, payload, status, result, created_at FROM node_api_commands "+
+			"WHERE node_id = ? AND action = 'upgrade' ORDER BY id DESC LIMIT 50", nodeID)
+	if err != nil {
+		return st, err
+	}
+	defer rows.Close()
+
+	first := true
+	for rows.Next() {
+		var (
+			id        uint64
+			payload   sql.NullString
+			status    string
+			result    sql.NullString
+			createdAt sql.NullTime
+		)
+		if err := rows.Scan(&id, &payload, &status, &result, &createdAt); err != nil {
+			return st, err
+		}
+		if payloadVersion(payload.String) != targetVersion {
+			continue
+		}
+		st.Attempts++
+		if first {
+			first = false
+			st.LastStatus = status
+			st.LastCommandID = id
+			if createdAt.Valid {
+				t := createdAt.Time
+				st.LastAt = &t
+			}
+		}
+		if st.LastError == "" && status == "failed" {
+			st.LastError = trimReason(result.String)
+		}
+	}
+	return st, rows.Err()
+}
+
+// payloadVersion 从指令 payload 里取 version（解析失败当空串，等价于「这条不属于该版本」）。
+func payloadVersion(payload string) string {
+	if strings.TrimSpace(payload) == "" {
+		return ""
+	}
+	var p struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Version)
+}
+
+// RecordSystemAuditOnce 幂等写系统审计：同一 (action, path) 已存在就直接返回 false。
+//
+// 后台任务每 5 分钟一轮，不去重会把「操作审计」页刷满（那页只留最近 500 条），
+// 所以按 (action, path) 做永久幂等 —— 同一条失败指令、同一个「已放弃」结论只留一条。
+func (s *nodeSQLStore) RecordSystemAuditOnce(ctx context.Context, action, actor, path, errMsg string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT 1 FROM operation_logs WHERE type = 'system' AND action = ? AND path = ? LIMIT 1",
+		action, path).Scan(&exists)
+	if err == nil {
+		return false, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, fmt.Errorf("查询系统审计失败: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		"INSERT INTO operation_logs (type, actor_name, action, method, path, status, error, created_at) "+
+			"VALUES ('system', ?, ?, 'CLI', ?, 500, ?, ?)",
+		actor, action, path, errMsg, time.Now().UTC()); err != nil {
+		return false, fmt.Errorf("写入系统审计失败: %w", err)
+	}
+	return true, nil
+}
+
 // ---- xray 入站 ----
 
 const xrayInboundColumns = `id, node_id, tag, remark, protocol, port, listen, settings, stream_settings,

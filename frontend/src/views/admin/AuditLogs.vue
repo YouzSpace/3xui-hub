@@ -136,7 +136,7 @@ onMounted(load)
                 </Badge>
               </td>
               <td class="al-err-cell">
-                <span v-if="l.error" class="al-err">{{ l.error }}</span>
+                <span v-if="l.error" class="al-err" :title="l.error">{{ l.error }}</span>
                 <span v-else class="al-dim">—</span>
               </td>
             </tr>
@@ -182,10 +182,13 @@ onMounted(load)
 }
 .al-table th { color: var(--text-muted); font-weight: var(--font-medium); font-size: var(--text-xs); }
 .al-table tbody tr:hover { background: var(--bg-hover); }
-.al-table td.al-err-cell { max-width: 320px; white-space: normal; }
+/* 报错列：给足宽度 + 允许折行。与用户列表同款口径 —— 列宽由这一列自己定，
+   屏幕放不下时整表横向滚动（.al-table-wrap 已 overflow-x:auto），
+   不再用 max-width:320px 把长报错挤成竖排。 */
+.al-table td.al-err-cell { width: 420px; min-width: 420px; max-width: 480px; white-space: normal; }
 .al-table td.al-action-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .al-path { color: var(--text-muted); font-size: var(--text-xs); margin-left: 6px; }
 .al-dim { color: var(--text-muted); }
-.al-err { display: inline-block; color: #dc2626; font-size: var(--text-xs); word-break: break-all; }
+.al-err { display: inline-block; color: #dc2626; font-size: var(--text-xs); word-break: break-word; }
 .al-empty { text-align: center; color: var(--text-muted); padding: var(--space-6); }
 </style>
