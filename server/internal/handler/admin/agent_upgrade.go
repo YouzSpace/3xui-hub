@@ -39,6 +39,13 @@ const (
 	agentUpgradeRetryIntervalDefault = 600
 	// agentUpgradeMaxReason 是单条原因的最大长度（回执可能很长，日志/审计里截断）。
 	agentUpgradeMaxReason = 300
+	// agentUpgradeSuccessGrace 是「上一条指令已 success」后的静默期：
+	// agent 回执 success 只代表「文件已替换、进程即将重启」，心跳要过几秒才带来新版本；
+	// 这段时间里绝不能重复下发（否则就是盲目重复更新、还白扣一次机会）。
+	agentUpgradeSuccessGrace = 5 * time.Minute
+	// agentUpgradeDispatchDedupWindow 是「同一节点两次下发之间的硬间隔」：
+	// 手动连点两次 update、补跑与手动撞车时，都没必要把同一条指令再入队一遍。
+	agentUpgradeDispatchDedupWindow = 60 * time.Second
 
 	// 系统审计动作名（operation_logs.type = 'system'）；前端「操作审计」页按类型/操作展示。
 	agentUpgradeAuditAction       = "节点 agent 升级失败"
@@ -179,6 +186,19 @@ func (d *NodeDomain) runAgentUpgrade(ctx context.Context, manual bool) (AgentUpg
 			d.auditAgentUpgradeFailure(ctx, n, from, res.Latest, stats)
 		}
 
+		// 防「盲目重复更新」：上一条已成功（agent 只是回执了「文件已替换」，心跳还没上报新版本）、
+		// 或刚下发过（手动连跑两次 update），都不要再发一次 —— 重复下发会让节点白重启一遍，
+		// 还会白白吃掉一次机会。失败的不拦：那是明确要重试的场景。
+		// ⚠️ 这道闸门必须排在「3 次机会」之外先判：用满机会后的那条 success 也算「已成功待心跳」，
+		// 否则理由会误报成「机会用完了」（真实原因是还在等心跳）。
+		if reason, dup := agentUpgradeDuplicateReason(stats, d.now(), manual); dup {
+			out.Action = "skipped"
+			out.Reason = reason
+			res.Skipped++
+			res.Outcomes = append(res.Outcomes, out)
+			continue
+		}
+
 		// 自动补跑的节流：尝试次数上限 + 最小间隔。
 		if !manual {
 			if stats.Attempts >= agentUpgradeMaxAttempts() {
@@ -217,6 +237,43 @@ func (d *NodeDomain) runAgentUpgrade(ctx context.Context, manual bool) (AgentUpg
 	}
 
 	return res, nil
+}
+
+// agentUpgradeDuplicateReason 判断「这条节点的上一次指令是否已经够用、不该再发」。
+//
+// 两种「别重复」的情况（都是盲目更新的来源）：
+//  1. 上一条 status=success：agent 回执 success 只代表「文件已替换、进程马上重启」，
+//     心跳要过几秒才带来新版本号；这段时间再下发就是让节点白重启一遍。
+//     等 agentUpgradeSuccessGrace 之后还没报上新版本，才认为真有问题、允许重试。
+//  2. 刚下发过（距离上次不足一个心跳周期 ×2）：手动连跑两次 `3hub update`、
+//     或补跑与手动撞在一起时，没必要把同一条指令再入队一遍。
+//
+// 失败（status=failed）不在此列 —— 那是明确要重试的场景。
+func agentUpgradeDuplicateReason(stats UpgradeAttemptStats, now time.Time, manual bool) (string, bool) {
+	if stats.LastCommandID == 0 || stats.LastAt == nil {
+		return "", false
+	}
+	age := now.Sub(*stats.LastAt)
+	switch stats.LastStatus {
+	case "success":
+		if age < agentUpgradeSuccessGrace {
+			return fmt.Sprintf("上一条升级指令已成功、等节点重启后心跳上报新版本（%s 内不重复下发）",
+				humanDuration(agentUpgradeSuccessGrace)), true
+		}
+	case "pending", "acknowledged":
+		// 在途由 HasInFlightUpgrade 拦截，这里兜一层（两者判定口径可能因时序差一拍）。
+		return "上一条升级指令还在节点侧排队/执行，不重复下发", true
+	case "failed":
+		// 失败是「明确要重试」的场景：自动补跑按重试间隔放行、手动路径立即放行。
+		// 绝不能在这里当重复拦掉 —— 否则「用满 3 次」的结论会被误报成「刚下发过」。
+		return "", false
+	default:
+		// 状态未知（历史数据缺列）：保守按「刚下发过」处理，避免连点刷指令。
+		if age < agentUpgradeDispatchDedupWindow {
+			return fmt.Sprintf("距上次下发仅 %s，不重复下发", humanDuration(age)), true
+		}
+	}
+	return "", false
 }
 
 // dispatchAgentUpgrade 把升级指令入队（只入队，不等回执）。
