@@ -385,8 +385,11 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 
 	planChanged := !samePlanID(oldPlanID, newPlanID)
 	if planChanged {
-		// 切换套餐：重算流量/到期（同步），节点侧 client 同步（PHP 走后台 Job，
-		// 这里走 ops 接缝；失败只记日志）。
+		// 切换套餐：重算流量/到期（同步），节点侧 client 交给后台异步任务。
+		//
+		// 为什么异步：一次下发要走两轮全节点（provision + 开关），线上 3–5 秒；
+		// 前端请求有几十秒超时，节点一慢就把一次「改套餐」卡成转圈。改成
+		// 「接口只改库、立刻返回」后，下发结果在「异步任务」页可见（失败有原因）。
 		if err := d.applyPlan(c, u.ID); err != nil {
 			d.failServer(c, "切换套餐", err)
 			return
@@ -395,19 +398,14 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 		if err == nil && after != nil {
 			full = after
 		}
-		// ⚠️ 必须下发「重读出来的完整行」。这里以前手搓 UserRow{ID,Email,UUID,Protocol}，
-		// PlanID=nil、Enabled=false、TrafficLimit=0 全是零值，provision 于是把每台
-		// 3x-ui 节点上的 client 写成 enable=false + totalGB=0 —— 后台给人换套餐，
-		// 反而把已经连不上的人写得更死（线上 ch_user_84 在 JP1/US1/US3/MYKL1 四台全中）。
-		if err := d.ops.ProvisionUser(ctxOf(c), full); err != nil {
-			d.logger.Printf("admin 切换套餐后 provision 失败: %v", err)
-		}
-		// 兜底：换套餐本身就是「让这个人重新可用」的明确动作，顺手按面板意图开一次。
-		// collector 语义会做 3x-ui 整条替换前的归一化，并在全部节点确认后清掉
-		// users.traffic_disabled_at —— 标记不清，xray 节点的配置渲染和对账任务
-		// 都还把他当「已因流量关闭」，等于白开。
-		if full.Enabled && full.PlanID != nil {
-			_ = d.ops.SetClientEnabled(ctxOf(c), full, true)
+		if d.delivery != nil {
+			if err := d.delivery.Dispatch(ctxOf(c), u.ID); err != nil {
+				// 入队失败（队列未就绪 / DB 异常）：退回同步下发，宁可慢也不能不生效。
+				d.logger.Printf("admin 切换套餐：后台下发入队失败，回退同步 user=%d: %v", u.ID, err)
+				d.deliverPlanChangeSync(c, full)
+			}
+		} else {
+			d.deliverPlanChangeSync(c, full)
 		}
 	}
 	if enabledTouched {
@@ -417,6 +415,24 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 
 	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
 	d.success(c, presentUser(full, true, presentProxies(proxies, now)), "更新成功")
+}
+
+// deliverPlanChangeSync 是「后台队列不可用」时的同步兜底，行为与异步化之前一致。
+func (d *UserDomain) deliverPlanChangeSync(c *gin.Context, full *UserRow) {
+	// ⚠️ 必须下发「重读出来的完整行」。这里以前手搓 UserRow{ID,Email,UUID,Protocol}，
+	// PlanID=nil、Enabled=false、TrafficLimit=0 全是零值，provision 于是把每台
+	// 3x-ui 节点上的 client 写成 enable=false + totalGB=0 —— 后台给人换套餐，
+	// 反而把已经连不上的人写得更死（线上 ch_user_84 在 JP1/US1/US3/MYKL1 四台全中）。
+	if err := d.ops.ProvisionUser(ctxOf(c), full); err != nil {
+		d.logger.Printf("admin 切换套餐后 provision 失败: %v", err)
+	}
+	// 兜底：换套餐本身就是「让这个人重新可用」的明确动作，顺手按面板意图开一次。
+	// collector 语义会做 3x-ui 整条替换前的归一化，并在全部节点确认后清掉
+	// users.traffic_disabled_at —— 标记不清，xray 节点的配置渲染和对账任务
+	// 都还把他当「已因流量关闭」，等于白开。
+	if full.Enabled && full.PlanID != nil {
+		_ = d.ops.SetClientEnabled(ctxOf(c), full, true)
+	}
 }
 
 // userDestroy 对齐 UserController::destroy：先按 clientEmail 全量删面板 client，再删行。

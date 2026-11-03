@@ -209,12 +209,24 @@ type UserNotifier interface {
 	NotifySubscriptionReset(ctx context.Context, userID uint64, token, subPath string) error
 }
 
+// UserDelivery 把「用户节点下发」派进后台任务队列。
+//
+// 为什么不在 handler 里同步做：线上一次下发要 3–5 秒（多节点多次往返），前端有超时、
+// 支付平台回调也有自己的超时。改成「接口只改库 + 入队」，下发结果由异步任务页呈现。
+type UserDelivery interface {
+	// Dispatch 建一条下发任务并入队，立即返回（不等待节点）。
+	Dispatch(ctx context.Context, userID uint64) error
+}
+
 // UserDeps 是 NewUserDomain 的依赖清单。
 type UserDeps struct {
 	// Store / Users 是同一个 AdminUserStore（Store 为兼容旧命名）。
 	Store AdminUserStore
 	Users AdminUserStore
 	Ops   UserPanelOps
+	// Delivery 把「换套餐后的节点下发」交给后台异步任务（可空：为空则退回同步下发）。
+	// 接口在这里声明、由 cmd/server 注入，admin 包不 import internal/task。
+	Delivery UserDelivery
 	// Notifier 是用户端下行通知（可空）。
 	Notifier UserNotifier
 	// Alerts 解锁邮件提醒防重标记（可空：为空则续费/重置后不再提醒）。
