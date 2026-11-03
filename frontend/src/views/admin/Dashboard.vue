@@ -557,6 +557,12 @@ const userWindowLabel = computed(() => USER_WINDOW_LABELS[userWindow.value] || U
  * 一进页面就拉 500 条会让仪表盘首屏多背几百 KB。弹窗打开时才拉，且同一窗口内复用。
  */
 const topUserRows = computed(() => userRows.value.slice(0, TOP_N))
+
+/* 右栏 CPU / 内存排行：卡片里只放前 3 条，全部走二级弹窗（右栏全展开会过长） */
+const RANK_PREVIEW = 3
+const allCpuOpen = ref(false)
+const allMemOpen = ref(false)
+
 const allUsersOpen = ref(false)
 const allUsers = ref([])
 const allUsersLoading = ref(false)
@@ -860,7 +866,7 @@ onActivated(load)
       <div class="dsh-col dsh-col--wide">
         <!-- 曲线卡：默认全机合计，可切单节点 -->
         <Card v-if="trafficHasData">
-          <div class="dsh-section-head">
+          <div class="dsh-section-head is-stack">
             <h2 class="dsh-section-title">{{ trafficTitle }}</h2>
             <div class="dsh-toolbar">
               <Select
@@ -1006,16 +1012,24 @@ onActivated(load)
       </div>
 
       <div class="dsh-col dsh-col--narrow">
-        <!-- 平均 CPU 占用排行 -->
+        <!-- 平均 CPU 占用排行（卡片内只显示前 3，全部走弹窗） -->
         <Card>
           <div class="dsh-section-head">
             <h2 class="dsh-section-title">平均 CPU 占用排行</h2>
+            <Button
+              v-if="cpuRanked.length > RANK_PREVIEW"
+              variant="ghost"
+              size="sm"
+              @click="allCpuOpen = true"
+            >
+              查看全部
+            </Button>
           </div>
 
           <p v-if="trafficLoading && !summary" class="dsh-empty">正在加载…</p>
 
           <ul v-else-if="cpuRanked.length" class="dsh-rank">
-            <li v-for="(node, index) in cpuRanked" :key="node.id" class="dsh-rank-item">
+            <li v-for="(node, index) in cpuRanked.slice(0, RANK_PREVIEW)" :key="node.id" class="dsh-rank-item">
               <div class="dsh-rank-head">
                 <span class="dsh-rank-seq">{{ index + 1 }}.</span>
                 <span class="dsh-rank-name">{{ node.name }}</span>
@@ -1034,16 +1048,24 @@ onActivated(load)
           <p v-else class="dsh-empty">暂无采样数据：采集随每 5 分钟健康检查进行，稍后即可看到</p>
         </Card>
 
-        <!-- 平均内存占用百分比排行 -->
+        <!-- 平均内存占用百分比排行（同样只显示前 3） -->
         <Card>
           <div class="dsh-section-head">
             <h2 class="dsh-section-title">平均内存占用百分比排行</h2>
+            <Button
+              v-if="memRanked.length > RANK_PREVIEW"
+              variant="ghost"
+              size="sm"
+              @click="allMemOpen = true"
+            >
+              查看全部
+            </Button>
           </div>
 
           <p v-if="trafficLoading && !summary" class="dsh-empty">正在加载…</p>
 
           <ul v-else-if="memRanked.length" class="dsh-rank">
-            <li v-for="(node, index) in memRanked" :key="node.id" class="dsh-rank-item">
+            <li v-for="(node, index) in memRanked.slice(0, RANK_PREVIEW)" :key="node.id" class="dsh-rank-item">
               <div class="dsh-rank-head">
                 <span class="dsh-rank-seq">{{ index + 1 }}.</span>
                 <span class="dsh-rank-name">{{ node.name }}</span>
@@ -1068,7 +1090,7 @@ onActivated(load)
     <div class="dsh-ut">
       <!-- 上：用户流量排行（整行宽度：7 列表格） -->
       <Card class="dsh-ut-card">
-        <div class="dsh-section-head">
+        <div class="dsh-section-head is-stack">
           <h2 class="dsh-section-title">用户流量排行 · {{ userWindowLabel }}</h2>
           <div class="dsh-toolbar">
             <div class="dsh-windows" role="group" aria-label="用户流量时间窗">
@@ -1194,6 +1216,51 @@ onActivated(load)
       机器弹窗直接复用 Top5 卡那一套行 UI（同一套 dsh-rank 样式），只是行数与分母换成全部机器；
       用户弹窗复用用户榜表格，去掉每行的「明细」展开列（弹窗里再套一层展开会更晕）。
     -->
+    <!-- 右栏两个排行的「全部」二级弹窗：卡片内只放前 3 条，全量在这里展 -->
+    <Modal v-model="allCpuOpen" title="平均 CPU 占用排行 · 全部节点" width="520px">
+      <p class="dsh-modal-hint">共 {{ cpuRanked.length }} 台在线节点，按平均占用降序</p>
+
+      <ul v-if="cpuRanked.length" class="dsh-rank">
+        <li v-for="(node, index) in cpuRanked" :key="node.id" class="dsh-rank-item">
+          <div class="dsh-rank-head">
+            <span class="dsh-rank-seq">{{ index + 1 }}.</span>
+            <span class="dsh-rank-name">{{ node.name }}</span>
+            <strong class="dsh-rank-value">{{ cellPercent(node.cpu_avg) }}</strong>
+            <Badge v-if="!finite(node.cpu_avg)" variant="info" class="dsh-rank-badge">无数据</Badge>
+          </div>
+          <p v-if="peakPercentText(node, 'cpu_max')" class="dsh-rank-peak">
+            {{ peakPercentText(node, 'cpu_max') }}
+          </p>
+          <i class="dsh-bar dsh-bar--cpu" :class="{ 'is-unknown': !finite(node.cpu_avg) }">
+            <b :style="{ width: barWidth(node.cpu_avg, maxCpu) }"></b>
+          </i>
+        </li>
+      </ul>
+      <p v-else class="dsh-empty">暂无采样数据</p>
+    </Modal>
+
+    <Modal v-model="allMemOpen" title="平均内存占用百分比排行 · 全部节点" width="520px">
+      <p class="dsh-modal-hint">共 {{ memRanked.length }} 台在线节点，按平均占用降序</p>
+
+      <ul v-if="memRanked.length" class="dsh-rank">
+        <li v-for="(node, index) in memRanked" :key="node.id" class="dsh-rank-item">
+          <div class="dsh-rank-head">
+            <span class="dsh-rank-seq">{{ index + 1 }}.</span>
+            <span class="dsh-rank-name">{{ node.name }}</span>
+            <strong class="dsh-rank-value">{{ cellPercent(node.mem_avg) }}</strong>
+            <Badge v-if="!finite(node.mem_avg)" variant="info" class="dsh-rank-badge">无数据</Badge>
+          </div>
+          <p v-if="peakPercentText(node, 'mem_max')" class="dsh-rank-peak">
+            {{ peakPercentText(node, 'mem_max') }}
+          </p>
+          <i class="dsh-bar dsh-bar--mem" :class="{ 'is-unknown': !finite(node.mem_avg) }">
+            <b :style="{ width: barWidth(node.mem_avg, maxMem) }"></b>
+          </i>
+        </li>
+      </ul>
+      <p v-else class="dsh-empty">暂无采样数据</p>
+    </Modal>
+
     <Modal v-model="allNodesOpen" :title="`全部机器流量 · ${trafficTitle}`" width="640px">
       <div class="dsh-modal-bar">
         <span class="dsh-modal-hint">共 {{ allNodes.length }} 台机器，按双向合计降序</span>
@@ -1419,19 +1486,23 @@ onActivated(load)
   white-space: nowrap;
 }
 
-/* ── 流量两栏（左 2/3：曲线 + Top5；右 1/3：CPU / 内存排行）── */
+/* ── 流量两栏（左 2/3：曲线 + Top5；右 1/3：CPU / 内存排行）──
+   左右必须对齐：把两栏摊平成 2×2 网格（.dsh-col 用 display:contents），
+   同一行的行高由左右较高者决定，所以两张卡的上沿、下沿都咬齐；
+   以前两个 flex 列各自堆叠，右栏卡片高度不同就会错位。 */
 .dsh-traffic {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: var(--space-5);
-  align-items: start;
+  align-items: stretch;
 }
 .dsh-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  min-width: 0;
+  display: contents;
 }
+.dsh-col--wide > :nth-child(1) { grid-column: 1; grid-row: 1; }
+.dsh-col--wide > :nth-child(2) { grid-column: 1; grid-row: 2; }
+.dsh-col--narrow > :nth-child(1) { grid-column: 2; grid-row: 1; }
+.dsh-col--narrow > :nth-child(2) { grid-column: 2; grid-row: 2; }
 
 .dsh-banner {
   display: flex;
@@ -2014,6 +2085,18 @@ onActivated(load)
   .dsh-ut {
     grid-template-columns: 1fr;
   }
+  /* 单栏时恢复成普通纵向堆叠：撤销 2×2 的摊平定位，否则四张卡会挤在同一格里 */
+  .dsh-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    min-width: 0;
+  }
+  .dsh-col--wide > *,
+  .dsh-col--narrow > * {
+    grid-column: auto;
+    grid-row: auto;
+  }
   /* 明细行：窄屏把「机器名 / 条」拆成两行，避免 140px 固定列把表挤爆 */
   .dsh-ut-node {
     grid-template-columns: minmax(0, 1fr) auto auto;
@@ -2058,10 +2141,10 @@ onActivated(load)
  * 比「横向滑一下」难读得多（issue #48）。
  */
 @media (max-width: 767px) {
-  /* 窄屏卡片头：标题独占一行，工具条整体换到下一行。
-     原来是「标题 + 工具条」挤在同一行，标题被压成一行一个字（截图实测），
-     工具条自己的 flex-wrap 只会折自己的按钮，管不了标题。 */
-  .dsh-section-head {
+  /* 窄屏卡片头：只有**带工具条**的卡才让标题独占一行（is-stack 显式标记）。
+     像「平均 CPU 占用排行 + 查看全部」这种右侧只有一个按钮的，仍然同一行、按钮靠右，
+     不要为了一个按钮多占一行（用户定稿）。 */
+  .dsh-section-head.is-stack {
     flex-direction: column;
     align-items: stretch;
     gap: var(--space-2);
