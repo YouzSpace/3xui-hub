@@ -26,19 +26,24 @@ import (
 	"controlhub-server/internal/handler/api"
 )
 
-// paymentPanelSyncer 把支付域的三个节点副作用接到已有的 collector / userPanelOps 上。
+// paymentPanelSyncer 把支付域的节点下发接到后台任务（不可用时退回同步下发）。
 type paymentPanelSyncer struct {
-	col *collector.Collector
 	ops admin.UserPanelOps
 	// users 用来把用户重读成「完整行」再下发。**不能**直接用支付域的 api.User：
 	// 它没有 uuid 字段，而 xray 节点的 adu 指令要 uuid（`XrayDriver::createClient`），
 	// 用残缺对象下发会给节点建出 uuid 为空的坏 client。
 	users admin.AdminUserStore
+	// delivery 是「用户下发」异步任务派发口（可空：为空则退回同步下发）。
+	delivery admin.UserDelivery
+	logger   *log.Logger
 }
 
 // NewPaymentPanelSyncer 构造支付域的面板接缝（logger 为 nil 时用默认 log）。
-func NewPaymentPanelSyncer(col *collector.Collector, users admin.AdminUserStore, logger *log.Logger) api.PanelSyncer {
-	return &paymentPanelSyncer{col: col, ops: NewUserPanelOps(col, logger), users: users}
+func NewPaymentPanelSyncer(col *collector.Collector, users admin.AdminUserStore, delivery admin.UserDelivery, logger *log.Logger) api.PanelSyncer {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &paymentPanelSyncer{ops: NewUserPanelOps(col, logger), users: users, delivery: delivery, logger: logger}
 }
 
 // fullRow 取「完整用户行」：优先按 ID 重读（带 uuid/protocol/plan/限额/到期），
@@ -52,23 +57,36 @@ func (p *paymentPanelSyncer) fullRow(ctx context.Context, user *api.User) *admin
 	return paymentUserToRow(user)
 }
 
-// ProvisionClient 在各 enabled 节点同步 client（对齐 UserAdminService::provisionClient）。
-func (p *paymentPanelSyncer) ProvisionClient(ctx context.Context, user *api.User) error {
-	return p.ops.ProvisionUser(ctx, p.fullRow(ctx, user))
-}
-
-// ResetClientTraffic 重置各节点上该用户的已用流量（对齐 resetClientOnNodes）。
-func (p *paymentPanelSyncer) ResetClientTraffic(ctx context.Context, user *api.User) error {
-	return p.ops.ResetClientTraffic(ctx, p.fullRow(ctx, user))
-}
-
-// ToggleClient 打开/关闭各节点上的 client（对齐 BanService::toggleClient）。
+// DeliverUser 把「清流量 + 下发 + 开 client」交给后台任务（对齐 resetClientOnNodes +
+// provisionClient + BanService::toggleClient 的组合效果）。
 //
-// 走 collector 而不是 userPanelOps：只有 collector 会在「全部节点确认」后写/清
-// users.traffic_disabled_at，也才带 3x-ui 整条替换前的类型归一化。
-func (p *paymentPanelSyncer) ToggleClient(ctx context.Context, user *api.User, enable bool) error {
-	_, err := p.col.ToggleClient(ctx, int64(user.ID), enable)
-	return err
+// 为什么异步：这两条路径都跑在支付回调里，同步做要 2–3 秒（线上 7 台节点、每台 2–3 次
+// 往返）；平台回调有自己的超时时限，被掐断就会重试。改成入队后回调立即返回，
+// 下发失败会写进 async_tasks，管理员在「异步任务」页看得到。
+//
+// 队列不可用（未注入 / 入队失败）时退回同步下发，宁可慢也不能不生效。
+func (p *paymentPanelSyncer) DeliverUser(ctx context.Context, user *api.User) error {
+	if p.delivery != nil {
+		if err := p.delivery.Dispatch(ctx, user.ID); err == nil {
+			return nil
+		} else {
+			p.logger.Printf("支付完成：下发入队失败，回退同步 user=%d: %v", user.ID, err)
+		}
+	}
+
+	row := p.fullRow(ctx, user)
+	if err := p.ops.ResetClientTraffic(ctx, row); err != nil {
+		p.logger.Printf("支付完成（同步兜底）：清节点流量失败 user=%d: %v", user.ID, err)
+	}
+	if err := p.ops.ProvisionUser(ctx, row); err != nil {
+		p.logger.Printf("支付完成（同步兜底）：provision 失败 user=%d: %v", user.ID, err)
+	}
+	if row.Enabled && row.PlanID != nil {
+		if err := p.ops.SetClientEnabled(ctx, row, true); err != nil {
+			p.logger.Printf("支付完成（同步兜底）：开 client 失败 user=%d: %v", user.ID, err)
+		}
+	}
+	return nil
 }
 
 // paymentUserToRow 把支付域的 api.User 映射成用户域行（只带节点下发用到的字段）。

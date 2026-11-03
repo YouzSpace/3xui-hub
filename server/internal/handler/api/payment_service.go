@@ -667,12 +667,6 @@ func (s *PaymentService) afterPaid(ctx context.Context, order *Order) error {
 	user.NextTrafficResetAt = fields.NextTrafficResetAt
 	user.ExpiredAt = fields.ExpiredAt
 
-	if s.panel != nil {
-		if err := s.panel.ProvisionClient(ctx, user); err != nil {
-			s.logf("provisionClient 失败 user=%d: %v", user.ID, err)
-		}
-	}
-
 	// 续费后总是启用 3x-ui client（PHP: if (!$user->enabled) enabled=true）
 	if !user.Enabled {
 		if err := s.store.SetUserEnabled(ctx, user.ID, true); err != nil {
@@ -680,10 +674,12 @@ func (s *PaymentService) afterPaid(ctx context.Context, order *Order) error {
 		}
 		user.Enabled = true
 	}
-	// BanService::unban = enabled=true + toggleClient(true)
+	// 套餐已落库、enabled 也置好，再一次性把「清流量 + 下发 + 开 client」交给节点侧
+	// （BanService::unban 的语义）。放下发放在最后一次库写入之后，后台任务读到的才是
+	// 最终状态。生产实现是异步任务，回调不必等它。
 	if s.panel != nil {
-		if err := s.panel.ToggleClient(ctx, user, true); err != nil {
-			s.logf("unban toggleClient 失败 user=%d: %v", user.ID, err)
+		if err := s.panel.DeliverUser(ctx, user); err != nil {
+			s.logf("下发节点失败 user=%d: %v", user.ID, err)
 		}
 	}
 	return nil
@@ -787,14 +783,9 @@ func (s *PaymentService) completeResetOrder(ctx context.Context, order *Order, t
 	user.MonthlyTrafficUsed = 0
 
 	if s.panel != nil {
-		if err := s.panel.ProvisionClient(ctx, user); err != nil {
-			s.logf("重置订单 provisionClient 失败 user=%d: %v", user.ID, err)
-		}
-		if err := s.panel.ResetClientTraffic(ctx, user); err != nil {
-			s.logf("重置订单 resetClientTraffic 失败 user=%d: %v", user.ID, err)
-		}
-		if err := s.panel.ToggleClient(ctx, user, true); err != nil {
-			s.logf("重置订单 toggleClient 失败 user=%d: %v", user.ID, err)
+		// 重置单：加完总流量、清零月用量之后再下发（清节点计数 + 推新限额 + 开 client）。
+		if err := s.panel.DeliverUser(ctx, user); err != nil {
+			s.logf("重置订单下发节点失败 user=%d: %v", user.ID, err)
 		}
 	}
 	return nil
