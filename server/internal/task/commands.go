@@ -185,6 +185,8 @@ func (r *commandRunner) Run(ctx context.Context, command string, args map[string
 		return r.runBackupRun(ctx)
 	case "monitor:rollup":
 		return r.runMonitorRollup(ctx)
+	case "retention:purge":
+		return r.runRetentionPurge(ctx, args)
 	case "order:expire-pending":
 		return r.runOrderExpirePending(ctx, args)
 	case "proxy:maintain":

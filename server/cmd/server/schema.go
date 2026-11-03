@@ -75,6 +75,41 @@ func ensureSchema(db *sql.DB) error {
 	if err := ensureVarcharAtLeast(db, "node_api_commands", "action", 32); err != nil {
 		return err
 	}
+
+	// 增量加索引：保留期清理（internal/task/retention.go）按 created_at / (status,updated_at)
+	// 删行，没有索引就是全表扫。新库 schema.sql 里已带，老库升级时在这里补齐。
+	indexes := []struct{ table, name, definition string }{
+		{"mail_logs", "mail_logs_created_at_index", "(`created_at`)"},
+		{"node_api_commands", "node_api_commands_status_updated_at_index", "(`status`,`updated_at`)"},
+	}
+	for _, idx := range indexes {
+		if err := ensureIndex(db, idx.table, idx.name, idx.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureIndex 幂等加索引。
+//
+// 与 ensureColumn 同思路：MySQL 没有 `ADD INDEX IF NOT EXISTS`（MariaDB 才有），
+// 所以先查 information_schema.STATISTICS 再决定要不要 ALTER —— 重复启动、重复升级
+// 都不会报「Duplicate key name」。
+func ensureIndex(db *sql.DB, table, index, columns string) error {
+	var n int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM information_schema.STATISTICS "+
+			"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?",
+		table, index).Scan(&n)
+	if err != nil {
+		return fmt.Errorf("检查索引 %s.%s 失败: %w", table, index, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := db.Exec("ALTER TABLE `" + table + "` ADD INDEX `" + index + "` " + columns); err != nil {
+		return fmt.Errorf("增量加索引 %s.%s 失败: %w", table, index, err)
+	}
 	return nil
 }
 

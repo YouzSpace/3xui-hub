@@ -253,6 +253,11 @@ func defaultScheduledEvents() []ScheduledEvent {
 		{Command: "invite-code-refresh", Expression: "10 0 * * *", HasMutex: true},
 		{Command: "db-backup", Expression: "30 3 * * *", HasMutex: true},
 		{Command: "monitor-rollup", Expression: "30 4 * * *", HasMutex: true},
+		// Go 侧新增：数据保留期清理（日志 / 回执类表统一按保留期收口），
+		// 排在 03:30 的备份之后、04:10/04:30 的全量巡检与监控汇总之前。
+		// ⚠️ 这份清单是 task.DefaultJobs 的静态副本，加任务必须两边一起加，否则
+		// 「系统状态 → 定时任务」页看不到它（任务照常跑，只是页面上没有）。
+		{Command: "retention:purge", Expression: "0 4 * * *", HasMutex: true},
 		{Command: "expire-pending-orders", Expression: "0 * * * *", HasMutex: true},
 		{Command: "proxy-maintain", Expression: "0 * * * *", HasMutex: true},
 		{Command: "async-task-timeout", Expression: "*/5 * * * *", HasMutex: true},
