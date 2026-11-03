@@ -152,195 +152,160 @@ PY
 #   2. /.well-known/acme-challenge/ 落盘目录 —— acme.sh --webroot 续期靠它落盘校验，
 #      前端虽然不落盘了，这段也得留着，否则证书到期会静默续不上。
 # 保护：改前备份、nginx -t 校验失败自动回滚，绝不破坏用户的 SSL / 自定义配置。
-ensure_nginx_go_proxy() {
-    local main_conf
-    main_conf="$(nginx_conf_path)"
-    # ACME 挑战目录必须真实存在，acme.sh --webroot 才写得进挑战文件
-    mkdir -p "${ACME_WEBROOT}/.well-known/acme-challenge" 2>/dev/null || true
-    _go_proxy_patch_file "$main_conf"
-    _go_proxy_patch_file "$(dirname "$main_conf")/3xui-hub-domains.conf"
-    return 0
+# ── nginx 配置：单一模板，整份渲染 ──────────────────────────────────────────
+#
+# 为什么不再「正则补丁」：v2.12.0 起前端已 go:embed 进 Go 二进制，nginx 只需把一切
+# 反代到 8080。老做法按正则去改用户现存 conf（删 root / 删 try_files / 插 proxy_pass），
+# 一旦遇到没覆盖的配置形态就产出非法配置 → nginx -t 失败 → 回滚 → 站点 404，
+# 而且每次 update 都要再赌一次（v2.12.0 上线即出现该故障）。
+#
+# 新做法：把 3xui-hub.conf 当「受管文件」整份重写，模板与 install.sh 共用同一形态。
+# 用户自定义域名走 3xui-hub-domains.conf（由 3hub domain 维护，脚本不碰）。
+# 幂等：内容相同不写；写入前备份，nginx -t 不过回滚。
+
+# nginx 主配置路径（宝塔 / 原生两种）
+nginx_conf_path() {
+    if [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
+        echo "/www/server/panel/vhost/nginx/3xui-hub.conf"
+    else
+        echo "/etc/nginx/conf.d/3xui-hub.conf"
+    fi
 }
 
-# 对单个 conf 做纯反代收敛（幂等；文件不存在 / 已收敛则跳过）
-_go_proxy_patch_file() {
-    local CONF="$1"
-    [ -f "$CONF" ] || return 0
+# render_nginx_conf <domain> <cert前缀|""> <out>
+#   cert 为空 = 不启用 SSL（只出 80 段）
+render_nginx_conf() {
+    local DOMAIN="$1" CERT="$2" OUT="$3"
+    local UP='upstream controlhub_backend {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}'
+    local GZ='    # 文本资源 gzip：Go 不压缩，由 nginx 压代理回来的响应
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;'
+    local ACME="    # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；续期靠它，别删）
+    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }"
+    local WS='    # xray 节点 WS 长连接（agent 主通道；必须保留 Upgrade 头）
+    location /node-ws {
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }'
+    local ALL='    # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
+    location / {
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
-    # 已收敛的特征：带标记注释且全文无 index.php 反代
-    if grep -q 'controlhub: nginx 仅反代' "$CONF" 2>/dev/null && ! grep -q 'index\.php' "$CONF" 2>/dev/null; then
+    location ~* \.(env|git) {
+        return 404;
+    }'
+
+    if [ -n "$CERT" ]; then
+        {
+            echo '# controlhub: nginx 仅反代（前端已 go:embed 进二进制，接口/资产全部由 Go 提供）'
+            echo '# 本文件由 3hub 受管，请勿手工编辑；自定义域名用 `3hub domain add`'
+            echo "$UP"
+            echo
+            echo "server {"
+            echo "    listen 80;"
+            echo "    server_name ${DOMAIN};"
+            echo
+            echo "$ACME"
+            echo
+            echo '    location / {'
+            echo '        return 301 https://$host$request_uri;'
+            echo '    }'
+            echo '}'
+            echo
+            echo "server {"
+            echo "    listen 443 ssl http2;"
+            echo "    server_name ${DOMAIN};"
+            echo
+            echo "$GZ"
+            echo
+            echo "    ssl_certificate     ${CERT}.pem;"
+            echo "    ssl_certificate_key ${CERT}.key;"
+            echo '    ssl_protocols TLSv1.2 TLSv1.3;'
+            echo '    ssl_prefer_server_ciphers off;'
+            echo
+            echo "$ACME"
+            echo
+            echo "$WS"
+            echo
+            echo "$ALL"
+            echo '}'
+        } > "$OUT"
+    else
+        {
+            echo '# controlhub: nginx 仅反代（前端已 go:embed 进二进制，接口/资产全部由 Go 提供）'
+            echo '# 本文件由 3hub 受管，请勿手工编辑；自定义域名用 `3hub domain add`'
+            echo "$UP"
+            echo
+            echo "server {"
+            echo "    listen 80;"
+            echo "    server_name ${DOMAIN};"
+            echo
+            echo "$GZ"
+            echo
+            echo "$ACME"
+            echo
+            echo "$WS"
+            echo
+            echo "$ALL"
+            echo '}'
+        } > "$OUT"
+    fi
+}
+
+# 把主 conf 收敛到规范模板（幂等；内容一致则不写）
+ensure_nginx_go_proxy() {
+    local CONF DOMAIN CERT
+    CONF="$(nginx_conf_path)"
+    mkdir -p "$(dirname "$CONF")" 2>/dev/null || true
+    mkdir -p "${ACME_WEBROOT}/.well-known/acme-challenge" 2>/dev/null || true
+
+    if [ -f "$CONF" ]; then
+        DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$CONF" 2>/dev/null | head -1 | tr -d ' ')
+        CERT=$(grep -oP 'ssl_certificate\s+\K[^;]+' "$CONF" 2>/dev/null | head -1 | sed 's/\.pem$//' | tr -d ' ')
+    fi
+    [ -n "${DOMAIN:-}" ] || DOMAIN="${HUB_DOMAIN:-}"
+    [ -n "${DOMAIN:-}" ] || return 0
+
+    local TMP="${CONF}.new"
+    render_nginx_conf "$DOMAIN" "${CERT:-}" "$TMP"
+    if [ -f "$CONF" ] && cmp -s "$TMP" "$CONF"; then
+        rm -f "$TMP"
         return 0
     fi
 
-    cp -f "$CONF" "${CONF}.bak-goproxy"
-    python3 - "$CONF" "$ACME_WEBROOT" <<'PY'
-import re
-import sys
-
-path = sys.argv[1]
-acme_dir = sys.argv[2]
-
-MARK = '# controlhub: nginx 仅反代（前端 / 接口 / 节点资产全部由 Go 内置服务提供）'
-
-PROXY_LINES = [
-    'proxy_pass http://127.0.0.1:8080;',
-    'proxy_http_version 1.1;',
-    'proxy_set_header Connection "";',
-    'proxy_set_header Host $host;',
-    'proxy_set_header X-Real-IP $remote_addr;',
-    'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
-    'proxy_set_header X-Forwarded-Proto $scheme;',
-]
-
-# 老 PHP 版遗留：php-fpm location 块
-PHP_LOC = re.compile(r'[ \t]*location\s+~\s*\[\^/\]\\\.php\(/\|\$\)\s*\{[^{}]*\}[ \t]*\r?\n?')
-# 旧版前端静态 location（3hub 缓存自愈曾插入的两段）
-STATIC_ASSETS = re.compile(r'[ \t]*location\s*=?\s*/assets/\s*\{[^{}]*\}[ \t]*\r?\n?')
-STATIC_INDEX = re.compile(r'[ \t]*location\s*=\s*/index\.html\s*\{[^{}]*\}[ \t]*\r?\n?')
-# 指向前端目录的 root（只删我们自己的两个历史路径，用户自定义 root 不碰）
-FRONT_ROOT = re.compile(r'(?m)^[ \t]*root\s+[^;\r\n]*(?:frontend/dist|backend/public)[^;\r\n]*;[ \t]*\r?\n')
-# ACME 挑战 location（先删后插，避免同 server 内重复 location 直接让 nginx -t 报错）
-ACME_LOC = re.compile(r'[ \t]*location\s+/?\.well-known/acme-challenge/?\s*\{[^{}]*\}[ \t]*\r?\n?')
-# 含 try_files → index.html / index.php 的 location（SPA fallback、旧 PHP api 段）
-SPA_LOC = re.compile(
-    r'(?m)^([ \t]*)location\s+([^{]*?)\s*\{([^{}]*?)'
-    r'try_files\s+\$uri\s+\$uri/\s+/index\.(?:html|php)\??[^;]*;([^{}]*)\}'
-)
-RETURN_301 = re.compile(r'(?m)^([ \t]*)return\s+(301[^\r\n]*)[ \t]*\r?\n')
-SERVER_HEAD = re.compile(r'(?m)^[ \t]*server\s*\{[^\r\n]*\r?\n')
-
-ACME_BLOCK = (
-    '    # ACME HTTP-01 挑战目录（acme.sh --webroot 落盘处；前端已进二进制，只有这里读磁盘）{nl}'
-    '    location /.well-known/acme-challenge/ {{{nl}'
-    '        root {root};{nl}'
-    '    }}{nl}'
-)
-
-
-ACME_PLACE = '@@CONTROLHUB_ACME_LOCATION@@'
-
-
-def patch_block(b, nl):
-    # 先把已有的 ACME 挑战 location 摘出来（下面删 root 时不能动它，否则挑战目录失效）
-    acme_seg = None
-    m = ACME_LOC.search(b)
-    if m:
-        acme_seg = m.group(0)
-        b = b[:m.start()] + ACME_PLACE + nl + b[m.end():]
-
-    # 旧 PHP 版：node-ws 独立进程 8091 → Go 内置 8080；php-fpm location 段已无用
-    b = b.replace('127.0.0.1:8091', '127.0.0.1:8080')
-    b = PHP_LOC.sub('', b)
-    b = b.replace('index index.html index.php;', 'index index.html;')
-
-    # 前端静态资源改由 Go 输出（含缓存头），nginx 侧两段 location 去掉
-    b = STATIC_ASSETS.sub('', b)
-    b = STATIC_INDEX.sub('', b)
-    # 不再需要 web root：前端产物在二进制里
-    b = FRONT_ROOT.sub('', b)
-    # 没有静态 root 了，index 指令同样失效（留着会让后来人以为还在 serve 文件）
-    if not re.search(r'(?m)^[ \t]*root\s+[^;\r\n]*;', b):
-        b = re.sub(r'(?m)^[ \t]*index\s+[^;\r\n]*;[ \t]*\r?\n', '', b)
-
-    # SPA fallback / 旧 PHP api 段 → 反代到 Go（保留 location 前缀与缩进）
-    def _to_proxy(m):
-        ind, spec = m.group(1), m.group(2).strip()
-        body = ''.join('%s    %s%s' % (ind, ln, nl) for ln in PROXY_LINES)
-        return '%slocation %s {%s%s%s}' % (ind, spec, nl, body, ind)
-
-    b = SPA_LOC.sub(_to_proxy, b)
-
-    # 只做 80→443 跳转的 server 段：server 级 return 会短路 location 匹配，
-    # 改成 location / { return 301 }，让 ACME 挑战 location 有机会生效
-    if 'location ' not in b.replace(ACME_PLACE, ''):
-        b = RETURN_301.sub(
-            lambda m: '%slocation / {%s%s    return %s%s%s}%s'
-            % (m.group(1), nl, m.group(1), m.group(2), nl, m.group(1), nl),
-            b,
-        )
-
-    # 反代段 / 跳转段都要留住 ACME 挑战目录（证书自动续期靠它落盘校验）
-    if acme_seg is not None:
-        seg = re.sub(
-            r'(?m)^([ \t]*)root\s+[^;\r\n]*;',
-            lambda mm: '%sroot %s;' % (mm.group(1), acme_dir),
-            acme_seg,
-            count=1,
-        )
-        return b.replace(ACME_PLACE, seg.rstrip('\r\n'))
-
-    if re.search(r'proxy_pass\s+http://(?:127\.0\.0\.1|controlhub_backend)', b) or 'return 301' in b:
-        block = ACME_BLOCK.format(nl=nl, root=acme_dir)
-        return SERVER_HEAD.sub(lambda h: h.group(0) + nl + block + nl, b, count=1)
-    return b
-
-
-def split_servers(text):
-    """返回顶层 server { ... } 的区间列表（含大括号），upstream 等其它块忽略。"""
-    spans, pos, n = [], 0, len(text)
-    head = re.compile(r'(?m)^[ \t]*server\s*\{')
-    while True:
-        m = head.search(text, pos)
-        if not m:
-            return spans
-        depth, j = 0, m.end() - 1
-        while j < n:
-            if text[j] == '{':
-                depth += 1
-            elif text[j] == '}':
-                depth -= 1
-                if depth == 0:
-                    break
-            j += 1
-        if j >= n:
-            raise SystemExit(2)
-        spans.append((m.start(), j + 1))
-        pos = j + 1
-
-
-def main():
-    with open(path, encoding='utf-8', newline='') as f:
-        src = f.read()
-
-    spans = split_servers(src)
-    if not spans:
-        raise SystemExit(3)
-
-    nl = '\r\n' if '\r\n' in src else '\n'
-    out, last = [], 0
-    for start, end in spans:
-        out.append(src[last:start])
-        out.append(patch_block(src[start:end], nl))
-        last = end
-    out.append(src[last:])
-    dst = ''.join(out)
-
-    if dst.count('{') != dst.count('}'):
-        raise SystemExit(2)
-
-    if MARK not in dst:
-        dst = MARK + nl + dst
-
-    if dst != src:
-        with open(path, 'w', encoding='utf-8', newline='') as f:
-            f.write(dst)
-
-
-main()
-PY
-    local rc=$?
-    if [ "$rc" -eq 0 ]; then
-        if nginx -t >/dev/null 2>&1; then
-            systemctl reload nginx >/dev/null 2>&1 || true
-            echo "Nginx 反代: $(basename "${CONF}") 已收敛为纯反代（前端/接口/节点资产 → 8080）"
-            rm -f "${CONF}.bak-goproxy"
-        else
-            mv -f "${CONF}.bak-goproxy" "$CONF"
-            echo "Nginx 反代: $(basename "${CONF}") 补丁未通过 nginx -t，已回滚"
-        fi
+    cp -f "$CONF" "${CONF}.bak-3hub" 2>/dev/null || true
+    mv -f "$TMP" "$CONF"
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx >/dev/null 2>&1 || true
+        echo "Nginx: 已按规范模板重写 $(basename "$CONF")（纯反代，前端由二进制提供）"
+        rm -f "${CONF}.bak-3hub"
     else
-        rm -f "${CONF}.bak-goproxy"
-        [ "$rc" -eq 3 ] || echo "Nginx 反代: $(basename "${CONF}") 收敛失败，请手工确认"
+        mv -f "${CONF}.bak-3hub" "$CONF" 2>/dev/null || true
+        echo "Nginx: 模板渲染后 nginx -t 未通过，已回滚（请检查 $(basename "$CONF")）"
+        return 1
     fi
 }
 
@@ -964,13 +929,7 @@ check_agents_after_update() {
 }
 
 # nginx 反代是否已就位（只读判断，供提示与 fix-nginx 复用）
-nginx_conf_path() {
-    if [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
-        echo "/www/server/panel/vhost/nginx/3xui-hub.conf"
-    else
-        echo "/etc/nginx/conf.d/3xui-hub.conf"
-    fi
-}
+# 路径解析统一走 nginx_conf_path()（定义在 nginx 模板段，单一来源）
 
 nginx_node_ws_applied() {
     local CONF
@@ -981,24 +940,35 @@ nginx_node_ws_applied() {
 
 # 补 nginx 反代（给老版本升级上来的机器用；幂等，可反复执行）
 cmd_fix_nginx() {
-    # 老 PHP 版反代完整切 Go（root/api/php-fpm/node-ws 端口）
-    ensure_nginx_go_proxy
+    echo -e "${CYAN}检查 nginx 配置（受管文件按模板重写）...${NC}"
 
-    # 顺带补 gzip（幂等）：老 conf 的 JS/CSS 未压缩时一并修好
+    # 主 conf：整份渲染成「纯反代」模板（幂等；内容一致则不动）
+    if ensure_nginx_go_proxy; then
+        echo -e "  $(basename "$(nginx_conf_path)"): ${GREEN}符合规范${NC}"
+    else
+        echo -e "  $(basename "$(nginx_conf_path)"): ${RED}重写失败${NC}（见上方提示）"
+    fi
+
+    # gzip：模板里已含；老文件（非受管）仍走自愈
     ensure_nginx_gzip
 
-    echo -e "${CYAN}检查 nginx 节点资产 location...${NC}"
-    if nginx_node_ws_applied; then
-        echo -e "Nginx 反代: ${GREEN}已就位${NC}（无需处理）"
+    if nginx -t >/dev/null 2>&1; then
+        echo -e "${GREEN}nginx -t 通过${NC}"
+        echo -e "  当前: $(nginx_conf_path)"
         return 0
     fi
-    ensure_nginx_node_ws
-    if nginx_node_ws_applied; then
-        echo -e "Nginx 反代: ${GREEN}已补全${NC}"
-        return 0
-    fi
-    echo -e "${RED}Nginx 反代: 未能补全${NC}，请检查 $(nginx_conf_path) 的写入权限或手工添加"
+    echo -e "${RED}nginx -t 未通过${NC}，请检查 $(nginx_conf_path)"
+    nginx -t 2>&1 | tail -3
     return 1
+}
+
+# nginx 配置是否仍是「老形态」（root 到 dist / try_files / 指 php-fpm）。
+# 供 update 收尾与 status 用：命中说明需要跑一次 fix-nginx。
+nginx_conf_outdated() {
+    local CONF
+    CONF="$(nginx_conf_path)"
+    [ -f "$CONF" ] || return 1
+    grep -qE '^\s*root\s+.*frontend/dist|try_files\s+\$uri\s+\$uri/\s+/index\.(html|php)|fastcgi_pass|index\.php' "$CONF" 2>/dev/null
 }
 
 # 卸载：只做「找脚本 + 转发」，三档模式和交互菜单都由 uninstall.sh 自己处理。
@@ -1157,8 +1127,8 @@ cmd_ssl() {
     echo -e "${CYAN}配置域名和 SSL${NC}"
     echo ""
     echo -e "当前配置:"
-    CURRENT_URL=$(grep APP_URL "$ENV_FILE" 2>/dev/null | cut -d= -f2)
-    echo -e "  APP_URL: ${GREEN}$CURRENT_URL${NC}"
+    CURRENT_URL=$(grep APP_URL "${ENV_FILE}" 2>/dev/null | cut -d= -f2)
+    echo -e "  APP_URL: ${GREEN}${CURRENT_URL}${NC}"
     echo ""
 
     read -rp "请输入域名或 IP（直接回车取消）: " DOMAIN
@@ -1169,7 +1139,7 @@ cmd_ssl() {
 
     # 判别输入类型：IPv6 / IPv4 / 域名。
     # IP 走 Let's Encrypt IP 证书（shortlived profile，约 6 天、acme.sh 自动续期）。
-    # 域名分支 ACME_PROFILE_ARGS 保持为空 —— 参数与行为完全不变（回归）。
+    # 域名分支 ACME_PROFILE_ARGS 保持为空 —— 与旧行为一致。
     ACME_PROFILE_ARGS=()
     if echo "$DOMAIN" | grep -q ':'; then
         echo -e "${YELLOW}暂不支持 IPv6 证书申请，请改用 IPv4 或域名${NC}"
@@ -1185,22 +1155,26 @@ cmd_ssl() {
     echo -e "是否开启 SSL？"
     read -rp "(y/N): " SSL_CHOICE
 
+    local CERT_PREFIX=""
     if [ "$SSL_CHOICE" = "y" ] || [ "$SSL_CHOICE" = "Y" ]; then
-        # 安装 acme.sh
         if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
             echo -e "${BLUE}安装 acme.sh...${NC}"
             curl -s https://get.acme.sh | sh 2>&1 | tail -1
         fi
 
-        # 申请证书（用 pipefail 捕获 acme.sh 真实退出码）
+        # ACME 挑战目录必须真实存在（前端已进二进制，这里只放挑战文件）
+        mkdir -p "${ACME_WEBROOT}/.well-known/acme-challenge"
+        # 先写好 80 段（含 ACME location），否则 --issue 的 webroot 校验拿不到文件
+        render_nginx_conf "$DOMAIN" "" "$(nginx_conf_path)"
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+
         echo -e "${BLUE}申请 SSL 证书...${NC}"
         set -o pipefail
-        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "$ACME_WEBROOT" "${ACME_PROFILE_ARGS[@]}" --server letsencrypt --reloadcmd "systemctl reload nginx" 2>&1)
+        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "${ACME_WEBROOT}" "${ACME_PROFILE_ARGS[@]}" --server letsencrypt --reloadcmd "systemctl reload nginx" 2>&1)
         ACME_EXIT=$?
         set +o pipefail
         echo "$ACME_OUTPUT" | tail -5
 
-        # 检查是否证书已存在且有效（acme.sh 返回非 0 但证书实际有效）
         if [ $ACME_EXIT -ne 0 ]; then
             if echo "$ACME_OUTPUT" | grep -qi "Domains not changed\|already exists\|Skipping"; then
                 echo -e "${YELLOW}证书已存在且有效，跳过申请${NC}"
@@ -1211,159 +1185,43 @@ cmd_ssl() {
         fi
 
         mkdir -p /etc/nginx/ssl
-        # --reloadcmd 必须带上：acme.sh 自动续期后靠它重载 nginx，否则新证书落盘但 nginx 仍发旧证
         $HOME/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-            --key-file /etc/nginx/ssl/${DOMAIN}.key \
-            --fullchain-file /etc/nginx/ssl/${DOMAIN}.pem \
+            --key-file "/etc/nginx/ssl/${DOMAIN}.key" \
+            --fullchain-file "/etc/nginx/ssl/${DOMAIN}.pem" \
             --reloadcmd "systemctl reload nginx" 2>&1 | tail -1
 
-        # 验证证书文件存在
         if [ ! -f "/etc/nginx/ssl/${DOMAIN}.pem" ] || [ ! -f "/etc/nginx/ssl/${DOMAIN}.key" ]; then
             echo -e "${RED}证书文件生成失败${NC}"
             return 1
         fi
-
+        CERT_PREFIX="/etc/nginx/ssl/${DOMAIN}"
         PROTO="https"
-        cat > /etc/nginx/conf.d/3xui-hub.conf << 'NGINX_SSL'
-# controlhub: nginx 仅反代（前端 / 接口 / 节点资产全部由 Go 内置服务提供）
-# 前端已 go:embed 进 Go 二进制：nginx 不再持有静态 root，缓存头也由 Go 输出
-#（assets 长缓存、index.html no-cache）。
-server {
-    listen 80;
-    server_name DOMAIN_PLACEHOLDER;
-
-    # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；续期靠它，别删）
-    location /.well-known/acme-challenge/ {
-        root /www/wwwroot/3xui-hub/frontend/dist;
-    }
-
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl http2;
-    server_name DOMAIN_PLACEHOLDER;
-
-    ssl_certificate /etc/nginx/ssl/DOMAIN_PLACEHOLDER.pem;
-    ssl_certificate_key /etc/nginx/ssl/DOMAIN_PLACEHOLDER.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    # 文本资源 gzip：Go 不压缩，由 nginx 压代理回来的响应
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
-    gzip_min_length 1024;
-    gzip_vary on;
-    gzip_proxied any;
-
-    # ACME HTTP-01 挑战（同 80 段）
-    location /.well-known/acme-challenge/ {
-        root /www/wwwroot/3xui-hub/frontend/dist;
-    }
-
-    # xray 节点 WS 长连接（agent 主通道；Go 内置，必须保留 Upgrade 头）
-    location /node-ws {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-
-    # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location ~* \.(env|git) {
-        return 404;
-    }
-}
-NGINX_SSL
-        # 替换占位符
-        sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
     else
-cat > /etc/nginx/conf.d/3xui-hub.conf << 'NGINX_HTTP'
-# controlhub: nginx 仅反代（前端 / 接口 / 节点资产全部由 Go 内置服务提供）
-# 前端已 go:embed 进 Go 二进制：nginx 不再持有静态 root，缓存头由 Go 输出。
-server {
-    listen 80;
-    server_name DOMAIN_PLACEHOLDER;
-
-    # 文本资源 gzip：Go 不压缩，由 nginx 压代理回来的响应
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
-    gzip_min_length 1024;
-    gzip_vary on;
-    gzip_proxied any;
-
-    # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；续期靠它，别删）
-    location /.well-known/acme-challenge/ {
-        root /www/wwwroot/3xui-hub/frontend/dist;
-    }
-
-    # xray 节点 WS 长连接（agent 主通道；Go 内置，必须保留 Upgrade 头）
-    location /node-ws {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-
-    # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location ~* \.(env|git) {
-        return 404;
-    }
-}
-NGINX_HTTP
-        sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
+        PROTO="http"
     fi
 
-    # 整份重写后统一过一遍收敛（幂等）：模板已带标记注释时直接跳过，
-    # 老机器残留的静态 root / SPA fallback 也在这里顺手抹平。
-    ensure_nginx_go_proxy
+    # ── 统一渲染（与 install.sh 同一形态：纯反代，前端由 Go 内置提供）──
+    render_nginx_conf "$DOMAIN" "$CERT_PREFIX" "$(nginx_conf_path)"
 
-    # 更新 .env
-    sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$ENV_FILE"
-
-    # 测试并重载
-    if nginx -t 2>&1; then
-        systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null
-        echo ""
-        echo -e "${GREEN}配置完成！${NC}"
-        echo -e "访问地址: ${CYAN}${PROTO}://${DOMAIN}/${NC}"
-    else
-        echo -e "${RED}Nginx 配置错误，请检查${NC}"
+    if ! nginx -t >/dev/null 2>&1; then
+        echo -e "${RED}nginx 配置校验失败，请检查 $(nginx_conf_path)${NC}"
+        nginx -t 2>&1 | tail -3
         return 1
     fi
+    systemctl reload nginx >/dev/null 2>&1 || true
+
+    # APP_URL 同步（Go 与订阅链接都读它）
+    sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "${ENV_FILE}"
+    if [ -f "$INSTALL_DIR/backend/.env" ]; then
+        sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$INSTALL_DIR/backend/.env" 2>/dev/null || true
+    fi
+
+    echo ""
+    echo -e "${GREEN}完成${NC}"
+    echo -e "  站点:   ${PROTO}://${DOMAIN}"
+    echo -e "  配置:   $(nginx_conf_path)（纯反代模板，前端由二进制提供）"
+    echo -e "  证书:   ${CERT_PREFIX:-未启用}"
+    echo -e "  续期:   acme.sh 已装 cron，自动续期后 reload nginx"
 }
 
 cmd_restart() {
