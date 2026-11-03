@@ -113,11 +113,16 @@ func (u *userDelivery) handle(ctx context.Context, job task.JobPayload) error {
 		return nil
 	}
 
-	// 1) 建/更新 client（内部已按节点并发、跳过离线 3x-ui）
+	// 1) 清掉节点上该用户的旧已用流量（只有 3x-ui 有面板侧计数；xray 走 agent 推送口径）。
+	//    放在下发之前：先把旧账清零，再按新套餐写限额，避免中间态被计费读到。
+	if err := u.ops.ResetClientTraffic(ctx, user); err != nil {
+		return fail("重置节点流量失败：" + err.Error())
+	}
+	// 2) 建/更新 client（内部已按节点并发、跳过离线 3x-ui）
 	if err := u.ops.ProvisionUser(ctx, user); err != nil {
 		return fail("下发节点失败：" + err.Error())
 	}
-	// 2) 打开 client（含「全部节点确认后才清 traffic_disabled_at」的记账）
+	// 3) 打开 client（含「全部节点确认后才清 traffic_disabled_at」的记账）
 	if user.Enabled && user.PlanID != nil {
 		if err := u.ops.SetClientEnabled(ctx, user, true); err != nil {
 			return fail("开启 client 失败：" + err.Error())

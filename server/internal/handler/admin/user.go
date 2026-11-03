@@ -390,7 +390,7 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 		// 为什么异步：一次下发要走两轮全节点（provision + 开关），线上 3–5 秒；
 		// 前端请求有几十秒超时，节点一慢就把一次「改套餐」卡成转圈。改成
 		// 「接口只改库、立刻返回」后，下发结果在「异步任务」页可见（失败有原因）。
-		if err := d.applyPlan(c, u.ID); err != nil {
+		if err := d.applyPlan(c, u.ID, d.delivery == nil); err != nil {
 			d.failServer(c, "切换套餐", err)
 			return
 		}
@@ -417,8 +417,13 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 	d.success(c, presentUser(full, true, presentProxies(proxies, now)), "更新成功")
 }
 
-// deliverPlanChangeSync 是「后台队列不可用」时的同步兜底，行为与异步化之前一致。
+// deliverPlanChangeSync 是「后台队列不可用」时的同步兜底，行为与异步化之前一致：
+// 清节点流量 → 下发 client → 开 client（含清 traffic_disabled_at 的记账）。
 func (d *UserDomain) deliverPlanChangeSync(c *gin.Context, full *UserRow) {
+	// 清 3x-ui 上的已用流量（applyPlan 在异步模式下不做这一步，见其注释）。
+	if err := d.ops.ResetClientTraffic(ctxOf(c), full); err != nil {
+		d.logger.Printf("admin 切换套餐后 resetClient 失败: %v", err)
+	}
 	// ⚠️ 必须下发「重读出来的完整行」。这里以前手搓 UserRow{ID,Email,UUID,Protocol}，
 	// PlanID=nil、Enabled=false、TrafficLimit=0 全是零值，provision 于是把每台
 	// 3x-ui 节点上的 client 写成 enable=false + totalGB=0 —— 后台给人换套餐，
@@ -645,7 +650,12 @@ func (d *UserDomain) userSwitchProtocol(c *gin.Context) {
 
 // applyPlan 对齐 UserAdminService::applyPlan：重算流量限额与到期时间。
 // 无套餐 → 清零限额、永不过期；周期套餐 → 30 天后重置；总量套餐 → 只给总量。
-func (d *UserDomain) applyPlan(c *gin.Context, userID uint64) error {
+// applyPlan 重算套餐字段并持久化（对齐 UserAdminService::applyPlan）。
+//
+// syncNodes=false 时**不做节点侧动作**：调用方会把「重置 client 流量 + 下发 + 开 client」
+// 一起交给后台异步任务（user_delivery）。留这个开关而不是删掉，是因为队列不可用时
+// 还要能退回同步路径（宁可慢也不能不生效）。
+func (d *UserDomain) applyPlan(c *gin.Context, userID uint64, syncNodes bool) error {
 	// 购买/续费/管理员改套餐 → 恢复该用户全部自动通知（PHP applyPlan 第一行同款）。
 	// 不解除防重标记，该用户同一场景一辈子只会收到第一封提醒。
 	d.restoreAlerts(ctxOf(c), userID)
@@ -673,6 +683,9 @@ func (d *UserDomain) applyPlan(c *gin.Context, userID uint64) error {
 		patch.ExpiredAtSet = true
 		if err := d.users.UpdateUser(ctxOf(c), userID, patch); err != nil {
 			return err
+		}
+		if !syncNodes {
+			return nil
 		}
 		return d.ops.ResetClientTraffic(ctxOf(c), u)
 	}
@@ -725,6 +738,9 @@ func (d *UserDomain) applyPlan(c *gin.Context, userID uint64) error {
 	fresh, _ := d.users.UserByID(ctxOf(c), userID)
 	if fresh == nil {
 		fresh = u
+	}
+	if !syncNodes {
+		return nil
 	}
 	return d.ops.ResetClientTraffic(ctxOf(c), fresh)
 }
