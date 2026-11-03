@@ -282,12 +282,17 @@ ensure_nginx_go_proxy() {
     mkdir -p "$(dirname "$CONF")" 2>/dev/null || true
     mkdir -p "${ACME_WEBROOT}/.well-known/acme-challenge" 2>/dev/null || true
 
+    # 域名来源优先级：现配置 → APP_URL（安装期就写好了）→ HUB_DOMAIN 环境变量
     if [ -f "$CONF" ]; then
         DOMAIN=$(grep -oP 'server_name\s+\K[^;]+' "$CONF" 2>/dev/null | head -1 | tr -d ' ')
         CERT=$(grep -oP 'ssl_certificate\s+\K[^;]+' "$CONF" 2>/dev/null | head -1 | sed 's/\.pem$//' | tr -d ' ')
     fi
+    if [ -z "${DOMAIN:-}" ]; then
+        DOMAIN=$(grep -oP '^APP_URL=\K.*' "${ENV_FILE:-/dev/null}" 2>/dev/null | sed -E 's#^https?://##; s#/.*$##' | tr -d ' ')
+    fi
     [ -n "${DOMAIN:-}" ] || DOMAIN="${HUB_DOMAIN:-}"
-    [ -n "${DOMAIN:-}" ] || return 0
+    # 实在取不到域名：不猜、不覆盖（首次安装由 install.sh 写入）
+    [ -n "${DOMAIN:-}" ] || { echo "Nginx: 无法确定域名（配置缺失且 APP_URL 未设置），跳过重写"; return 0; }
 
     local TMP="${CONF}.new"
     render_nginx_conf "$DOMAIN" "${CERT:-}" "$TMP"
