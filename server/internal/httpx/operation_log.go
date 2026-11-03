@@ -213,21 +213,9 @@ func (m *OperationLogMiddleware) Handler() gin.HandlerFunc {
 			m.logger.Printf("记录操作日志失败: %v", err)
 		}
 
-		// 清理超出部分（保留最近 500 条，每次最多删 200）
-		var total int64
-		if err := m.db.QueryRowContext(context.Background(),
-			"SELECT COUNT(*) FROM operation_logs").Scan(&total); err == nil {
-			if overflow := total - 500; overflow > 0 {
-				limit := overflow
-				if limit > 200 {
-					limit = 200
-				}
-				_, _ = m.db.ExecContext(context.Background(),
-					`DELETE FROM operation_logs WHERE id IN (
-						SELECT id FROM (SELECT id FROM operation_logs ORDER BY id ASC LIMIT ?) t
-					)`, limit)
-			}
-		}
+		// 保留期不在这里做：原先的「500 条硬上限」改由 retention:purge 定时任务统一处理
+		// （见 internal/task/retention.go）。放在请求路径里有三个问题 —— 每个写请求多
+		// 两次库操作、500 这个值运维改不了、系统审计（type=system）会被一起挤掉。
 	}
 }
 

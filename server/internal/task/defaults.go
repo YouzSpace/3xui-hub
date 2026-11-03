@@ -136,6 +136,9 @@ const (
 	// NameXrayCertificateRenew 是远程证书自动续签（Go 侧新增，PHP 没有）：
 	// 到期前 N 天把证书交给该域名落地的节点重签，回执 PEM 覆盖证书库同一行并 bump 配置版本。
 	NameXrayCertificateRenew = "xray-certificates-renew"
+	// NameDataRetention 是数据保留期清理（Go 侧新增，PHP 没有）：
+	// 把「日志 / 回执类表留多久」收敛成一个每天跑一次的任务（见 retention.go）。
+	NameDataRetention = "retention:purge"
 )
 
 // ── cron 表达式（Laravel 调度宏 → 5 字段 cron，UTC） ──
@@ -153,6 +156,7 @@ const (
 	SpecDaily0000        = "0 0 * * *"
 	SpecDaily0010        = "10 0 * * *"
 	SpecDaily0330        = "30 3 * * *"
+	SpecDaily0400        = "0 4 * * *"
 	SpecDaily0430        = "30 4 * * *"
 	SpecDaily0410        = "10 4 * * *"
 	// SpecDaily0520 是证书自动续签的档位：排在 00:00 / 00:10 / 03:30 / 04:10 / 04:30 / 04:45
@@ -234,6 +238,12 @@ func DefaultJobs(d Deps) []Job {
 		{
 			Name: NameMonitorRollup, Spec: SpecDaily0430, WithoutOverlap: true,
 			Run: func(ctx context.Context) error { return commands.Run(ctx, "monitor:rollup", nil) },
+		},
+		// 数据保留期清理：日志 / 回执类表统一按保留期收口（排 04:00 UTC = 北京 12:00，
+		// 避开 03:30 的数据库备份）。阈值全部可配，见 retention.go。
+		{
+			Name: NameDataRetention, Spec: SpecDaily0400, WithoutOverlap: true,
+			Run: func(ctx context.Context) error { return commands.Run(ctx, "retention:purge", nil) },
 		},
 		// 作废超时（1 小时）未支付的订单。TTL 显式传参，不依赖命令默认值。
 		{

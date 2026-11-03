@@ -58,6 +58,11 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// 节点类 Job（初始化 / 入站同步 / 扫描 / 删除清理）。不注册的话节点域派出的
 	// async_tasks 会被队列按「不支持的任务类型」丢掉，任务永远 pending。
 	registerNodeJobs(queue, db, cfg.AppKey, asyncSvc, logger)
+	// 用户节点下发（换套餐 / 支付完成）走后台任务：接口只改库，下发与失败原因进
+	// async_tasks，管理员在「异步任务」页能看到哪一步失败。
+	userOps := NewUserPanelOps(col, logger)
+	userDelivery := NewUserDelivery(queue, asyncSvc, admin.NewAdminUserSQLStore(db), userOps, logger)
+	registerUserDelivery(queue, userDelivery)
 	// 流量同步 item 的执行体。不注册的话 /sync-traffic 派出的 SyncNodeTrafficJob
 	// 会被队列按「不支持的任务类型」直接 failItem，按钮等于白点。
 	task.RegisterTrafficSync(queue, asyncSvc,
@@ -187,7 +192,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			AppTimezone:      "UTC",
 			BusinessTimezone: "Asia/Shanghai",
 		},
-		Ops:      NewUserPanelOps(col, logger),
+		Ops:      userOps,
+		Delivery: userDelivery,
 		Notifier: api.NewUserNotifier(userHub, logger),
 		Alerts:   alertRestorer{notifier: sceneNotifier},
 		Logger:   logger,

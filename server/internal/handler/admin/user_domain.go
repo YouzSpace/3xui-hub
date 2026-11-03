@@ -43,6 +43,9 @@ type UserDomain struct {
 	// notifier 把用户侧变更推给在线前端（可空：为空则只靠前端轮询）。
 	notifier UserNotifier
 
+	// delivery 把换套餐后的节点下发丢给后台任务（可空：为空则同步下发，旧行为）。
+	delivery UserDelivery
+
 	// alerts 解锁该用户的自动通知防重标记（购买/续费/重置/改套餐后调用）。
 	// 为空时跳过（只在测试/无邮件场景出现）。
 	alerts AlertRestorer
@@ -92,6 +95,7 @@ func NewUserDomain(d UserDeps) *UserDomain {
 		users:    users,
 		ops:      ops,
 		notifier: d.Notifier,
+		delivery: d.Delivery,
 		alerts:   d.Alerts,
 		plans:    d.Plans,
 		orders:   d.Orders,

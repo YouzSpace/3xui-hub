@@ -200,7 +200,8 @@ CREATE TABLE `mail_logs` (
   PRIMARY KEY (`id`),
   KEY `mail_logs_type_status_index` (`type`,`status`),
   KEY `mail_logs_batch_id_index` (`batch_id`),
-  KEY `mail_logs_to_user_id_index` (`to_user_id`)
+  KEY `mail_logs_to_user_id_index` (`to_user_id`),
+  KEY `mail_logs_created_at_index` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: migrations
@@ -259,6 +260,7 @@ CREATE TABLE `node_api_commands` (
   KEY `node_api_commands_user_id_foreign` (`user_id`),
   KEY `node_api_commands_node_id_status_created_at_index` (`node_id`,`status`,`created_at`),
   KEY `node_api_commands_status_index` (`status`),
+  KEY `node_api_commands_status_updated_at_index` (`status`,`updated_at`),
   CONSTRAINT `node_api_commands_node_id_foreign` FOREIGN KEY (`node_id`) REFERENCES `nodes` (`id`) ON DELETE CASCADE,
   CONSTRAINT `node_api_commands_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

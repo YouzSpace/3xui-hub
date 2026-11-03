@@ -303,6 +303,25 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		ReconcileNodes:    reconcileAdapter(col),
 	})
 
+	// 一次性运维入口：立刻跑一轮数据保留期清理后退出（定时任务每天 04:00 UTC 跑同一套逻辑）：
+	//
+	//	controlhub-server --retention-purge-once            # 真删
+	//	controlhub-server --retention-purge-once --dry-run  # 只统计会删多少，一行不删
+	//
+	// 给「刚升级完想先看看会删多少」和「库已经很大、不想等窗口期」两种场景用。
+	if len(os.Args) > 1 && os.Args[1] == "--retention-purge-once" {
+		dry := "0"
+		if len(os.Args) > 2 && os.Args[2] == "--dry-run" {
+			dry = "1"
+		}
+		if err := cmdRunner.Run(context.Background(), "retention:purge",
+			map[string]string{"--dry-run": dry}); err != nil {
+			log.Printf("[retention] 出错: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// 调度器（DB 用于写 scheduled_task_runs 运行记录与 worker 心跳）
 	sched := task.NewScheduler(task.Options{
 		Now:  time.Now,

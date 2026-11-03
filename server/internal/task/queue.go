@@ -37,6 +37,11 @@ const (
 	JobNodeClientsCleanup JobKind = "NodeClientsCleanupJob"
 	// JobProvisionClient ← ProvisionClientJob（建号后异步下发 client 到各节点）。
 	JobProvisionClient JobKind = "ProvisionClientJob"
+	// JobUserDelivery ← UserDeliveryJob（换套餐 / 支付完成后，把新套餐异步推到各节点）。
+	// 与 ProvisionClientJob 的区别：它是「整用户一次下发」（provision + 开关 + 清标记），
+	// 带 async_tasks 记录，失败原因进「异步任务」页；ProvisionClientJob 是建号专用、
+	// 单节点粒度、无任务记录。
+	JobUserDelivery JobKind = "UserDeliveryJob"
 )
 
 // JobPayload 是队列里的一条执行单元（对齐 PHP Job 构造参数）。

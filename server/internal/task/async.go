@@ -37,6 +37,10 @@ const (
 	TypeNodeInit     = "node_init"
 	TypeNodeAction   = "node_action"
 	TypeDomainAction = "domain_action"
+	// TypeUserDelivery 是「用户节点下发」（换套餐 / 支付完成后把新套餐推到各节点）。
+	// 单独成一种任务而不是塞进 node_action：它的 subject 是用户、item 是整个下发，
+	// 失败文案也要按用户口径给（见 SummaryFor）。
+	TypeUserDelivery = "user_delivery"
 )
 
 // meta.action 取值（node_action / domain_action）。
@@ -168,6 +172,8 @@ func SummaryFor(taskType string) string {
 		return "节点操作失败"
 	case TypeDomainAction:
 		return "域名操作失败"
+	case TypeUserDelivery:
+		return "用户节点下发失败"
 	default:
 		return "任务执行失败"
 	}
