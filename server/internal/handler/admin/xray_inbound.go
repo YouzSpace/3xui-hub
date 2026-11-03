@@ -9,7 +9,9 @@ package admin
 // 任何变更后 bump 该节点 config_version → 节点秒级拉取。
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
@@ -855,19 +857,48 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 
 	// hysteria 的 tlsSettings 已在 buildHysteriaStream 里按证书引用写好
 	// （只存 tlsCertId，私钥留在证书库），不能再走下面这段内联 PEM 分支。
+	//
+	// TLS 入站（vless/vmess/trojan…）一律走证书库（与 HY2 同一条引用链）：
+	//   - 选了证书库条目 → 校验存在 + 域名覆盖 serverName，只存 tlsCertId；
+	//   - 只贴了 PEM → 按内容匹配库里同一张（匹配不到就新建一条），同样存 tlsCertId；
+	//   - 两者都没有 → 报错。
+	// 存了 tlsCertId，续签任务才能通过引用找到这台节点并自动刷新；内联 PEM 可留空，
+	// 写了也会在续签后自动更新（见 xray_certificates_renew.go）。
 	if security == "tls" && protocol != "hysteria" {
 		tls := jo()
-		if sni := nodeStringField(input, "tls_server_name"); sni != "" {
+		sni := strings.ToLower(strings.TrimSpace(nodeStringField(input, "tls_server_name")))
+		if sni != "" {
 			tls.put("serverName", sni)
 		}
 		cert := nodeStringField(input, "tls_certificate")
 		key := nodeStringField(input, "tls_key")
-		if cert == "" || key == "" {
-			// TLS 入站没有证书时 xray 无法启动；空 tlsSettings 会编码成 [] 让整份配置加载失败。
-			d.fail(c, "TLS 入站必须提供证书与私钥", 500)
+		certID := inputInt(input["tls_cert_id"])
+		if certID <= 0 && cert != "" && key != "" {
+			id, ok := d.certificateIDForPEM(c, cert, key, sni)
+			if !ok {
+				return XrayInboundInput{}, false
+			}
+			certID = int64(id)
+		}
+		if certID <= 0 {
+			d.fail(c, "TLS 入站需要引用一张证书库证书（推荐），或手填证书与私钥", 500)
 			return XrayInboundInput{}, false
 		}
-		tls.put("certificates", jsArr{jo("certificate", jsArr{cert}, "key", jsArr{key})})
+		ref, err := d.store.XrayCertificatePEM(ctxOf(c), uint64(certID))
+		if err != nil {
+			d.fail(c, "证书库条目不存在（id="+itoaInt64(certID)+"），请重新选择", 500)
+			return XrayInboundInput{}, false
+		}
+		if sni != "" && ref.Domain != nil {
+			if domain := strings.ToLower(strings.TrimSpace(*ref.Domain)); domain != "" && !certDomainMatches(domain, sni) {
+				d.fail(c, "选中的证书（"+domain+"）覆盖不到 serverName "+sni, 500)
+				return XrayInboundInput{}, false
+			}
+		}
+		tls.put(xray.CertRefKey, certID)
+		if cert != "" && key != "" {
+			tls.put("certificates", jsArr{jo("certificate", jsArr{cert}, "key", jsArr{key})})
+		}
 		stream.put("tlsSettings", tls)
 	}
 
@@ -1051,6 +1082,62 @@ func pickCertForHysteria(certs []XrayCertificate, sni, nodeHost string, now time
 	}
 	return best.id, len(live), material
 }
+
+// certificateIDForPEM 把「手贴的证书 PEM」落到证书库并返回行 id：
+// 先按内容匹配（去空白后一字不差），没有就新建一条（名字优先取 serverName）。
+// 这样老的「只贴 PEM」用法也会进入引用链，续签统一走证书库。
+func (d *NodeDomain) certificateIDForPEM(c *gin.Context, certPEM, keyPEM, sni string) (uint64, bool) {
+	certs, err := d.store.XrayCertificates(ctxOf(c))
+	if err != nil {
+		d.failServer(c, "读取证书库", err)
+		return 0, false
+	}
+	want := normalizePEMText(certPEM)
+	if want != "" {
+		for i := range certs {
+			if normalizePEMText(certs[i].CertPEM) == want {
+				return certs[i].ID, true
+			}
+		}
+	}
+
+	name := sni
+	if name == "" {
+		sum := sha256.Sum256([]byte(want))
+		name = "tls-" + hex.EncodeToString(sum[:4])
+	}
+	if len([]rune(name)) > certNameMaxLen {
+		name = string([]rune(name)[:certNameMaxLen])
+	}
+	taken := make(map[string]bool, len(certs))
+	for i := range certs {
+		taken[certs[i].Name] = true
+	}
+	base := name
+	for n := 2; taken[name]; n++ {
+		suffix := "-" + strconv.Itoa(n)
+		trimmed := base
+		if runes := []rune(trimmed); len(runes)+len(suffix) > certNameMaxLen {
+			trimmed = string(runes[:certNameMaxLen-len(suffix)])
+		}
+		name = trimmed + suffix
+	}
+
+	in := XrayCertificateInput{Name: name, CertPEM: certPEM, KeyPEM: keyPEM}
+	if validCertDomain(name) {
+		dm := name
+		in.Domain = &dm
+	}
+	created, err := d.store.CreateXrayCertificate(ctxOf(c), in)
+	if err != nil {
+		d.failServer(c, "写入证书库", err)
+		return 0, false
+	}
+	return created.ID, true
+}
+
+// normalizePEMText 把 PEM 压成「无空白」串用于内容比对（换行/缩进差异不影响判断）。
+func normalizePEMText(s string) string { return strings.Join(strings.Fields(s), "") }
 
 // certDomainMatches 判断证书登记的域名是否覆盖某个主机名：完全一致，或通配符
 // （*.example.com 覆盖 a.example.com 与 example.com 本身）。

@@ -504,4 +504,31 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
 
     expect(wrapper.vm.form.tls_cert_id).toBeNull()
   })
+
+  it('TLS 入站可以只引用证书库（PEM 留空），保存时带 tls_cert_id', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+    adminApi.createXrayInbound.mockResolvedValue({ id: 1 })
+
+    await wrapper.vm.save()
+    await flushPromises()
+
+    expect(adminApi.createXrayInbound).toHaveBeenCalled()
+    const payload = adminApi.createXrayInbound.mock.calls[0][1]
+    expect(payload.tls_cert_id).toBe(7)
+    expect(payload.tls_certificate).toBeUndefined()
+    expect(payload.tls_key).toBeUndefined()
+  })
+
+  it('TLS 入站既没引用也没 PEM：拦下不发请求', async () => {
+    const wrapper = await mountWithCerts([])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+
+    await wrapper.vm.save()
+
+    expect(adminApi.createXrayInbound).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalled()
+  })
 })

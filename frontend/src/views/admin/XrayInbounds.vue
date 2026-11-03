@@ -875,7 +875,9 @@ const openEdit = (ib) => {
   }
   advOpen.value = false
   loadCertificates().then(() => {
-    pemCertId.value = bestPemCert()?.id ?? null
+    // 编辑已有入站：优先回显它引用的那张（续签就是按这个 id 找节点的）；
+    // 没引用（老的内联 PEM 用法）才按域名挑一张。
+    pemCertId.value = form.value.tls_cert_id ?? bestPemCert()?.id ?? null
   })
   modalOpen.value = true
 }
@@ -1108,6 +1110,17 @@ const applyScan = () => {
 
 const save = async (forceServerNames = false) => {
   if (!nodeId.value) return
+  // TLS 入站（非 HY2）必须能落一张证书：引用证书库（推荐）或手填 PEM。
+  // 引用证书库才能进续签链（tlsCertId），只填 PEM 时后端会按内容自动入库并补上引用。
+  if (isTls.value && !isHy.value) {
+    const hasRef = !!pemCertId.value
+    const hasPem =
+      !!String(form.value.tls_certificate || '').trim() && !!String(form.value.tls_key || '').trim()
+    if (!hasRef && !hasPem) {
+      toast.error('TLS 入站需要先选一张证书库证书（或点上方「签发证书」），也可以手填证书与私钥')
+      return
+    }
+  }
   // 后量子材料成对校验（前后端同守）：只在一边填会让 REALITY 握手失败
   if (isReality.value) {
     const seed = (form.value.mldsa65_seed || '').trim()
@@ -1223,6 +1236,9 @@ const save = async (forceServerNames = false) => {
         payload.tls_certificate = form.value.tls_certificate
         payload.tls_key = form.value.tls_key
       }
+      // TLS 入站一律引用证书库（与 HY2 同一条续签链）：选中条目 → 只存 tlsCertId，PEM 可留空；
+      // 没选但贴了 PEM → 后端按内容匹配/入库后自动补上引用。
+      if (!isHy.value && pemCertId.value) payload.tls_cert_id = Number(pemCertId.value)
     }
     if (isSs.value) {
       payload.ss_method = form.value.ss_method
@@ -1822,7 +1838,7 @@ const clientLabel = (ib) => {
               </span>
             </div>
             <label class="an-field">
-              <span>证书库条目（只用于回填，不写进入站配置）</span>
+              <span>证书库条目（引用证书库；选中后 PEM 可留空）</span>
               <Select v-model="pemCertId" :options="pemCertOptions" :placeholder="pemCertPlaceholder" />
             </label>
             <p v-if="!pemPickable.length" class="an-hint">
@@ -1831,17 +1847,17 @@ const clientLabel = (ib) => {
             </p>
             <div class="an-grid">
               <label class="an-field">
-                <span>证书 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '' }}</span>
+                <span>证书 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '（引用证书库时可留空）' }}</span>
                 <textarea v-model="form.tls_certificate" class="an-textarea" rows="3" placeholder="-----BEGIN CERTIFICATE-----" />
               </label>
               <label class="an-field">
-                <span>私钥 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '' }}</span>
+                <span>私钥 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '（引用证书库时可留空）' }}</span>
                 <textarea v-model="form.tls_key" class="an-textarea" rows="3" placeholder="-----BEGIN PRIVATE KEY-----" />
               </label>
             </div>
             <p class="an-hint">
-              两个框可以手贴，也可以选一张证书库条目后点「从证书库填充 PEM」：回填的是解密后的证书与私钥，
-              保存后与手贴完全一样（私钥不会出现在证书库列表接口里，只有点按钮时才单独取一次）。
+              选中证书库条目 = 引用（推荐）：PEM 可以留空，续签由证书库统一处理、节点自动重拉；
+              手贴 PEM 也行，保存时会按内容写进证书库并自动挂上引用，之后同样自动续签。
             </p>
           </template>
           <p v-else class="an-hint">
