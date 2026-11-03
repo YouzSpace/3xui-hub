@@ -250,10 +250,17 @@ const listenOptions = computed(() => {
   // 「自定义」= 绑定地址不动，单独指定订阅链接里给客户端用的地址（CDN 域名 / 另一个 IP）。
   return [...base, { label: '自定义（客户端连接地址，如 CDN 域名）', value: 'custom' }]
 })
+// 「自定义客户端连接地址」是一个独立的编辑态：选了就显示输入框，值存在 form.client_host。
+// 不能用 client_host 是否为空反推 —— 选了但还没填时会立刻弹回原选项，输入框根本出不来。
+const customAddress = ref(false)
 const listenFamily = computed({
-  get: () => (String(form.value.client_host || '').trim() ? 'custom' : form.value.listen),
+  get: () => (customAddress.value ? 'custom' : form.value.listen),
   set: (v) => {
-    if (v === 'custom') return // 绑定地址保持不变，只打开下方的自定义地址输入
+    if (v === 'custom') {
+      customAddress.value = true // 绑定地址保持不变，只打开下面的自定义地址输入
+      return
+    }
+    customAddress.value = false
     form.value.client_host = ''
     form.value.listen = v
   },
@@ -754,6 +761,7 @@ const issueNodeCert = async () => {
 const openCreate = () => {
   editing.value = null
   form.value = emptyForm()
+  customAddress.value = false
   advOpen.value = false
   loadCertificates().then(() => {
     pemCertId.value = bestPemCert()?.id ?? null
@@ -763,6 +771,7 @@ const openCreate = () => {
 
 const openEdit = (ib) => {
   editing.value = ib
+  customAddress.value = !!String(ib.client_host || '').trim()
   form.value = {
     protocol: ib.protocol,
     tag: ib.tag,
@@ -1118,6 +1127,11 @@ const applyScan = () => {
 
 const save = async (forceServerNames = false) => {
   if (!nodeId.value) return
+  // 选了「自定义客户端地址」就必须填一个地址（留空等于没选，却挡住用户不知道怎么办）
+  if (customAddress.value && !String(form.value.client_host || '').trim()) {
+    toast.error('地址族选了「自定义」：请在下面填入 CDN 域名或 IP，或把地址族改回 IPv4/IPv6')
+    return
+  }
   // TLS 入站（非 HY2）必须能落一张证书：引用证书库（推荐）或手填 PEM。
   // 引用证书库才能进续签链（tlsCertId），只填 PEM 时后端会按内容自动入库并补上引用。
   if (isTls.value && !isHy.value) {
@@ -1480,7 +1494,7 @@ const clientLabel = (ib) => {
           选 IPv6（<code>::</code>）后，订阅链接里的地址改用节点表单填的「服务器 IPv6 地址」；
           没填时仍回落到主地址。选「自定义」则不改绑定地址，只把订阅链接里的地址换成下面填的地址（CDN 场景）。
         </p>
-        <template v-if="listenFamily === 'custom'">
+        <template v-if="customAddress">
           <label class="an-field">
             <span>客户端连接地址（CDN 域名 / 另一个 IP；端口仍是本入站端口）</span>
             <Input v-model="form.client_host" mono placeholder="如 cdn.example.com" />

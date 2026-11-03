@@ -521,19 +521,39 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     expect(payload.tls_key).toBeUndefined()
   })
 
-  it('地址族选「自定义」：客户端连接地址单独填，保存时带上 client_host', async () => {
+  it('地址族选「自定义」：输入框出现，保存时带上 client_host', async () => {
     const wrapper = await mountWithCerts([tlsCert])
     await openTls(wrapper)
     wrapper.vm.form.port = 8443
+
+    // 选中「自定义」就必须保持这个态（不能因为 client_host 还空着就弹回去）
+    wrapper.vm.listenFamily = 'custom'
+    await flushPromises()
+    expect(wrapper.vm.customAddress).toBe(true)
+    expect(wrapper.vm.listenFamily).toBe('custom')
+    expect(document.body.textContent).toContain('客户端连接地址')
+
     wrapper.vm.form.client_host = 'cdn.example.com'
     adminApi.createXrayInbound.mockResolvedValue({ id: 1 })
-
     await wrapper.vm.save()
     await flushPromises()
 
     const payload = adminApi.createXrayInbound.mock.calls[0][1]
     expect(payload.client_host).toBe('cdn.example.com')
     expect(payload.listen).toBe('0.0.0.0')
+  })
+
+  it('选了「自定义」却没填地址：拦下不发请求', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+    wrapper.vm.listenFamily = 'custom'
+    await flushPromises()
+
+    await wrapper.vm.save()
+
+    expect(adminApi.createXrayInbound).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalled()
   })
 
   it('TLS 入站既没引用也没 PEM：拦下不发请求', async () => {
