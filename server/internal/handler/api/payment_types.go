@@ -266,17 +266,16 @@ type PaymentCache interface {
 	Forget(ctx context.Context, key string) error
 }
 
-// PanelSyncer 是「把用户最新配置推给所有节点 + 重置流量」的接缝。
+// PanelSyncer 是「把用户最新配置推给所有节点」的接缝。
 //
-// 真实实现依赖 P5 驱动层（3x-ui / xray），本阶段留空实现：PaymentService 只在
-// 需要时调用，失败只记日志（与 PHP 里 report() 后继续的语义一致）。
+// 真实实现依赖驱动层（3x-ui / xray），且**允许异步**：生产实现把下发丢给
+// `user_delivery` 后台任务，支付回调不必等节点（一轮下发 2–3 秒，回调有自己的超时）。
+// 失败只记日志（与 PHP 里 report() 后继续的语义一致）。
 type PanelSyncer interface {
-	// ProvisionClient 在各 enabled 节点上同步 client（PHP UserAdminService::provisionClient）。
-	ProvisionClient(ctx context.Context, user *User) error
-	// ResetClientTraffic 重置各节点上该用户的流量统计（PHP resetClientOnNodes）。
-	ResetClientTraffic(ctx context.Context, user *User) error
-	// ToggleClient 打开/关闭各节点上的 client（PHP BanService::toggleClient）。
-	ToggleClient(ctx context.Context, user *User, enable bool) error
+	// DeliverUser 把该用户的最新状态下发到各节点：清流量计数 → 建/更新 client → 开 client
+	// （PHP 的 resetClientOnNodes + provisionClient + BanService::toggleClient）。
+	// 调用方不等待节点，只需要「派发成功 / 派发失败」这个结果。
+	DeliverUser(ctx context.Context, user *User) error
 }
 
 // ProxyOrderCompleter 是代理订单支付成功后的开通接缝（PHP ProxyStoreService::completeOrder）。
