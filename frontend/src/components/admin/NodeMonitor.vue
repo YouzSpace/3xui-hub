@@ -23,6 +23,7 @@ import { regionFlag, regionName } from '@/utils/globe'
 import {
   average,
   finite,
+  formatBytes,
   formatPercent,
   formatSpeed,
   relativeTime,
@@ -32,6 +33,8 @@ import {
 
 /** 轮询间隔：与 agent 的上报节奏对齐，再快拿到的也是重复值。 */
 const POLL_MS = 5000
+/** 24h 汇总的取数间隔：全表聚合，没必要跟着 5 秒轮询跑。 */
+const SUMMARY_MS = 60 * 1000
 /** 实时曲线保留窗口（毫秒）。 */
 const WINDOW_MS = 5 * 60 * 1000
 
@@ -41,8 +44,11 @@ const loading = ref(true)
 const failed = ref(false)
 const lastSuccessAt = ref(0)
 const liveWindow = ref(60)
-const motionOn = ref(true)
 const globeRef = ref(null)
+/** 24h 监控汇总（提供「近 24 小时流量」合计与 TOP1 机器） */
+const trafficSummary = ref(null)
+/** 上次取 24h 汇总的时间戳（降频用，非响应式）。 */
+let lastSummaryAt = 0
 
 /** 本次浏览观测到的采样点：{ t, up, down, cpu, mem, online } */
 const samples = ref([])
@@ -51,7 +57,7 @@ const now = ref(Date.now())
 /**
  * 图表专用的“现在”，只跟轮询同频（POLL_MS）更新。
  *
- * 为什么和 now 拆开：曲线窗口的滑动（windowSamples → liveChart / livePeak /
+ * 为什么和 now 拆开：曲线窗口的滑动（windowSamples → liveSpark /
  * cpuSpark / memSpark）会重算 SVG 路径，而采样点本来就是每 POLL_MS 一个。
  * 若也挂在每秒的 now 上，就等于每秒白算 3 次 chartGeometry —— 节点多时肉眼可见地卡。
  * 拆开后：now 每秒只 patch 那一处文本节点，图表仍保持 5 秒重算一次，两边都正确。
@@ -85,9 +91,35 @@ const coverage = computed(() => {
 const liveUp = computed(() => sumOrNull(onlineNodes.value.map((node) => node.metrics?.up_speed)))
 const liveDown = computed(() => sumOrNull(onlineNodes.value.map((node) => node.metrics?.down_speed)))
 
-/** 实时连接数 / 活跃用户合计（只有 xray 节点上报，面板节点是 null）。 */
-const liveConns = computed(() => sumOrNull(onlineNodes.value.map((node) => node.metrics?.conns)))
-const liveUsers = computed(() => sumOrNull(onlineNodes.value.map((node) => node.metrics?.active_users)))
+/** 实时速率卡的**大字**：上下行总和（用户定稿）。两边都无数据才是 null。 */
+const liveTotal = computed(() => {
+  if (liveUp.value === null && liveDown.value === null) return null
+
+  return (liveUp.value ?? 0) + (liveDown.value ?? 0)
+})
+
+/**
+ * 近 24 小时全网流量（网卡口径，与曲线卡同一个 totals）。
+ * 拿不到就是 null（不兜底成 0），卡片显示「—」。
+ */
+const traffic24h = computed(() => {
+  const up = trafficSummary.value?.totals?.up
+  const down = trafficSummary.value?.totals?.down
+  const ok = finite(up) || finite(down)
+
+  return {
+    up: finite(up) ? up : null,
+    down: finite(down) ? down : null,
+    total: ok ? (finite(up) ? up : 0) + (finite(down) ? down : 0) : null,
+  }
+})
+
+/** 24h 流量最大的机器（徽章用）；全无数据返回 null。 */
+const trafficTopNode = computed(() => {
+  const rows = Array.isArray(trafficSummary.value?.nodes) ? trafficSummary.value.nodes : []
+  const ranked = rows.filter((n) => finite(n.total)).sort((a, b) => b.total - a.total)
+  return ranked[0] || null
+})
 
 /** 实时曲线窗口内的采样点。 */
 const windowSamples = computed(() => {
@@ -96,19 +128,18 @@ const windowSamples = computed(() => {
   return samples.value.filter((sample) => sample.t >= from)
 })
 
-const liveChart = computed(() =>
+/** 汇总卡里的实时速率迷你走势：**只画总和一根**（用户定稿），尺寸与 CPU/内存一致。 */
+const liveSpark = computed(() =>
   chartGeometry(
-    windowSamples.value,
-    [{ key: 'up' }, { key: 'down' }],
-    { width: 600, height: 150, padTop: 10, padBottom: 10 },
+    windowSamples.value.map((sample) => ({
+      ...sample,
+      // 单个方向缺失按 0 计，两个方向都在才是一条完整的和
+      total: (finite(sample.up) ? sample.up : 0) + (finite(sample.down) ? sample.down : 0),
+    })),
+    [{ key: 'total' }],
+    { width: 160, height: 34, padTop: 3, padBottom: 3 },
   ),
 )
-
-const livePeak = computed(() => {
-  const values = windowSamples.value.flatMap((sample) => [sample.up, sample.down]).filter(finite)
-
-  return values.length ? Math.max(...values) : null
-})
 
 /** 汇总卡里的迷你曲线（CPU / 内存，按 0–100 固定刻度）。 */
 const cpuSpark = computed(() =>
@@ -141,8 +172,19 @@ function pushSample() {
 
 async function load() {
   try {
-    const data = await adminApi.listNodes({ all: 1 })
+    // 节点列表每次轮询都要；24h 汇总则降频取（见 SUMMARY_MS）——它是全表聚合，
+    // 跟着 5 秒轮询跑等于每 5 秒对全部节点重算一次 24h，纯属白压数据库。
+    const needSummary = Date.now() - lastSummaryAt >= SUMMARY_MS
+    const [data, summary] = await Promise.all([
+      adminApi.listNodes({ all: 1 }),
+      needSummary ? adminApi.monitorSummary('24h').catch(() => null) : Promise.resolve(null),
+    ])
     nodes.value = Array.isArray(data) ? data : []
+    if (needSummary) {
+      // 取到才覆盖：一次抖动不要把卡片打回「—」
+      if (summary) trafficSummary.value = summary
+      lastSummaryAt = Date.now()
+    }
     lastSuccessAt.value = Date.now()
     failed.value = false
     pushSample()
@@ -178,10 +220,6 @@ function stopTimers() {
 
 function focusRegion(code) {
   globeRef.value?.focusRegion(code)
-}
-
-function toggleMotion() {
-  globeRef.value?.toggleMotion()
 }
 
 function statusVariant(status) {
@@ -254,13 +292,19 @@ onBeforeUnmount(() => {
       <span>节点状态暂不可确认，正在重试；下方显示的是最后一次成功获取的数据。</span>
     </div>
 
-    <!-- 监控汇总（在线数在页面的业务概览里，这里不重复） -->
+    <!-- 监控汇总（活跃人数/连接数已并进上面业务概览的用户总数卡，这里不再重复） -->
     <div class="nm-summary">
+      <!-- 近 24 小时流量：跟着 CPU/内存同一行，不再单独占一行 -->
       <StatCard
-        label="实时连接"
-        :value="liveConns ?? '—'"
-        :note="`活跃用户 ${liveUsers ?? '—'} · 仅 xray 节点上报`"
-      />
+        label="近 24 小时流量"
+        :value="formatBytes(traffic24h.total)"
+        :health="trafficTopNode ? `TOP1 ${trafficTopNode.name}` : ''"
+        health-state="top"
+      >
+        <template #note>
+          <span class="nm-note-line">↑ 上传 {{ formatBytes(traffic24h.up) }} · ↓ 下载 {{ formatBytes(traffic24h.down) }}</span>
+        </template>
+      </StatCard>
 
       <StatCard label="平均 CPU" :value="formatPercent(avgCpu, 1)" note="在线节点的平均值">
         <svg class="nm-spark" viewBox="0 0 160 34" preserveAspectRatio="none" aria-hidden="true">
@@ -274,21 +318,33 @@ onBeforeUnmount(() => {
         </svg>
       </StatCard>
 
-      <StatCard label="覆盖地区" :value="coverage.total" suffix="个">
+      <!-- 实时速率：大字是上下行**总和**，说明行才分开写上传/下载；曲线也只画总和一根 -->
+      <StatCard label="实时速率" :value="formatSpeed(liveTotal)" note="">
         <template #note>
-          {{ coverage.online }} 个地区有在线节点<template v-if="unmapped"> · {{ unmapped }} 个节点无法识别地区</template>
+          <span class="nm-note-line">
+            ↑ 上传 {{ formatSpeed(liveUp) }} · ↓ 下载 {{ formatSpeed(liveDown) }}
+          </span>
         </template>
+        <svg class="nm-spark" viewBox="0 0 160 34" preserveAspectRatio="none" aria-hidden="true">
+          <path class="nm-line nm-line--total" vector-effect="non-scaling-stroke" :d="liveSpark.paths[0]?.d" />
+        </svg>
       </StatCard>
     </div>
 
-    <!-- 地球 + 实时网络 -->
+    <!-- 地球（左）+ 父组件传入的侧卡（右，现在放「最近用户」；原来这里是速率大卡） -->
     <div class="nm-observatory">
       <Card class="nm-panel">
         <div class="nm-panel-head">
           <h2 class="nm-panel-title">节点地区</h2>
-          <Button variant="secondary" size="sm" @click="toggleMotion">
-            {{ motionOn ? '暂停旋转' : '开始旋转' }}
-          </Button>
+          <!-- 覆盖地区从上面的汇总卡移到这里（右上角），省一格 -->
+          <div class="nm-coverage">
+            <span class="nm-coverage-value">
+              覆盖 {{ coverage.total }} 个地区
+            </span>
+            <span class="nm-coverage-note">
+              {{ coverage.online }} 个有在线节点<template v-if="unmapped"> · {{ unmapped }} 个无法识别</template>
+            </span>
+          </div>
         </div>
 
         <div class="nm-globe-row">
@@ -296,81 +352,24 @@ onBeforeUnmount(() => {
             ref="globeRef"
             :nodes="nodes"
             @regions="regions = $event"
-            @motion="motionOn = $event"
           />
-          <ul class="nm-region-list">
-            <li v-for="region in regions" :key="region.code">
-              <button type="button" @click="focusRegion(region.code)">
-                <span class="nm-led" :class="{ 'is-lit': region.online > 0 }" aria-hidden="true"></span>
-                <span class="nm-region-name">{{ regionName(region.code) }}</span>
-                <strong>{{ region.online }}<small> / {{ region.total }}</small></strong>
-              </button>
-            </li>
-            <li v-if="!regions.length" class="nm-region-empty">暂无可定位的地区</li>
-          </ul>
-        </div>
-
-        <p class="nm-note">
-          位置为国家 / 地区示意，非机房精确位置；连线与光点为示意动画，不代表真实链路或流量。
-        </p>
-      </Card>
-
-      <Card class="nm-panel">
-        <div class="nm-panel-head">
-          <h2 class="nm-panel-title">上下行速率</h2>
-          <Select
-            v-model="liveWindow"
-            size="sm"
-            :options="[
-              { label: '最近 60 秒', value: 60 },
-              { label: '最近 5 分钟', value: 300 },
-            ]"
-          />
-        </div>
-
-        <div class="nm-live">
-          <div>
-            <span class="nm-legend nm-legend--up" aria-hidden="true"></span>
-            <span class="nm-live-label">上传</span>
-            <strong>{{ formatSpeed(liveUp) }}</strong>
-          </div>
-          <div>
-            <span class="nm-legend nm-legend--down" aria-hidden="true"></span>
-            <span class="nm-live-label">下载</span>
-            <strong>{{ formatSpeed(liveDown) }}</strong>
+          <div class="nm-globe-side">
+            <ul class="nm-region-list">
+              <li v-for="region in regions" :key="region.code">
+                <button type="button" @click="focusRegion(region.code)">
+                  <span class="nm-led" :class="{ 'is-lit': region.online > 0 }" aria-hidden="true"></span>
+                  <span class="nm-region-name">{{ regionName(region.code) }}</span>
+                  <strong>{{ region.online }}<small> / {{ region.total }}</small></strong>
+                </button>
+              </li>
+              <li v-if="!regions.length" class="nm-region-empty">暂无可定位的地区</li>
+            </ul>
+            <p class="nm-note nm-note--tight">拖动旋转 · 地区为示意位置</p>
           </div>
         </div>
-
-        <div class="nm-plot">
-          <svg
-            v-if="liveChart.count >= 2"
-            class="nm-svg"
-            viewBox="0 0 600 150"
-            preserveAspectRatio="none"
-            role="img"
-            :aria-label="`实时上下行速率曲线，${liveChart.count} 个采样点`"
-          >
-            <path class="nm-grid" d="M0 10H600 M0 75H600 M0 140H600" vector-effect="non-scaling-stroke" />
-            <path
-              v-for="line in liveChart.paths"
-              :key="line.key"
-              class="nm-line"
-              :class="`nm-line--${line.key}`"
-              :d="line.d"
-              vector-effect="non-scaling-stroke"
-            />
-          </svg>
-          <!-- 只有一个点时画不出线，与其显示一片空网格（像加载失败），不如说清楚在攒点 -->
-          <p v-else class="nm-plot-empty">
-            {{ liveChart.count === 1 ? '正在采集…（每 5 秒一个点）' : '等待采样…' }}
-          </p>
-        </div>
-
-        <p class="nm-note">
-          本次浏览观测，刷新即清空 · 峰值 {{ formatSpeed(livePeak) }} ·
-          只有 xray 节点上报实时速率，面板节点不提供
-        </p>
       </Card>
+
+      <slot name="observatory-side" />
     </div>
 
     <!-- 节点卡片 -->
@@ -461,15 +460,27 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
+  align-items: stretch;
+}
+/* 卡内说明行：块级独占一行，防止多段文字被接成一串 */
+.nm-note-line {
+  display: block;
+  line-height: 1.5;
 }
 .nm-spark {
   width: 100%;
   height: 34px;
   display: block;
-  margin-top: var(--space-1);
+  /* margin-top:auto 把曲线顶到卡片底部：曲线的 0 基准线就贴着下边框（用户定稿） */
+  margin-top: auto;
+}
+/* 三张带曲线的小卡（CPU / 内存 / 实时速率）底部内边距压小，让基准线更贴近下边框 */
+.nm-summary :deep(.ch-card) {
+  padding-bottom: var(--space-2);
 }
 
 /* ── 地球 / 实时网络 ── */
+/* 观测区两栏：左地球（宽）、右侧卡（窄）——右侧现在放「最近用户」 */
 .nm-observatory {
   display: grid;
   grid-template-columns: 1.13fr 1fr;
@@ -491,6 +502,26 @@ onBeforeUnmount(() => {
   font-size: var(--text-lg);
   font-weight: var(--font-semibold);
   /* 窄栏里标题会被右侧的按钮/下拉挤成两行，「率」字孤行很难看 */
+  white-space: nowrap;
+}
+/* 覆盖地区：挪到「节点地区」标题右上角，两行小字（不再单占一张卡） */
+.nm-coverage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  text-align: right;
+}
+.nm-coverage-value {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.nm-coverage-note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
   white-space: nowrap;
 }
 .nm-globe-row {
@@ -628,6 +659,10 @@ onBeforeUnmount(() => {
 }
 .nm-line--mem {
   stroke: var(--accent);
+}
+/* 实时速率那根线是「上下行总和」，用在线绿与 CPU/内存区分开 */
+.nm-line--total {
+  stroke: var(--success);
 }
 .nm-plot-empty {
   margin: 0;

@@ -27,12 +27,15 @@ import NodeMonitor from '@/components/admin/NodeMonitor.vue'
 import { useToast } from '@/components/ui/Toast.vue'
 import { adminApi } from '@/api/admin'
 import { chartGeometry } from '@/utils/chart'
-import { finite, formatBytes, formatPercent, formatSpeed } from '@/utils/format'
+import { finite, formatBytes, formatPercent, formatSpeed, sumOrNull } from '@/utils/format'
 
 /* ── 业务概览 ──────────────────────────────────────────────── */
 
 const users = ref([])
 const userTotal = ref(0)
+/** 活跃人数 / 连接数（在线 xray 节点上报的 active_users / conns 合计；无上报为 null） */
+const activeUsers = ref(null)
+const activeConns = ref(null)
 const servers = ref({ total: 0, online: 0 })
 /** 入站配置总数（原来的「节点」口径：所有服务器的入站加起来） */
 const inboundTotal = ref(0)
@@ -64,10 +67,13 @@ const BUCKET_SECONDS = { '24h': 300, '7d': 3600, '30d': 86400, month: 86400 }
 
 /**
  * 曲线画布几何：不引图表库，直接用 chartGeometry。
- * 横向不留内边距 —— Y 轴刻度文字由左右两列固定宽度的 HTML 承担（见 .dsh-axis）。
- * 刻度若也画进 SVG，preserveAspectRatio="none" 下横轴会被拉伸，文字与曲线对不齐。
+ *
+ * 刻度**叠在绘图区里**（左/右/下三边内缩），绘图区铺满整张卡片宽度 ——
+ * 外部再挂两列 HTML 会让曲线两侧各白掉 62px。内缩量由 padTop/padBottom 留出：
+ * 顶部给最高的那枚 Y 刻度、底部给时间轴一行，曲线不会压到字上。
+ * 刻度文字用 HTML 绝对定位叠在 SVG 上（preserveAspectRatio="none" 下 SVG 内的字会被横向拉伸）。
  */
-const CHART = { width: 600, height: 180, padLeft: 0, padRight: 0, padTop: 10, padBottom: 10 }
+const CHART = { width: 600, height: 180, padLeft: 0, padRight: 0, padTop: 20, padBottom: 24 }
 
 /** 视图选择：'aggregate' = 全机合计（默认），其余是具体节点 id。 */
 const AGGREGATE = 'aggregate'
@@ -357,6 +363,53 @@ const hoverPoint = computed(() =>
 
 const hoverX = computed(() => (hoverPoint.value ? chart.value.x(hoverPoint.value.t) : null))
 
+/** tooltip 靠右半区时翻到竖线左侧，避免整块飘出卡片。 */
+const hoverFlipped = computed(() => hoverX.value !== null && hoverX.value > CHART.width * 0.62)
+
+/**
+ * 采样点时间格式化。`t` 是后端给的 **epoch 秒**（DSN loc=UTC，Unix() 是绝对时间），
+ * 所以直接 new Date(t * 1000) 就是浏览器本地时区 —— 与「峰值 at 今天 14:20」同一套口径。
+ */
+const clockOf = (t, withDate) => {
+  const at = new Date(t * 1000)
+  if (Number.isNaN(at.getTime())) return '—'
+
+  const pad = (n) => String(n).padStart(2, '0')
+  const hm = `${pad(at.getHours())}:${pad(at.getMinutes())}`
+  return withDate ? `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${hm}` : hm
+}
+
+/** hover tooltip 顶部那行时间（含日期，跨天也能定位）。 */
+const hoverTime = computed(() => (hoverPoint.value ? clockOf(hoverPoint.value.t, true) : null))
+
+/**
+ * 横轴刻度：等分窗口取 5 个点。
+ * 24h 显示「时:分」（窗口内只有一天，日期是噪音）；7d/30d/本月显示「月-日」。
+ * 首尾两枚贴边显示（0% / 100% 各自不越界），中间三枚居中。
+ */
+const xTicks = computed(() => {
+  const { start, end } = chart.value
+  const points = chartSamples.value.length
+  if (!points || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return []
+
+  const count = 5
+  const span = end - start
+  const withDate = windowKey.value !== '24h'
+
+  return Array.from({ length: count }, (_, i) => {
+    const ratio = i / (count - 1)
+    const t = start + span * ratio
+
+    return {
+      key: i,
+      label: clockOf(Math.round(t), withDate),
+      left: ratio * 100,
+      // 首枚左对齐、末枚右对齐，中间居中 —— 否则文字会溢出绘图区被卡片裁掉
+      align: i === 0 ? 'start' : i === count - 1 ? 'end' : 'center',
+    }
+  })
+})
+
 /** 曲线标题：合计视图说明口径，单节点视图点明是哪台。 */
 const chartScope = computed(() =>
   selectedView.value === AGGREGATE ? '全部节点合计' : selectedEntry.value?.name || '节点',
@@ -431,6 +484,10 @@ const loadBusiness = async () => {
       const inbounds = n.inbounds || {}
       return sum + Object.values(inbounds).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0)
     }, 0)
+    // 活跃人数 / 连接数：只认在线节点上报的值（面板节点恒为 null，sumOrNull 会跳过）
+    const onlineNodes = nodes.filter((n) => n.status === 'online')
+    activeUsers.value = sumOrNull(onlineNodes.map((n) => n.metrics?.active_users))
+    activeConns.value = sumOrNull(onlineNodes.map((n) => n.metrics?.conns))
   }
 
   if (revenueResult.status === 'fulfilled') {
@@ -500,6 +557,12 @@ const userWindowLabel = computed(() => USER_WINDOW_LABELS[userWindow.value] || U
  * 一进页面就拉 500 条会让仪表盘首屏多背几百 KB。弹窗打开时才拉，且同一窗口内复用。
  */
 const topUserRows = computed(() => userRows.value.slice(0, TOP_N))
+
+/* 右栏 CPU / 内存排行：卡片里只放前 3 条，全部走二级弹窗（右栏全展开会过长） */
+const RANK_PREVIEW = 3
+const allCpuOpen = ref(false)
+const allMemOpen = ref(false)
+
 const allUsersOpen = ref(false)
 const allUsers = ref([])
 const allUsersLoading = ref(false)
@@ -540,23 +603,6 @@ const maxAllUserWeighted = computed(() => {
   return values.length ? Math.max(...values) : null
 })
 /** 机器榜以网卡合计排序；没有网卡数据的机器用用户原始代替做分母（只影响条长，不影响数字）。 */
-
-/**
- * 邮箱打码：保留首字符 + 域名（设计稿 a***@x.com）。
- * 后台看排行不需要完整邮箱；打码也避免截图外流时带出用户信息。
- * 没有邮箱（老数据 / 无套餐用户）回落到 #id。
- */
-const maskEmail = (email) => {
-  if (!email || typeof email !== 'string') return null
-  const at = email.indexOf('@')
-  if (at <= 0) return email
-
-  const head = email.slice(0, 1)
-  return `${head}***${email.slice(at)}`
-}
-
-/** 用户显示名：a***@x.com + #id（设计稿：打码邮箱与 id 并排）。 */
-const userDisplay = (row) => maskEmail(row?.email) || `用户 #${row?.user_id}`
 
 /** 套餐类型徽章文案：period → 周期·N 个月；total → 总量；无套餐 → —。 */
 const planTypeLabel = (row) => {
@@ -758,7 +804,12 @@ onActivated(load)
 
     <!-- 业务概览 -->
     <div class="dsh-cards">
-      <StatCard label="用户总数" :value="userTotal" note="注册用户数" />
+      <!-- 用户总数卡：活跃人数与连接数并进说明行（原来各占一格） -->
+      <StatCard label="用户总数" :value="userTotal">
+        <template #note>
+          <span class="dsh-note-line">活跃 {{ activeUsers ?? '—' }} · 连接 {{ activeConns ?? '—' }}</span>
+        </template>
+      </StatCard>
 
       <StatCard
         label="服务器"
@@ -771,6 +822,7 @@ onActivated(load)
 
       <StatCard label="节点" :value="inboundTotal" note="所有服务器的入站配置数" />
 
+      <!-- 今日成交额保持在第一行第 4 格（原来的位置不动） -->
       <StatCard label="今日成交额" :value="revenue ? money(revenue.today.amount) : '—'">
         <template #note>
           <template v-if="revenue">
@@ -782,7 +834,25 @@ onActivated(load)
     </div>
 
     <!-- 节点监控（自带轮询） -->
-    <NodeMonitor />
+    <!-- 节点监控（自带轮询）；「最近用户」从页面底部挪进地球右侧的插槽 -->
+    <NodeMonitor>
+      <template #observatory-side>
+        <Card class="dsh-recent-card">
+          <div class="dsh-section-head">
+            <h2 class="dsh-section-title">最近用户 <span class="dsh-count">{{ userTotal }}</span></h2>
+            <RouterLink to="/admin/users" class="dsh-link">查看全部</RouterLink>
+          </div>
+          <ul v-if="users.length" class="dsh-recent">
+            <li v-for="u in users" :key="u.id" class="dsh-recent-item">
+              <span class="dsh-recent-email">{{ u.email || `用户 #${u.id}` }}</span>
+              <Badge v-if="u.plan_name" :variant="u.plan_type === 'period' ? 'vless' : 'trojan'">{{ u.plan_name }}</Badge>
+              <Badge :variant="u.enabled ? 'success' : 'danger'" dot>{{ u.enabled ? '启用' : '禁用' }}</Badge>
+            </li>
+          </ul>
+          <p v-else class="dsh-empty">暂无用户</p>
+        </Card>
+      </template>
+    </NodeMonitor>
 
     <!-- 流量：窗口选择 -->
     <div v-if="trafficFailed" class="dsh-banner" role="alert">
@@ -796,7 +866,7 @@ onActivated(load)
       <div class="dsh-col dsh-col--wide">
         <!-- 曲线卡：默认全机合计，可切单节点 -->
         <Card v-if="trafficHasData">
-          <div class="dsh-section-head">
+          <div class="dsh-section-head is-stack">
             <h2 class="dsh-section-title">{{ trafficTitle }}</h2>
             <div class="dsh-toolbar">
               <Select
@@ -817,15 +887,6 @@ onActivated(load)
           </div>
 
           <div class="dsh-plot">
-            <div class="dsh-axis dsh-axis--left">
-              <span
-                v-for="tick in yTicksLeft"
-                :key="tick.key"
-                class="dsh-axis-label"
-                :style="{ top: `${tick.top}px` }"
-              >{{ tick.label }}</span>
-            </div>
-
             <div class="dsh-plot-inner" @mousemove="onPlotMove" @mouseleave="onPlotLeave">
               <svg
                 class="dsh-svg"
@@ -854,26 +915,48 @@ onActivated(load)
                 />
               </svg>
 
-              <!-- hover 四值 tooltip：贴着竖线显示，不占图例（图例不带数值） -->
+              <!-- Y 轴刻度叠在绘图区里（左/右各一枚列，不占宽度） -->
+              <div class="dsh-ytick dsh-ytick--left" aria-hidden="true">
+                <span
+                  v-for="tick in yTicksLeft"
+                  :key="tick.key"
+                  class="dsh-ytick-label"
+                  :style="{ top: `${tick.top}px` }"
+                >{{ tick.label }}</span>
+              </div>
+              <div class="dsh-ytick dsh-ytick--right" aria-hidden="true">
+                <span
+                  v-for="tick in yTicksRight"
+                  :key="tick.key"
+                  class="dsh-ytick-label"
+                  :style="{ top: `${tick.top}px` }"
+                >{{ tick.label }}</span>
+              </div>
+
+              <!-- 横轴时间刻度：压在绘图区底部一行，不额外占卡片高度 -->
+              <div class="dsh-xtick" aria-hidden="true">
+                <span
+                  v-for="tick in xTicks"
+                  :key="tick.key"
+                  class="dsh-xtick-label"
+                  :class="`is-${tick.align}`"
+                  :style="{ left: `${tick.left}%` }"
+                >{{ tick.label }}</span>
+              </div>
+
+              <!-- hover 读数：贴着竖线显示，不占图例（图例不带数值） -->
               <div
                 v-if="hoverPoint"
                 class="dsh-tip"
+                :class="{ 'is-flip': hoverFlipped }"
                 :style="{ left: `${(hoverX / CHART.width) * 100}%` }"
               >
+                <span class="dsh-tip-time">{{ hoverTime }}</span>
                 <span><i class="dsh-dot dsh-dot--up" aria-hidden="true"></i>上传速率 {{ formatSpeed(hoverPoint.upRate) }}</span>
                 <span><i class="dsh-dot dsh-dot--down" aria-hidden="true"></i>下载速率 {{ formatSpeed(hoverPoint.downRate) }}</span>
                 <span><i class="dsh-dot dsh-dot--up dsh-dot--dashed" aria-hidden="true"></i>累计上传 {{ formatBytes(hoverPoint.upCum) }}</span>
                 <span><i class="dsh-dot dsh-dot--down dsh-dot--dashed" aria-hidden="true"></i>累计下载 {{ formatBytes(hoverPoint.downCum) }}</span>
               </div>
-            </div>
-
-            <div class="dsh-axis dsh-axis--right">
-              <span
-                v-for="tick in yTicksRight"
-                :key="tick.key"
-                class="dsh-axis-label"
-                :style="{ top: `${tick.top}px` }"
-              >{{ tick.label }}</span>
             </div>
           </div>
 
@@ -929,16 +1012,24 @@ onActivated(load)
       </div>
 
       <div class="dsh-col dsh-col--narrow">
-        <!-- 平均 CPU 占用排行 -->
+        <!-- 平均 CPU 占用排行（卡片内只显示前 3，全部走弹窗） -->
         <Card>
           <div class="dsh-section-head">
             <h2 class="dsh-section-title">平均 CPU 占用排行</h2>
+            <Button
+              v-if="cpuRanked.length > RANK_PREVIEW"
+              variant="ghost"
+              size="sm"
+              @click="allCpuOpen = true"
+            >
+              查看全部
+            </Button>
           </div>
 
           <p v-if="trafficLoading && !summary" class="dsh-empty">正在加载…</p>
 
           <ul v-else-if="cpuRanked.length" class="dsh-rank">
-            <li v-for="(node, index) in cpuRanked" :key="node.id" class="dsh-rank-item">
+            <li v-for="(node, index) in cpuRanked.slice(0, RANK_PREVIEW)" :key="node.id" class="dsh-rank-item">
               <div class="dsh-rank-head">
                 <span class="dsh-rank-seq">{{ index + 1 }}.</span>
                 <span class="dsh-rank-name">{{ node.name }}</span>
@@ -957,16 +1048,24 @@ onActivated(load)
           <p v-else class="dsh-empty">暂无采样数据：采集随每 5 分钟健康检查进行，稍后即可看到</p>
         </Card>
 
-        <!-- 平均内存占用百分比排行 -->
+        <!-- 平均内存占用百分比排行（同样只显示前 3） -->
         <Card>
           <div class="dsh-section-head">
             <h2 class="dsh-section-title">平均内存占用百分比排行</h2>
+            <Button
+              v-if="memRanked.length > RANK_PREVIEW"
+              variant="ghost"
+              size="sm"
+              @click="allMemOpen = true"
+            >
+              查看全部
+            </Button>
           </div>
 
           <p v-if="trafficLoading && !summary" class="dsh-empty">正在加载…</p>
 
           <ul v-else-if="memRanked.length" class="dsh-rank">
-            <li v-for="(node, index) in memRanked" :key="node.id" class="dsh-rank-item">
+            <li v-for="(node, index) in memRanked.slice(0, RANK_PREVIEW)" :key="node.id" class="dsh-rank-item">
               <div class="dsh-rank-head">
                 <span class="dsh-rank-seq">{{ index + 1 }}.</span>
                 <span class="dsh-rank-name">{{ node.name }}</span>
@@ -991,7 +1090,7 @@ onActivated(load)
     <div class="dsh-ut">
       <!-- 上：用户流量排行（整行宽度：7 列表格） -->
       <Card class="dsh-ut-card">
-        <div class="dsh-section-head">
+        <div class="dsh-section-head is-stack">
           <h2 class="dsh-section-title">用户流量排行 · {{ userWindowLabel }}</h2>
           <div class="dsh-toolbar">
             <div class="dsh-windows" role="group" aria-label="用户流量时间窗">
@@ -1030,10 +1129,10 @@ onActivated(load)
             <thead>
               <tr>
                 <th class="dsh-ut-seq">#</th>
-                <th>用户</th>
-                <th class="dsh-ut-num">套餐用量（计费口径）</th>
+                <th>用户 ID</th>
+                <th class="dsh-ut-num">用量</th>
                 <th class="dsh-ut-share">占比</th>
-                <th class="dsh-ut-num dsh-ut-col-raw">↑ 上行 / ↓ 下行（原始）</th>
+                <th class="dsh-ut-num dsh-ut-col-raw">原始</th>
                 <th class="dsh-ut-col-plan">套餐</th>
                 <th class="dsh-ut-toggle-head"></th>
               </tr>
@@ -1046,16 +1145,13 @@ onActivated(load)
                   @click="toggleUser(row.user_id)"
                 >
                   <td class="dsh-ut-seq">{{ index + 1 }}</td>
-                  <td>
-                    <span class="dsh-ut-email">{{ userDisplay(row) }}</span>
+                  <td class="dsh-ut-user">
                     <span class="dsh-ut-uid">#{{ row.user_id }}</span>
                   </td>
                   <td class="dsh-ut-num dsh-ut-strong">{{ cellBytes(row.weighted) }}</td>
                   <td class="dsh-ut-share">
-                    <span class="dsh-ut-share-cell">
-                      <span class="dsh-ut-track">
-                        <b :style="{ width: barWidth(row.weighted, maxUserWeighted) }"></b>
-                      </span>
+                    <span class="dsh-ut-track" :title="shareText(sharePercent(row.weighted, maxUserWeighted))">
+                      <b :style="{ width: barWidth(row.weighted, maxUserWeighted) }"></b>
                       <em class="dsh-ut-pct">{{ shareText(sharePercent(row.weighted, maxUserWeighted)) }}</em>
                     </span>
                   </td>
@@ -1065,7 +1161,7 @@ onActivated(load)
                   </td>
                   <td class="dsh-ut-col-plan"><span class="dsh-ut-plan">{{ planTypeLabel(row) }}</span></td>
                   <td class="dsh-ut-toggle" :class="{ 'is-open': expandedUserId === row.user_id }">
-                    <span class="dsh-ut-toggle-ico">{{ expandedUserId === row.user_id ? '▾' : '▸' }}</span>
+                    <Icon class="dsh-ut-toggle-ico" :name="expandedUserId === row.user_id ? 'chevron-down' : 'chevron-right'" :size="16" />
                     <span class="dsh-ut-toggle-txt">明细</span>
                   </td>
                 </tr>
@@ -1115,26 +1211,56 @@ onActivated(load)
       暂无数据：用户流量从上线当天开始累积（24 小时窗口当天可用）。
     </p>
 
-    <Card>
-      <div class="dsh-section-head">
-        <h2 class="dsh-section-title">最近用户 <span class="dsh-count">{{ userTotal }}</span></h2>
-        <RouterLink to="/admin/users" class="dsh-link">查看全部</RouterLink>
-      </div>
-      <ul v-if="users.length" class="dsh-recent">
-        <li v-for="u in users" :key="u.id" class="dsh-recent-item">
-          <span class="dsh-recent-email">{{ u.email || `用户 #${u.id}` }}</span>
-          <Badge v-if="u.plan_name" :variant="u.plan_type === 'period' ? 'vless' : 'trojan'">{{ u.plan_name }}</Badge>
-          <Badge :variant="u.enabled ? 'success' : 'danger'" dot>{{ u.enabled ? '启用' : '禁用' }}</Badge>
-        </li>
-      </ul>
-      <p v-else class="dsh-empty">暂无用户</p>
-    </Card>
-
     <!--
       「查看全部」两个弹窗（issue #47）：卡片内只留 Top 5，全量按需展开。
       机器弹窗直接复用 Top5 卡那一套行 UI（同一套 dsh-rank 样式），只是行数与分母换成全部机器；
       用户弹窗复用用户榜表格，去掉每行的「明细」展开列（弹窗里再套一层展开会更晕）。
     -->
+    <!-- 右栏两个排行的「全部」二级弹窗：卡片内只放前 3 条，全量在这里展 -->
+    <Modal v-model="allCpuOpen" title="平均 CPU 占用排行 · 全部节点" width="520px">
+      <p class="dsh-modal-hint">共 {{ cpuRanked.length }} 台在线节点，按平均占用降序</p>
+
+      <ul v-if="cpuRanked.length" class="dsh-rank">
+        <li v-for="(node, index) in cpuRanked" :key="node.id" class="dsh-rank-item">
+          <div class="dsh-rank-head">
+            <span class="dsh-rank-seq">{{ index + 1 }}.</span>
+            <span class="dsh-rank-name">{{ node.name }}</span>
+            <strong class="dsh-rank-value">{{ cellPercent(node.cpu_avg) }}</strong>
+            <Badge v-if="!finite(node.cpu_avg)" variant="info" class="dsh-rank-badge">无数据</Badge>
+          </div>
+          <p v-if="peakPercentText(node, 'cpu_max')" class="dsh-rank-peak">
+            {{ peakPercentText(node, 'cpu_max') }}
+          </p>
+          <i class="dsh-bar dsh-bar--cpu" :class="{ 'is-unknown': !finite(node.cpu_avg) }">
+            <b :style="{ width: barWidth(node.cpu_avg, maxCpu) }"></b>
+          </i>
+        </li>
+      </ul>
+      <p v-else class="dsh-empty">暂无采样数据</p>
+    </Modal>
+
+    <Modal v-model="allMemOpen" title="平均内存占用百分比排行 · 全部节点" width="520px">
+      <p class="dsh-modal-hint">共 {{ memRanked.length }} 台在线节点，按平均占用降序</p>
+
+      <ul v-if="memRanked.length" class="dsh-rank">
+        <li v-for="(node, index) in memRanked" :key="node.id" class="dsh-rank-item">
+          <div class="dsh-rank-head">
+            <span class="dsh-rank-seq">{{ index + 1 }}.</span>
+            <span class="dsh-rank-name">{{ node.name }}</span>
+            <strong class="dsh-rank-value">{{ cellPercent(node.mem_avg) }}</strong>
+            <Badge v-if="!finite(node.mem_avg)" variant="info" class="dsh-rank-badge">无数据</Badge>
+          </div>
+          <p v-if="peakPercentText(node, 'mem_max')" class="dsh-rank-peak">
+            {{ peakPercentText(node, 'mem_max') }}
+          </p>
+          <i class="dsh-bar dsh-bar--mem" :class="{ 'is-unknown': !finite(node.mem_avg) }">
+            <b :style="{ width: barWidth(node.mem_avg, maxMem) }"></b>
+          </i>
+        </li>
+      </ul>
+      <p v-else class="dsh-empty">暂无采样数据</p>
+    </Modal>
+
     <Modal v-model="allNodesOpen" :title="`全部机器流量 · ${trafficTitle}`" width="640px">
       <div class="dsh-modal-bar">
         <span class="dsh-modal-hint">共 {{ allNodes.length }} 台机器，按双向合计降序</span>
@@ -1181,10 +1307,10 @@ onActivated(load)
           <thead>
             <tr>
               <th class="dsh-ut-seq">#</th>
-              <th>用户</th>
-              <th class="dsh-ut-num">套餐用量（计费口径）</th>
+              <th>用户 ID</th>
+              <th class="dsh-ut-num">用量</th>
               <th class="dsh-ut-share">占比</th>
-              <th class="dsh-ut-num dsh-ut-col-raw">↑ 上行 / ↓ 下行（原始）</th>
+              <th class="dsh-ut-num dsh-ut-col-raw">原始</th>
               <th class="dsh-ut-col-plan">套餐</th>
               <th class="dsh-ut-toggle-head"></th>
             </tr>
@@ -1197,16 +1323,13 @@ onActivated(load)
                 @click="toggleUser(row.user_id)"
               >
                 <td class="dsh-ut-seq">{{ index + 1 }}</td>
-                <td>
-                  <span class="dsh-ut-email">{{ userDisplay(row) }}</span>
+                <td class="dsh-ut-user">
                   <span class="dsh-ut-uid">#{{ row.user_id }}</span>
                 </td>
                 <td class="dsh-ut-num dsh-ut-strong">{{ cellBytes(row.weighted) }}</td>
                 <td class="dsh-ut-share">
-                  <span class="dsh-ut-share-cell">
-                    <span class="dsh-ut-track">
-                      <b :style="{ width: barWidth(row.weighted, maxAllUserWeighted) }"></b>
-                    </span>
+                  <span class="dsh-ut-track" :title="shareText(sharePercent(row.weighted, maxAllUserWeighted))">
+                    <b :style="{ width: barWidth(row.weighted, maxAllUserWeighted) }"></b>
                     <em class="dsh-ut-pct">{{ shareText(sharePercent(row.weighted, maxAllUserWeighted)) }}</em>
                   </span>
                 </td>
@@ -1216,7 +1339,7 @@ onActivated(load)
                 </td>
                 <td class="dsh-ut-col-plan"><span class="dsh-ut-plan">{{ planTypeLabel(row) }}</span></td>
                 <td class="dsh-ut-toggle" :class="{ 'is-open': expandedUserId === row.user_id }">
-                  <span class="dsh-ut-toggle-ico">{{ expandedUserId === row.user_id ? '▾' : '▸' }}</span>
+                  <Icon class="dsh-ut-toggle-ico" :name="expandedUserId === row.user_id ? 'chevron-down' : 'chevron-right'" :size="16" />
                   <span class="dsh-ut-toggle-txt">明细</span>
                 </td>
               </tr>
@@ -1265,21 +1388,33 @@ onActivated(load)
   font-weight: var(--font-bold);
 }
 
+/* 业务概览：4 列网格（保持原样，不改布局） */
 .dsh-cards {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
 }
+/* 概览卡说明行：每个 span 独占一行（原来共用一行会被接成
+   「↑ 上传 41.1 GB↓ 下载 41.9 GB」这种粘在一起的文字）。
+   注意 StatCard 的样式是 scoped，这里必须用本组件自己的类名。 */
+.dsh-note-line {
+  display: block;
+  line-height: 1.5;
+}
 .dsh-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
   margin-bottom: var(--space-4);
 }
 .dsh-section-title {
   margin: 0;
   font-size: var(--text-md);
   font-weight: var(--font-semibold);
+  /* 标题可以收缩，但不许被工具条压成一行一个字：给个下限，
+     挤不下时让工具条换到下一行（窄屏问题，桌面端本来一行放得下） */
+  min-width: 8em;
 }
 .dsh-count {
   font-size: var(--text-xs);
@@ -1351,19 +1486,23 @@ onActivated(load)
   white-space: nowrap;
 }
 
-/* ── 流量两栏（左 2/3：曲线 + Top5；右 1/3：CPU / 内存排行）── */
+/* ── 流量两栏（左 2/3：曲线 + Top5；右 1/3：CPU / 内存排行）──
+   左右必须对齐：把两栏摊平成 2×2 网格（.dsh-col 用 display:contents），
+   同一行的行高由左右较高者决定，所以两张卡的上沿、下沿都咬齐；
+   以前两个 flex 列各自堆叠，右栏卡片高度不同就会错位。 */
 .dsh-traffic {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: var(--space-5);
-  align-items: start;
+  align-items: stretch;
 }
 .dsh-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  min-width: 0;
+  display: contents;
 }
+.dsh-col--wide > :nth-child(1) { grid-column: 1; grid-row: 1; }
+.dsh-col--wide > :nth-child(2) { grid-column: 1; grid-row: 2; }
+.dsh-col--narrow > :nth-child(1) { grid-column: 2; grid-row: 1; }
+.dsh-col--narrow > :nth-child(2) { grid-column: 2; grid-row: 2; }
 
 .dsh-banner {
   display: flex;
@@ -1508,35 +1647,71 @@ onActivated(load)
 }
 
 .dsh-plot {
-  display: flex;
-  align-items: stretch;
+  position: relative;
   height: 180px;
 }
-/* 左右 Y 轴刻度：固定宽度的 HTML 列 + 中间 plot（高都是 180px），
-   文字的 top 与 chartGeometry 的 y()/y2() 是同一坐标系，天然对齐 */
-.dsh-axis {
-  position: relative;
-  flex: 0 0 62px;
+/* Y 轴刻度叠进绘图区（左右各一列，宽度 0、不挤压曲线）。
+   文字的 top 与 chartGeometry 的 y()/y2() 同一坐标系，天然对齐。
+   给一层背景光晕，压在曲线上也读得清。 */
+.dsh-ytick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
-.dsh-axis--left .dsh-axis-label {
-  right: var(--space-2);
+.dsh-ytick--left {
+  left: 0;
 }
-.dsh-axis--right .dsh-axis-label {
-  left: var(--space-2);
+.dsh-ytick--right {
+  right: 0;
 }
-.dsh-axis-label {
+.dsh-ytick-label {
   position: absolute;
   transform: translateY(-50%);
   white-space: nowrap;
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+.dsh-ytick--left .dsh-ytick-label {
+  left: 0;
+}
+.dsh-ytick--right .dsh-ytick-label {
+  right: 0;
+}
+/* 横轴时间刻度：贴在绘图区底部那一条（CHART.padBottom 留出的空间里） */
+.dsh-xtick {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 18px;
   pointer-events: none;
+}
+.dsh-xtick-label {
+  position: absolute;
+  bottom: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dsh-xtick-label.is-start {
+  transform: translateX(0);
+}
+.dsh-xtick-label.is-center {
+  transform: translateX(-50%);
+}
+.dsh-xtick-label.is-end {
+  transform: translateX(-100%);
 }
 .dsh-plot-inner {
   position: relative;
-  flex: 1;
-  min-width: 0;
+  height: 100%;
 }
 /* hover 四值 tooltip：贴在竖线上方，不挤占图例位置 */
 .dsh-tip {
@@ -1557,6 +1732,17 @@ onActivated(load)
   white-space: nowrap;
   pointer-events: none;
   z-index: 2;
+}
+/* 靠右半区时翻到竖线左侧，整块不飘出卡片 */
+.dsh-tip.is-flip {
+  transform: translateX(-100%);
+}
+/* tooltip 顶部时间行：比读数弱一档，加一条分隔线 */
+.dsh-tip-time {
+  color: var(--text-secondary);
+  padding-bottom: 2px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .dsh-svg {
   width: 100%;
@@ -1678,6 +1864,15 @@ onActivated(load)
   border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
 }
+/* ⚠️ 表头默认左对齐会**压过** `.dsh-ut-num` 的右对齐（同权重、后者更早定义），
+   结果「用量 / 原始」表头贴左、数字贴右，上下完全错位（截图实证）。
+   这里显式把带修饰类的 th 摆回与数据同一条对齐线。 */
+.dsh-ut-table th.dsh-ut-num {
+  text-align: right;
+}
+.dsh-ut-table th.dsh-ut-toggle-head {
+  text-align: right;
+}
 .dsh-ut-table th {
   color: var(--text-muted);
   font-size: var(--text-xs);
@@ -1718,18 +1913,23 @@ onActivated(load)
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
-.dsh-ut-email {
-  font-weight: var(--font-medium);
-  overflow-wrap: anywhere;
+/* 用户列只展示 ID（邮箱不再显示：拿 ID 就能在用户管理里定位到人）。
+   ID 用等宽字体、正文色，跟上面的数字列同一套观感。 */
+.dsh-ut-user {
+  white-space: nowrap;
 }
 .dsh-ut-uid {
-  margin-left: var(--space-1);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
 }
+/* 「原始」列是上下两行（↑ / ↓），用 flex 纵向排 + 交叉轴靠右；
+   span 自身的 text-align 在 flex item 上不生效，靠 align-items 才是真正起作用的那条。 */
 .dsh-ut-flows {
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 2px;
   font-size: var(--text-xs);
 }
@@ -1760,54 +1960,64 @@ onActivated(load)
   color: var(--accent);
 }
 
-/* 占比：进度条 + 百分比文字并排。
-   原来百分比叠在条上（半透明小字压轨道），深色模式下几乎读不出来，
-   而且 0% 时文字正好落在空轨道上更看不清 —— 所以挪到条外，独立一列（issue #47）。 */
+/* 占比：百分比**压在进度条上**（用户定稿）。
+   条本身与上方「机器排行」同款（细、圆角、accent 填充），只是拉长到整列宽；
+   百分比用小块底色垫在条右端，压在白条/灰条上都读得清，也不用再单开一列。
+   宽度写 100%：让这一列吃掉表格的剩余宽度（其余列都按内容收紧），
+   条才画得长；写死百分比会让多出来的空间被别的列分走。 */
 .dsh-ut-share {
-  min-width: 132px;
-}
-.dsh-ut-share-cell {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  width: 100%;
+  min-width: 150px;
 }
 .dsh-ut-track {
+  position: relative;
   display: block;
-  flex: 1;
-  min-width: 40px;
-  height: 14px;
+  height: 6px;
   border-radius: var(--radius-full);
   background: var(--bg-elevated);
-  overflow: hidden;
 }
 .dsh-ut-track b {
   display: block;
   height: 100%;
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--accent), var(--info));
+  background: var(--accent);
   transition: width var(--duration-slow) var(--ease-out);
 }
-/* 条外百分比：等宽数字、右对齐，两种主题下都是正文色（不叠在轨道上） */
+/* 条上的百分比：竖直居中、贴右端，带一层与卡片同色的底，不叠花 */
 .dsh-ut-pct {
-  flex: none;
-  min-width: 46px;
-  text-align: right;
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
   font-size: var(--text-xs);
   font-style: normal;
+  line-height: 16px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+/* 行 hover 时底色变成 --bg-hover，百分比那层小底也要跟着换，否则露出一块卡片色的方块 */
+.dsh-ut-row:hover .dsh-ut-pct {
+  background: var(--bg-hover);
 }
 
-/* 展开的明细行：占满整行，左侧缩进对齐「用户」列 */
+/* 展开的明细行：**不再套一层底色块**（方块套方块太废空间，用户定稿）。
+   用左侧一条竖线做缩进指示，与上方用户行在同一张卡片里连续。 */
 .dsh-ut-detail-row td {
   padding: 0;
-  background: var(--bg-elevated);
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .dsh-ut-detail {
-  padding: var(--space-4) var(--space-4) var(--space-5) var(--space-8);
+  padding: var(--space-1) var(--space-4) var(--space-4) var(--space-6);
+  border-left: 2px solid var(--accent-muted);
+  margin-left: var(--space-4);
 }
 .dsh-ut-detail-title {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 var(--space-2);
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
@@ -1837,9 +2047,9 @@ onActivated(load)
 }
 .dsh-ut-node-bar {
   display: block;
-  height: 12px;
+  height: 6px;
   border-radius: var(--radius-full);
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
   overflow: hidden;
 }
 .dsh-ut-node-bar b {
@@ -1874,6 +2084,18 @@ onActivated(load)
   .dsh-traffic,
   .dsh-ut {
     grid-template-columns: 1fr;
+  }
+  /* 单栏时恢复成普通纵向堆叠：撤销 2×2 的摊平定位，否则四张卡会挤在同一格里 */
+  .dsh-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    min-width: 0;
+  }
+  .dsh-col--wide > *,
+  .dsh-col--narrow > * {
+    grid-column: auto;
+    grid-row: auto;
   }
   /* 明细行：窄屏把「机器名 / 条」拆成两行，避免 140px 固定列把表挤爆 */
   .dsh-ut-node {
@@ -1919,12 +2141,28 @@ onActivated(load)
  * 比「横向滑一下」难读得多（issue #48）。
  */
 @media (max-width: 767px) {
+  /* 窄屏卡片头：只有**带工具条**的卡才让标题独占一行（is-stack 显式标记）。
+     像「平均 CPU 占用排行 + 查看全部」这种右侧只有一个按钮的，仍然同一行、按钮靠右，
+     不要为了一个按钮多占一行（用户定稿）。 */
+  .dsh-section-head.is-stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+  .dsh-section-title {
+    min-width: 0;
+  }
+  /* 工具条按钮等宽平铺，四个按钮不再折成一堆方块 */
+  .dsh-toolbar {
+    gap: var(--space-2);
+  }
+  .dsh-toolbar :deep(.dsh-window-select),
+  .dsh-toolbar :deep(.dsh-node-select) {
+    width: 100%;
+  }
   .dsh-ut-table th,
   .dsh-ut-table td {
     white-space: nowrap;
-  }
-  .dsh-ut-email {
-    overflow-wrap: normal;
   }
   .dsh-rank-name {
     white-space: nowrap;
@@ -1935,8 +2173,7 @@ onActivated(load)
   .dsh-ut-col-plan {
     display: none;
   }
-  /* 窄屏：表头允许换行（「套餐用量（计费口径）」这类长标题不再撑宽表格），
-     数据格保持单行；同时压缩单元格左右内边距，四列才塞得进 360px。 */
+  /* 窄屏：表头允许换行（短标题已足够，仍留换行兜底），数据格保持单行 */
   .dsh-ut-table th {
     white-space: normal;
   }
@@ -1947,27 +2184,19 @@ onActivated(load)
   .dsh-ut-num {
     font-size: 11px;
   }
-  /* 窄屏：进度条让位给数字 —— 360px 里条占的宽度比读数更值钱。
-     占比只留百分比文字（条外、正文色），四列才塞得进一屏。 */
-  .dsh-ut-track {
-    display: none;
-  }
+  /* 窄屏：只剩「# / 用户 ID / 用量 / 占比 / 箭头」五列，
+     其余列都按内容收紧，**占比列吃掉全部剩余宽度**（width:100% 让表格把它拉满）。
+     原来写死 30% 时，多出来的空间被前三列平分掉了，条只有一半长、右边空一大片。 */
   .dsh-ut-share {
-    min-width: 40px;
+    width: 100%;
+    min-width: 96px;
   }
   .dsh-ut-pct {
-    min-width: 0;
-    font-size: 11px;
+    font-size: var(--text-xs);
+    line-height: 16px;
+    padding: 0 2px;
   }
-  /* 长邮箱在窄屏截断，避免单列把表格撑出屏幕（完整邮箱在 CSV 导出里） */
-  .dsh-ut-email {
-    display: inline-block;
-    max-width: 86px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    vertical-align: bottom;
-  }
+  /* 用户列只剩 #ID，窄屏也不用再截断长邮箱 */
   .dsh-ut-seq {
     width: 20px;
   }
@@ -1978,6 +2207,11 @@ onActivated(load)
   }
   .dsh-ut-toggle-txt {
     display: none;
+  }
+  /* 明细区窄屏省左右留白（否则 360px 里可用宽度只剩一半） */
+  .dsh-ut-detail {
+    padding: var(--space-1) var(--space-2) var(--space-3) var(--space-3);
+    margin-left: var(--space-2);
   }
 }
 </style>

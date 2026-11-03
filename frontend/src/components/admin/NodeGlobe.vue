@@ -17,11 +17,10 @@ const props = defineProps({
   nodes: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['regions', 'motion'])
+const emit = defineEmits(['regions'])
 
 const canvas = ref(null)
 const regions = ref([])
-const motionOn = ref(true)
 
 const ariaLabel = computed(
   () => `节点地区示意图，${regions.value.length} 个地区。左右方向键旋转，上下方向键调整角度。`,
@@ -29,6 +28,8 @@ const ariaLabel = computed(
 
 const LAND = earth.land
 const CENTERS = earth.centers
+/** 飞线动画的「家」：所有光点最终都汇聚到中国（用户定稿：双向——别国→CN、CN→别国） */
+const HOME_REGION = 'CN'
 
 let ctx = null
 let raf = 0
@@ -147,11 +148,12 @@ function draw(time = performance.now()) {
     }, cx, cy, radius)
   }
 
-  // 陆地：点阵，越靠正面越大越实（用深度 z 做透明度，形成球面感）
+  // 陆地：点阵，越靠正面越大越实（用深度 z 做透明度，形成球面感）。
+  // 透明度下限从 0.18 提到 0.38：原来正面最实处也只有 ~0.63，亮色主题下点太浅看不清（用户反馈）。
   for (let i = 0; i < LAND.length; i += 1) {
     const p = project(LAND[i][0], LAND[i][1], cx, cy, radius)
     if (p.z <= 0) continue
-    ctx.fillStyle = withAlpha(tone.land, 0.18 + p.z * 0.45)
+    ctx.fillStyle = withAlpha(tone.land, 0.38 + p.z * 0.52)
     ctx.beginPath()
     ctx.arc(p.x, p.y, 0.7 + p.z * 0.6, 0, Math.PI * 2)
     ctx.fill()
@@ -169,8 +171,8 @@ function draw(time = performance.now()) {
     const online = region.online > 0
     const color = online ? tone.online : tone.offline
 
-    // 在线地区的呼吸光圈（只在动效开着且系统没要求减少动效时画）
-    if (online && motionOn.value && !reduced?.matches) {
+    // 在线地区的呼吸光圈（系统要求减少动效时不画）
+    if (online && !reduced?.matches) {
       const pulse = (time % 2200) / 2200
       ctx.strokeStyle = withAlpha(color, (1 - pulse) * 0.45)
       ctx.lineWidth = 1.3
@@ -197,27 +199,41 @@ function draw(time = performance.now()) {
     ctx.fillText(region.code, p.x + 8, p.y - 7)
   }
 
-  drawPacket(time, tone)
+  drawPacket(time, tone, cx, cy, radius)
 }
 
-/** 两个在线地区之间飞一条示意光点（**不代表真实链路或流量**）。 */
-function drawPacket(time, tone) {
+/**
+ * 在线地区与中国（内置参照点）之间飞一条示意光点（**不代表真实链路或流量**）。
+ * CN 是**内置参照点**（用户定稿）：不算地区、不算节点、不显示标记，
+ * 只是飞线的汇聚端。飞线一端永远是 CN，另一端是随机的在线地区；
+ * 方向随机（CN→别国 / 别国→CN），看起来是「双向汇聚」。
+ * CN 不依赖 nodes 表 —— 即使没有任何中国节点，飞线照画。
+ */
+function drawPacket(time, tone, cx, cy, radius) {
+  // CN 参照点：按地理中心投影；转到地球背面（z<=0.02）时这一帧不画
+  const homeCenter = CENTERS[HOME_REGION]
+  const homePt = homeCenter ? project(homeCenter[0], homeCenter[1], cx, cy, radius) : null
+
   const peers = drawn.filter((item) => item.region.online > 0)
-  if (peers.length < 2) {
+  if (!homePt || homePt.z <= 0.02 || peers.length < 1) {
     packet = null
 
     return
   }
 
-  if (packet && (!peers.some((p) => p.region.code === packet.from) || !peers.some((p) => p.region.code === packet.to))) {
+  // 光点已存在时校验另一端是否仍在线（地区列表刷新后可能失效）
+  if (packet && !peers.some((p) => p.region.code === packet.from || p.region.code === packet.to)) {
     packet = null
     nextPacketAt = time + 400
   }
 
   if (!packet && time >= nextPacketAt) {
-    const from = Math.floor(Math.random() * peers.length)
-    const to = (from + 1 + Math.floor(Math.random() * (peers.length - 1))) % peers.length
-    packet = { from: peers[from].region.code, to: peers[to].region.code, start: time }
+    const other = peers[Math.floor(Math.random() * peers.length)].region.code
+    // 一半出站（CN → 别国）、一半入站（别国 → CN）
+    const outbound = Math.random() < 0.5
+    packet = outbound
+      ? { from: HOME_REGION, to: other, start: time }
+      : { from: other, to: HOME_REGION, start: time }
   }
 
   if (!packet) return
@@ -230,13 +246,15 @@ function drawPacket(time, tone) {
     return
   }
 
-  const a = peers.find((p) => p.region.code === packet.from)
-  const b = peers.find((p) => p.region.code === packet.to)
-  if (!a || !b) {
+  // 另一端随地球转动，每帧重取它在屏幕上的位置
+  const other = drawn.find((item) => item.region.code === packet.from || item.region.code === packet.to)
+  if (!other) {
     packet = null
 
     return
   }
+  const a = packet.from === HOME_REGION ? homePt : other
+  const b = packet.to === HOME_REGION ? homePt : other
 
   const dx = b.x - a.x
   const dy = b.y - a.y
@@ -271,16 +289,17 @@ function tick(time) {
   raf = 0
   if (!visible || document.hidden) return
 
-  if (motionOn.value && !drag) {
+  // 自转常开：拖动时也照转（用户定稿），只有系统要求减少动效时才停
+  if (!reduced?.matches) {
     // 帧间隔封顶 100ms：标签页刚回来时不要一次转一大圈
     longitude += (lastFrame ? Math.min(time - lastFrame, 100) : 0) * 0.006
   }
   lastFrame = time
   draw(time)
 
-  // 没在自转、也没有可飞的在线地区时，画完这一帧就停，不空转
+  // 系统要求减少动效、又没有可飞的在线地区时，画完这一帧就停，不空转
   const hasPeers = drawn.filter((item) => item.region.online > 0).length > 1
-  if (motionOn.value || hasPeers) raf = requestAnimationFrame(tick)
+  if (!reduced?.matches || hasPeers) raf = requestAnimationFrame(tick)
 }
 
 function wake() {
@@ -292,19 +311,13 @@ function wake() {
 
 /* ── 交互 ──────────────────────────────────────────────────── */
 
-/** 把地球转到某个地区正面（父组件点地区列表时调）。 */
+/** 把地球转到某个地区正面（父组件点地区列表时调）。自转照旧继续。 */
 function focusRegion(code) {
   const center = CENTERS[code]
   if (!center) return
   longitude = center[0]
   latitude = center[1]
-  motionOn.value = false
   draw()
-  wake()
-}
-
-function toggleMotion() {
-  motionOn.value = !motionOn.value
   wake()
 }
 
@@ -330,7 +343,6 @@ function onPointerMove(event) {
   latitude = Math.max(-85, Math.min(85, latitude + dy * 0.25))
   drag.x = event.clientX
   drag.y = event.clientY
-  motionOn.value = false
   draw()
 }
 
@@ -351,7 +363,6 @@ function onKeyDown(event) {
   longitude += map[event.key]
   if (event.key === 'ArrowUp') latitude = Math.min(85, latitude + step)
   if (event.key === 'ArrowDown') latitude = Math.max(-85, latitude - step)
-  motionOn.value = false
   draw()
   wake()
 }
@@ -370,20 +381,15 @@ function onVisibilityChange() {
 }
 
 function onReducedChange() {
-  if (reduced?.matches) motionOn.value = false
   draw()
   wake()
 }
 
 watch(() => props.nodes, refresh)
 
-// 自转开关的变化告诉父级（拖动 / 点地区会自己关掉自转，按钮文案要跟着变）
-watch(motionOn, (value) => emit('motion', value))
-
 onMounted(() => {
   ctx = canvas.value.getContext('2d')
   reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
-  motionOn.value = !reduced.matches
   reduced.addEventListener('change', onReducedChange)
 
   resizeObserver = new ResizeObserver(() => {
@@ -420,7 +426,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
-defineExpose({ focusRegion, toggleMotion, motionOn })
+defineExpose({ focusRegion })
 </script>
 
 <template>
@@ -436,7 +442,6 @@ defineExpose({ focusRegion, toggleMotion, motionOn })
       @pointercancel="onPointerUp"
       @keydown="onKeyDown"
     />
-    <span class="ng-hint">拖动旋转 · 点击地区定位</span>
   </div>
 </template>
 
@@ -446,24 +451,17 @@ defineExpose({ focusRegion, toggleMotion, motionOn })
   flex-direction: column;
   min-width: 0;
   flex: 1 1 auto;
-  /* 球体半径受高度限制，画布太宽只会留出一大片空白 */
-  max-width: 460px;
+  /* 卡片已收窄（右栏放「最近用户」），放开宽度上限让球尽量吃满可用空间 */
+  max-width: 560px;
 }
 .ng-canvas {
   width: 100%;
-  height: 280px;
+  height: 340px;
   touch-action: pan-y;
   cursor: grab;
   outline-offset: 2px;
 }
 .ng-canvas:active {
   cursor: grabbing;
-}
-.ng-hint {
-  display: block;
-  text-align: center;
-  margin-top: var(--space-1);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
 }
 </style>

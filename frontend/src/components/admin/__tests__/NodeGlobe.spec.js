@@ -63,28 +63,13 @@ describe('NodeGlobe.vue', () => {
     expect(wrapper.emitted('regions').at(-1)[0]).toEqual([])
   })
 
-  it('focusRegion 把地球转到该地区，并关掉自转', async () => {
+  it('focusRegion 把地球转到该地区正面，自转照旧继续', async () => {
     const wrapper = mountGlobe([{ id: 1, name: 'JP01', status: 'online', region: 'JP' }])
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.vm.motionOn).toBe(true)
-
     wrapper.vm.focusRegion('JP')
 
-    // 自转关掉 = 不再无谓地每帧重画
-    expect(wrapper.vm.motionOn).toBe(false)
-    // 焦点地区仍然在画（换了个角度重画了一次）
+    // 焦点地区仍然在画（换了个角度重画了一次）；自转常开，没有开关可关
     expect(drawnTexts()).toContain('JP')
-  })
-
-  it('toggleMotion 翻转自转开关', async () => {
-    const wrapper = mountGlobe([{ id: 1, name: 'HK01', status: 'online', region: 'HK' }])
-    await wrapper.vm.$nextTick()
-
-    wrapper.vm.toggleMotion()
-    expect(wrapper.vm.motionOn).toBe(false)
-
-    wrapper.vm.toggleMotion()
-    expect(wrapper.vm.motionOn).toBe(true)
   })
 })
