@@ -408,8 +408,10 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 			d.deliverPlanChangeSync(c, full)
 		}
 	}
-	if enabledTouched {
-		// 手动改 enabled 时同步到节点（BanService::toggleClient）。
+	if enabledTouched && u.Enabled != *patch.Enabled {
+		// 只有**真的变了**才下发。后台编辑表单每次都会带 enabled 字段，原样回传也
+		// 触发一次全节点开关（每台一次 HTTP 往返，线上约 1 秒）—— 这就是「保存后
+		// 还在转圈」的最后一截：改个套餐顺带把所有人的 client 又拨了一遍。
 		_ = d.ops.SetClientEnabled(ctxOf(c), full, *patch.Enabled)
 	}
 
