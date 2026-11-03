@@ -476,6 +476,8 @@ func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any
 	v.field("xhttp_xmux_h_max_reusable_secs", "nullable", "string", "max:32")
 	v.field("xhttp_xmux_h_keep_alive_period", "nullable", "string", "max:32")
 	v.field("tls_server_name", "nullable", "string", "max:255")
+	// 客户端连接地址（CDN 域名等）：订阅链接里用它替换节点地址；空 = 用节点地址。
+	v.field("client_host", "nullable", "string", "max:255")
 	v.field("tls_certificate", "nullable", "string", "max:65535")
 	v.field("tls_key", "nullable", "string", "max:65535")
 	v.field("ss_method", "nullable", "in:aes-256-gcm,aes-128-gcm,chacha20-poly1305,xchacha20-poly1305,2022-blake3-aes-256-gcm,2022-blake3-aes-128-gcm")
@@ -922,6 +924,12 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	}
 	in.Listen = listen
 
+	// 客户端连接地址（CDN 场景）：订阅链接里用它替换节点地址，端口仍用本入站端口。
+	// 留空 = 维持原行为（节点 host / host_v6 按地址族选）。
+	if ch := normalizeClientHost(nodeStringField(input, "client_host")); ch != "" {
+		in.ClientHost = &ch
+	}
+
 	if v, present := input["enabled"]; present {
 		b := inputBool(v)
 		in.Enabled = &b
@@ -1138,6 +1146,30 @@ func (d *NodeDomain) certificateIDForPEM(c *gin.Context, certPEM, keyPEM, sni st
 
 // normalizePEMText 把 PEM 压成「无空白」串用于内容比对（换行/缩进差异不影响判断）。
 func normalizePEMText(s string) string { return strings.Join(strings.Fields(s), "") }
+
+// normalizeClientHost 归一化「客户端连接地址」（CDN 域名 / 另一个 IP）：
+// 允许直接粘 URL，会去掉协议头、路径、查询串和末尾斜杠；带端口的会去掉端口
+// （端口始终用入站端口，避免拼出 host:443:443）。IPv6 字面量保持原样。
+func normalizeClientHost(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if strings.Count(s, ":") == 1 {
+		s = s[:strings.LastIndex(s, ":")]
+	}
+	if len(s) > 255 {
+		s = s[:255]
+	}
+	return s
+}
 
 // certDomainMatches 判断证书登记的域名是否覆盖某个主机名：完全一致，或通配符
 // （*.example.com 覆盖 a.example.com 与 example.com 本身）。
@@ -1985,6 +2017,7 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		"protocol", ib.Protocol,
 		"port", ib.Port,
 		"listen", ib.Listen,
+		"client_host", nullableStr(ib.ClientHost),
 		"network", network,
 		"security", jsonDefaultString(stream, "none", "security"),
 		"sniffing", sniffing,

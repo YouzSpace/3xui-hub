@@ -156,6 +156,8 @@ type XrayInboundRecord struct {
 	Protocol          string
 	Port              int64
 	Listen            string
+	// ClientHost 是订阅链接里给客户端用的地址（CDN 域名等）；空 = 用节点地址。
+	ClientHost        *string
 	Settings          []byte // JSON
 	StreamSettings    []byte // JSON
 	Sniffing          []byte // JSON
@@ -210,6 +212,8 @@ type XrayInboundInput struct {
 	Protocol          string
 	Port              int64
 	Listen            string
+	// ClientHost 是订阅链接里给客户端用的地址（CDN 域名等）；空 = 用节点地址。
+	ClientHost        *string
 	Settings          []byte
 	StreamSettings    []byte
 	Sniffing          []byte

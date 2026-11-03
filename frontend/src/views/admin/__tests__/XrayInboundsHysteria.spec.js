@@ -408,7 +408,7 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     expect(document.body.textContent).toContain('节点证书签发')
   })
 
-  it('签发证书：域名节点调 issue，新证书回填两个框', async () => {
+  it('签发证书：调 issue，只选中证书库条目，不自动填 PEM', async () => {
     const wrapper = await mountWithCerts([tlsCert])
     await openTls(wrapper)
 
@@ -418,7 +418,6 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     }
     adminApi.issueXrayCertificate.mockResolvedValue({ certificate: issued })
     adminApi.listXrayCertificates.mockResolvedValue({ certificates: [tlsCert, issued] })
-    adminApi.getXrayCertificatePem.mockResolvedValue({ cert_pem: 'CERT-PEM', key_pem: 'KEY-PEM' })
 
     wrapper.vm.issueNodeCert()
     await flushPromises()
@@ -428,10 +427,11 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
       domain: 'tls1.example.com',
       method: 'http-01',
     })
-    // 列表刷新后按回执 id 取 PEM 回填
-    expect(adminApi.getXrayCertificatePem).toHaveBeenCalledWith(8)
-    expect(wrapper.vm.form.tls_certificate).toBe('CERT-PEM')
-    expect(wrapper.vm.form.tls_key).toBe('KEY-PEM')
+    // 默认保存「引用」，不动 PEM 两个框（要用内联 PEM 的人自己点「从证书库填充 PEM」）
+    expect(adminApi.getXrayCertificatePem).not.toHaveBeenCalled()
+    expect(wrapper.vm.form.tls_certificate).toBe('')
+    expect(wrapper.vm.form.tls_key).toBe('')
+    expect(wrapper.vm.pemCertId).toBe(8)
   })
 
   it('签发域名是 IP：按钮禁用，点了也不发请求', async () => {
@@ -448,7 +448,7 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     expect(toast.error).toHaveBeenCalled()
   })
 
-  it('serverName 与节点域名不同：按 serverName 签发并回填 PEM', async () => {
+  it('serverName 与节点域名不同：按 serverName 签发（不自动填 PEM）', async () => {
     const wrapper = await mountWithCerts([tlsCert])
     await openTls(wrapper)
 
@@ -462,7 +462,6 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     }
     adminApi.issueXrayCertificate.mockResolvedValue({ certificate: issued })
     adminApi.listXrayCertificates.mockResolvedValue({ certificates: [tlsCert, issued] })
-    adminApi.getXrayCertificatePem.mockResolvedValue({ cert_pem: 'CERT-PEM', key_pem: 'KEY-PEM' })
 
     wrapper.vm.issueNodeCert()
     await flushPromises()
@@ -472,8 +471,9 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
       domain: 'v6.efu.top',
       method: 'http-01',
     })
-    expect(wrapper.vm.form.tls_certificate).toBe('CERT-PEM')
-    expect(wrapper.vm.form.tls_key).toBe('KEY-PEM')
+    expect(adminApi.getXrayCertificatePem).not.toHaveBeenCalled()
+    expect(wrapper.vm.form.tls_certificate).toBe('')
+    expect(wrapper.vm.pemCertId).toBe(11)
   })
 
   it('改 serverName 后旧证书不再匹配：清空选择并提示先签发', async () => {
@@ -519,6 +519,21 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     expect(payload.tls_cert_id).toBe(7)
     expect(payload.tls_certificate).toBeUndefined()
     expect(payload.tls_key).toBeUndefined()
+  })
+
+  it('地址族选「自定义」：客户端连接地址单独填，保存时带上 client_host', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+    wrapper.vm.form.client_host = 'cdn.example.com'
+    adminApi.createXrayInbound.mockResolvedValue({ id: 1 })
+
+    await wrapper.vm.save()
+    await flushPromises()
+
+    const payload = adminApi.createXrayInbound.mock.calls[0][1]
+    expect(payload.client_host).toBe('cdn.example.com')
+    expect(payload.listen).toBe('0.0.0.0')
   })
 
   it('TLS 入站既没引用也没 PEM：拦下不发请求', async () => {

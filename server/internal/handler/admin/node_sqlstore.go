@@ -1097,19 +1097,20 @@ func (s *nodeSQLStore) RecordSystemAuditOnce(ctx context.Context, action, actor,
 
 // ---- xray 入站 ----
 
-const xrayInboundColumns = `id, node_id, tag, remark, protocol, port, listen, settings, stream_settings,
+const xrayInboundColumns = `id, node_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings,
 	sniffing, reality_private_key, salamander_password, enabled, sort, created_at, updated_at`
 
 func (s *nodeSQLStore) scanXrayInbound(row interface{ Scan(...any) error }) (*XrayInboundRecord, error) {
 	var ib XrayInboundRecord
-	var remark, settings, stream, sniffing, privateKey, salamander sql.NullString
+	var remark, clientHost, settings, stream, sniffing, privateKey, salamander sql.NullString
 	var enabled int
 	var createdAt, updatedAt sql.NullTime
 	if err := row.Scan(&ib.ID, &ib.NodeID, &ib.Tag, &remark, &ib.Protocol, &ib.Port, &ib.Listen,
-		&settings, &stream, &sniffing, &privateKey, &salamander, &enabled, &ib.Sort, &createdAt, &updatedAt); err != nil {
+		&clientHost, &settings, &stream, &sniffing, &privateKey, &salamander, &enabled, &ib.Sort, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	ib.Remark = nullStrPtr(remark)
+	ib.ClientHost = nullStrPtr(clientHost)
 	ib.Settings = rawBytesOf(settings)
 	ib.StreamSettings = rawBytesOf(stream)
 	ib.Sniffing = rawBytesOf(sniffing)
@@ -1419,10 +1420,11 @@ func (s *nodeSQLStore) CreateXrayInbound(ctx context.Context, in XrayInboundInpu
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		"INSERT INTO xray_inbounds (node_id, tag, remark, protocol, port, listen, settings, stream_settings, "+
+		"INSERT INTO xray_inbounds (node_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings, "+
 			"sniffing, reality_private_key, salamander_password, enabled, sort, created_at, updated_at) "+
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		in.NodeID, in.Tag, nullStrValue(in.Remark), in.Protocol, in.Port, in.Listen,
+		nullStrValue(in.ClientHost),
 		jsonTextValue(in.Settings), jsonTextValue(in.StreamSettings), jsonTextValue(in.Sniffing),
 		nullStrValue(encryptedKey), nullStrValue(encryptedSalamander), enabled, sortVal, now, now)
 	if err != nil {
@@ -1437,8 +1439,9 @@ func (s *nodeSQLStore) CreateXrayInbound(ctx context.Context, in XrayInboundInpu
 
 func (s *nodeSQLStore) UpdateXrayInbound(ctx context.Context, id uint64, in XrayInboundInput) (*XrayInboundRecord, error) {
 	sets := []string{"tag = ?", "remark = ?", "protocol = ?", "port = ?", "listen = ?",
-		"settings = ?", "stream_settings = ?", "sniffing = ?"}
+		"client_host = ?", "settings = ?", "stream_settings = ?", "sniffing = ?"}
 	args := []any{in.Tag, nullStrValue(in.Remark), in.Protocol, in.Port, in.Listen,
+		nullStrValue(in.ClientHost),
 		jsonTextValue(in.Settings), jsonTextValue(in.StreamSettings), jsonTextValue(in.Sniffing)}
 
 	if in.RealityKeySet {

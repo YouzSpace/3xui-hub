@@ -114,6 +114,8 @@ const emptyForm = () => ({
   remark: '',
   port: 443,
   listen: '0.0.0.0',
+  // 客户端连接地址（可选）：填了订阅链接就用它（CDN 域名等），端口仍用本入站端口
+  client_host: '',
   network: 'tcp',
   security: 'reality',
   dest: 'www.cloudflare.com:443',
@@ -244,12 +246,17 @@ const ADDRESS_FAMILIES = [
 const listenOptions = computed(() => {
   const cur = form.value.listen
   const known = ADDRESS_FAMILIES.some((o) => o.value === cur)
-  if (known || !cur) return ADDRESS_FAMILIES
-  return [...ADDRESS_FAMILIES, { label: `保留原值（${cur}）`, value: cur }]
+  const base = known || !cur ? ADDRESS_FAMILIES : [...ADDRESS_FAMILIES, { label: `保留原值（${cur}）`, value: cur }]
+  // 「自定义」= 绑定地址不动，单独指定订阅链接里给客户端用的地址（CDN 域名 / 另一个 IP）。
+  return [...base, { label: '自定义（客户端连接地址，如 CDN 域名）', value: 'custom' }]
 })
 const listenFamily = computed({
-  get: () => form.value.listen,
-  set: (v) => { form.value.listen = v },
+  get: () => (String(form.value.client_host || '').trim() ? 'custom' : form.value.listen),
+  set: (v) => {
+    if (v === 'custom') return // 绑定地址保持不变，只打开下方的自定义地址输入
+    form.value.client_host = ''
+    form.value.listen = v
+  },
 })
 const isTls = computed(() => form.value.security === 'tls')
 const isWs = computed(() => form.value.network === 'ws')
@@ -728,7 +735,8 @@ const issueNodeCert = async () => {
       newId = hit.length ? latestExpiry(hit).id : null
     }
     if (newId) {
-      // HY2 认证书 id，TLS 入站认内联 PEM：两条路各自接上，用户不用再点一次
+      // HY2 认证书 id；TLS 入站只把它选进「证书库条目」（引用），不自动灌 PEM ——
+      // 默认保存的是引用；要用内联 PEM 的人自己点「从证书库填充 PEM」。
       if (isHy.value) form.value.tls_cert_id = newId
       else pemCertId.value = newId
     }
@@ -736,7 +744,6 @@ const issueNodeCert = async () => {
     toast.success(
       `已签发 ${domain} 的证书${notAfter ? `（到期 ${String(notAfter).slice(0, 10)}）` : ''}，已写入证书库`,
     )
-    if (newId && !isHy.value) await fillTlsPemFromLibrary()
   } catch (e) {
     toast.error(e.message || '签发失败')
   } finally {
@@ -762,6 +769,7 @@ const openEdit = (ib) => {
     remark: ib.remark || '',
     port: ib.port,
     listen: ib.listen || '0.0.0.0',
+    client_host: ib.client_host || '',
     network: ib.network || 'tcp',
     security: ib.security || 'none',
     dest: ib.dest || 'www.cloudflare.com:443',
@@ -1139,6 +1147,7 @@ const save = async (forceServerNames = false) => {
       remark: form.value.remark || null,
       port: Number(form.value.port),
       listen: form.value.listen,
+      client_host: String(form.value.client_host || '').trim(),
       network: form.value.network,
       security: form.value.security,
       enabled: form.value.enabled,
@@ -1469,8 +1478,17 @@ const clientLabel = (ib) => {
         </label>
         <p class="an-hint">
           选 IPv6（<code>::</code>）后，订阅链接里的地址改用节点表单填的「服务器 IPv6 地址」；
-          没填时仍回落到主地址。选 IPv4 则行为与以前一致。
+          没填时仍回落到主地址。选「自定义」则不改绑定地址，只把订阅链接里的地址换成下面填的地址（CDN 场景）。
         </p>
+        <template v-if="listenFamily === 'custom'">
+          <label class="an-field">
+            <span>客户端连接地址（CDN 域名 / 另一个 IP；端口仍是本入站端口）</span>
+            <Input v-model="form.client_host" mono placeholder="如 cdn.example.com" />
+          </label>
+          <p class="an-hint">
+            客户端连这个地址，回源才连节点。证书 serverName、WS Host 仍按本入站自己的配置走。
+          </p>
+        </template>
         <label class="an-field">
           <span>标识 tag（留空自动生成，同节点内唯一；仅字母/数字/下划线/连字符）</span>
           <Input v-model="form.tag" placeholder="如 vless-reality" />

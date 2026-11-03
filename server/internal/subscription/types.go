@@ -95,6 +95,9 @@ type XrayInbound struct {
 	Protocol       string
 	Port           int64
 	Listen         string // 绑定地址（DB 默认 0.0.0.0）；订阅按地址族选 host / host_v6
+	// ClientHost 是「客户端连接地址」覆盖（CDN 域名 / 另一个地址）；
+	// 非空时订阅链接的地址用它，端口仍用本入站端口。
+	ClientHost     string
 	Settings       string // JSON 文本
 	StreamSettings string // JSON 文本
 	// SalamanderPassword 是 hysteria 入站的 salamander 混淆密码明文

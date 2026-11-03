@@ -752,6 +752,7 @@ CREATE TABLE `xray_inbounds` (
   `protocol` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
   `port` int unsigned NOT NULL,
   `listen` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '0.0.0.0',
+  `client_host` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订阅链接里给客户端用的地址（CDN 域名等）；空 = 用节点地址',
   `settings` json DEFAULT NULL,
   `stream_settings` json DEFAULT NULL,
   `sniffing` json DEFAULT NULL,
