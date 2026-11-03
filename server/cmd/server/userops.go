@@ -13,12 +13,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"controlhub-server/internal/collector"
 	"controlhub-server/internal/driver/threexui"
 	"controlhub-server/internal/driver/xray"
 	"controlhub-server/internal/handler/admin"
 )
+
+// userOpsConcurrency 是用户域名下发的节点级并发上限（节点数量级是「台」，6 足够）。
+const userOpsConcurrency = 6
 
 type userPanelOps struct {
 	col    *collector.Collector
@@ -34,24 +38,43 @@ func NewUserPanelOps(col *collector.Collector, logger *log.Logger) admin.UserPan
 }
 
 // ProvisionUser 遍历启用节点给用户建 client（3x-ui AddClient/UpdateClient，xray adu 指令）。
+//
+// 节点级并发 + 离线跳过：原先全串行，线上 7 台里两台 3x-ui（其中一台单次往返 900ms+），
+// 后台改一次套餐要转 4–5 秒。现在并发下发，只剩最慢那台的一次往返；
+// **离线的 3x-ui 节点直接跳过**（发 HTTP 只能等超时），等它上线后由封禁扫描 /
+// 对账任务补一次。xray 节点走指令入队，离线也照常入队，不跳过。
 func (o *userPanelOps) ProvisionUser(ctx context.Context, user *admin.UserRow) error {
 	drivers, err := o.col.NodeDrivers(ctx)
 	if err != nil {
 		return err
 	}
 	email := user.ClientEmail()
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, userOpsConcurrency)
 	for _, nd := range drivers {
-		switch {
-		case nd.ThreeX != nil:
-			if err := o.provisionThreeX(ctx, nd.ThreeX, nd.NodeID, user, email); err != nil {
-				o.logger.Printf("[userops] provision 3x-ui 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
-			}
-		case nd.Xray != nil:
-			if err := o.provisionXray(ctx, nd.Xray, user, email); err != nil {
-				o.logger.Printf("[userops] provision xray 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
-			}
+		if nd.ThreeX != nil && nd.Status != "online" {
+			o.logger.Printf("[userops] 跳过离线 3x-ui 节点 node=%d user=%d（provision）", nd.NodeID, user.ID)
+			continue
 		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(nd collector.NodeDriver) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			switch {
+			case nd.ThreeX != nil:
+				if err := o.provisionThreeX(ctx, nd.ThreeX, nd.NodeID, user, email); err != nil {
+					o.logger.Printf("[userops] provision 3x-ui 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+				}
+			case nd.Xray != nil:
+				if err := o.provisionXray(ctx, nd.Xray, user, email); err != nil {
+					o.logger.Printf("[userops] provision xray 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+				}
+			}
+		}(nd)
 	}
+	wg.Wait()
 	return nil
 }
 

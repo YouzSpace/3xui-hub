@@ -362,6 +362,9 @@ func errUnsupportedDriver(driverType string) error {
 // NodeDriver 是启用节点的驱动句柄（供 P8a 用户域下发复用，避免 handler 层自己构造驱动）。
 type NodeDriver struct {
 	NodeID int64
+	// Status 是节点最近一次健康检查的状态（online / offline / 空）。
+	// 下发前据此跳过离线的 3x-ui 节点：对离线节点发 HTTP 只能干等超时。
+	Status string
 	ThreeX *threexui.Client // 非空 = 3x-ui 节点（driver_type 空也归 3x-ui）
 	Xray   *xray.Driver     // 非空 = xray 节点
 }
@@ -377,7 +380,7 @@ func (c *Collector) NodeDrivers(ctx context.Context) ([]NodeDriver, error) {
 	}
 	out := make([]NodeDriver, 0, len(nodes))
 	for _, n := range nodes {
-		nd := NodeDriver{NodeID: n.ID}
+		nd := NodeDriver{NodeID: n.ID, Status: n.Status}
 		if n.isXray() {
 			nd.Xray = c.xrayDriver(n)
 		} else {

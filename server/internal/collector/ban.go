@@ -5,11 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"controlhub-server/internal/driver/threexui"
 	"controlhub-server/internal/driver/xray"
 )
+
+// toggleConcurrency 是「节点级下发」的并发上限。
+//
+// 节点数量级是「台」（目前 7 台），串行时总耗时 = 各台往返之和；并发后只剩最慢那台的
+// 一次往返。取 6 已经能把 4–5 秒压到 1 秒出头，再高没有收益（被最慢节点卡住）。
+const toggleConcurrency = 6
 
 // 封禁扫描：逐行对齐 BanService（M8 + 套餐适配）。
 //
@@ -215,17 +222,47 @@ func (c *Collector) toggleClient(ctx context.Context, userID int64, enable, book
 		return out, nil // 无节点可操作：不写标记，下一轮继续尝试
 	}
 
-	for _, node := range nodes {
-		ok, err := c.applyEnableOnNode(ctx, node, protocol, email, enable)
-		if err != nil {
-			// 单节点异常已在内部归一成「未确认」，这里的 err 只用于记录。
-			c.logf_("切换 client 开关失败（node=%d user=%d enable=%v）: %v", node.ID, userID, enable, err)
+	// 节点级并发（原先全串行，7 台里只要有两台 3x-ui + 一台高延迟，单次开关就要 4–5 秒）。
+	// 离线节点先剔掉：3x-ui 离线时发 HTTP 只能等超时，白耗时间；xray 走指令入队，
+	// 离线也先存着、agent 上线自取，不剔。
+	reachable := make([]nodeRow, 0, len(nodes))
+	for _, n := range nodes {
+		if n.isXray() || n.Status == "online" {
+			reachable = append(reachable, n)
 			continue
 		}
-		if ok {
-			out.Confirmed++
-		}
+		c.logf_("跳过离线 3x-ui 节点（node=%d user=%d enable=%v）", n.ID, userID, enable)
 	}
+	out.Total = len(reachable)
+	if out.Total == 0 {
+		return out, nil // 全离线：一本轮什么都不做，扫描器下轮再试
+	}
+
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
+	sem := make(chan struct{}, toggleConcurrency)
+	for _, node := range reachable {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(n nodeRow) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ok, err := c.applyEnableOnNode(ctx, n, protocol, email, enable)
+			if err != nil {
+				// 单节点异常已在内部归一成「未确认」，这里的 err 只用于记录。
+				c.logf_("切换 client 开关失败（node=%d user=%d enable=%v）: %v", n.ID, userID, enable, err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				out.Confirmed++
+				mu.Unlock()
+			}
+		}(node)
+	}
+	wg.Wait()
 
 	out.Applied = out.Confirmed == out.Total
 	if !out.Applied {
