@@ -382,13 +382,40 @@ func agentUpgradeOutdated(from, latest, reportedSHA, wantSHA string) bool {
 	if from == "" {
 		return true
 	}
-	if !versionAtLeast(from, latest) {
+	cmp, ok := compareVersions(from, latest)
+	if !ok || cmp < 0 {
 		return true
+	}
+	if cmp > 0 {
+		// 节点比清单还新（自建/预发布版本）：绝不降级。
+		// 这条在「本地构建的 agent 比 upstream 新，之后 3hub update 把 manifest 换回旧版」时很关键。
+		return false
 	}
 	if reportedSHA == "" || wantSHA == "" {
 		return false
 	}
 	return !strings.EqualFold(reportedSHA, wantSHA)
+}
+
+// compareVersions 比较两个点分版本：a<b 返回 -1，相等 0，a>b 返回 1；解析失败 ok=false。
+func compareVersions(a, b string) (int, bool) {
+	av, ok := parseVersionTriple(a)
+	if !ok {
+		return 0, false
+	}
+	bv, ok := parseVersionTriple(b)
+	if !ok {
+		return 0, false
+	}
+	for i := 0; i < 3; i++ {
+		if av[i] != bv[i] {
+			if av[i] > bv[i] {
+				return 1, true
+			}
+			return -1, true
+		}
+	}
+	return 0, true
 }
 
 // reportedAgentSHA 读节点上报的 agent 二进制 sha256（老 agent 不报 → 空串）。

@@ -16,6 +16,7 @@ func TestAgentUpgradeOutdated(t *testing.T) {
 		{"版本足够、没报 sha（老 agent）", "1.2.1", "1.2.1", "", "abc", false},
 		{"版本足够、sha 一致", "1.2.1", "1.2.1", "abc", "ABC", false},
 		{"版本相同、sha 不一致（同版本重编译）", "1.2.1", "1.2.1", "old", "new", true},
+		{"节点比清单新：不降级", "1.2.3", "1.2.1", "old", "new", false},
 		{"manifest 没 sha 时只比版本", "1.2.2", "1.2.1", "old", "", false},
 	}
 	for _, c := range cases {
