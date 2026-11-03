@@ -49,7 +49,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,9 +118,14 @@ func (r bareCompareResult) needBump() bool {
 //   - **面板侧**预期集合也没变（users_sum）—— 删号/停用/改套餐只动面板侧，
 //     只比节点指纹会漏掉「面板已不该让他连、节点上还开着」这类漂移。
 //
-// 基线推进只发生在「全量读 + 比对成功」之后（短路轮指纹本来就相同，不写库）；
-// 读回失败/截断/解析失败/重拉失败/确实重拉，都会把旧基线**删掉** —— 下一轮必须全量读，
+// 基线推进只发生在「读回 + 比对成功」之后（短路轮指纹本来就相同，不写库）；
+// 读回失败/截断/解析失败/重拉失败/确实重拉，都会把旧基线**删掉** —— 下一轮必须重新读，
 // 不让一次失败被后续「指纹恰好相同」永久短路。
+//
+// 逐桶增量读（issue #128 B）：指纹不一致时不再无条件全量回读。心跳带 32 桶 hash 时
+// 逐桶比对，只读差异桶（见 bareIncrementalSnapshot）：「没差异」的桶由 bareFillVerifiedBuckets
+// 按面板预期补齐 —— 桶 hash 相同就是「该桶成员一字不差」的证明。老 agent 不带桶指纹 →
+// 该函数内部直接退回全量读，行为与旧版完全一致。
 //
 // 并发安全：不碰 ReconcileReport、不碰共享 map，全部写进返回值；日志走 c.logf_（自带锁）。
 func (c *Collector) reconcileBareOnNode(ctx context.Context, node nodeRow, users []reconcileUser, dry bool) (nodeOutcome, error) {
@@ -140,7 +147,7 @@ func (c *Collector) reconcileBareOnNode(ctx context.Context, node nodeRow, users
 		return out, nil
 	}
 
-	snap, err := c.bareClientSnapshot(ctx, node)
+	snap, err := c.bareIncrementalSnapshot(ctx, node, current, users)
 	if err != nil {
 		// 读不到就整轮判 UNKNOWN（对齐 3x-ui 侧：绝不当成「节点上一个人都没有」）。
 		// 同时作废旧基线：下一轮必须重新全量读，不能拿「上上轮的成功结论」短路掉。
@@ -207,10 +214,16 @@ func (c *Collector) reconcileBareOnNode(ctx context.Context, node nodeRow, users
 type bareClientsFP struct {
 	n   int
 	sum string
+	// buckets 是 agent 上报的 32 个桶 hash（issue #128 B）；老 agent 不上报 → nil。
+	// 形状不符/有空值也按 nil 处理（宁可全量读，不拿坏指纹判「桶没变」）。
+	buckets []string
 }
 
 // ok 表示「这是一份可用的指纹」（sum 非空 = 确实报了一份名字集合）。
 func (f bareClientsFP) ok() bool { return strings.TrimSpace(f.sum) != "" }
+
+// bucketOK 表示「这份心跳带了可用的分桶指纹」（逐桶比对的唯一前提）。
+func (f bareClientsFP) bucketOK() bool { return f.ok() && len(f.buckets) == bareBucketCount }
 
 // bareFPBaseline 是上轮「成功对账」时记下的快照（driver_config.bare_fp）。
 type bareFPBaseline struct {
@@ -246,7 +259,11 @@ func readBareNodeState(node nodeRow) (bareClientsFP, bareFPBaseline, int64) {
 	if agent, isObj := cfg["agent"].(map[string]any); isObj {
 		if fp, isObj := agent["clients_fp"].(map[string]any); isObj {
 			n64, _ := asInt64(fp["n"])
-			current = bareClientsFP{n: int(n64), sum: strings.TrimSpace(stringOf(fp["sum"]))}
+			current = bareClientsFP{
+				n:       int(n64),
+				sum:     strings.TrimSpace(stringOf(fp["sum"])),
+				buckets: bareBucketsOf(fp["buckets"]),
+			}
 		}
 	}
 
@@ -293,6 +310,131 @@ func expectedUsersSum(users []reconcileUser) string {
 		_, _ = h.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ── 分桶逐桶比对（issue #128 B） ───────────────────────────────────
+
+const (
+	// bareBucketCount 与 agent 的 clientBucketCount 必须相同（32）。
+	bareBucketCount = 32
+	// bareBucketMaxDiff 是「逐桶读」的差异桶上限：超过就退回一次全量分页读。
+	//
+	// 每个差异桶至少一次指令往返（约 1-2 秒；一个桶 ≈ 1-2 页），8 个桶 ≈ 16 页以内，
+	// 仍明显少于万级用户的全量 50 页；差异桶再多（刚换节点、整份配置重来）就不如
+	// 顺序全量读一遍 —— 32 个桶各发一条反而更慢。
+	bareBucketMaxDiff = 8
+)
+
+// bareBucketID 与 agent 的 clientBucketID 同口径：fnv32a(email) % 32。
+//
+// ⚠️ 两侧算法必须一字不差：不一致的后果是「每轮 32 个桶全判变化」→ 退化成全量读
+// （不会误删人，但优化完全失效）。agent 侧改算法必须同步改这里。
+func bareBucketID(email string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(email))
+	return int(h.Sum32() % bareBucketCount)
+}
+
+// bareBucketSum 与 agent 的 bucketSum 同口径：桶内 email 排序后 join "\n" 取 md5。
+//
+// 空桶 = md5("") 的十六进制（join 空列表就是 ""，同一公式自然得出）。不改动入参切片。
+func bareBucketSum(emails []string) string {
+	sorted := append([]string(nil), emails...)
+	sort.Strings(sorted)
+	h := md5.New()
+	_, _ = h.Write([]byte(strings.Join(sorted, "\n")))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// bareBucketsOf 取出心跳里的 32 个桶 hash；形状不符 / 有空值 / 不是 32 个 → nil
+// （= 按老 agent 处理，走全量读）。
+func bareBucketsOf(v any) []string {
+	list, ok := v.([]any)
+	if !ok || len(list) != bareBucketCount {
+		return nil
+	}
+	out := make([]string, bareBucketCount)
+	for i, item := range list {
+		s := strings.TrimSpace(stringOf(item))
+		if s == "" {
+			return nil
+		}
+		out[i] = s
+	}
+	return out
+}
+
+// bareExpectedBucketSums 算面板侧「重拉配置后节点上应该有的 email 集合」的 32 桶 hash。
+//
+// 只算 renderEligible 的人：节点配置里只渲染这些人（过期/超量但还没打标记的仍在渲染
+// 集合里，见 renderEligible）。用全体 users 会让「含无套餐/已停用/带标记用户的桶」
+// 每轮都判不一致 → 那个桶每次都白读一遍。
+//
+// 成员对不上（删号残留、该有却缺人）恰恰是这里要暴露的：那个桶的 hash 必然不同。
+func bareExpectedBucketSums(users []reconcileUser) [bareBucketCount]string {
+	byBucket := [bareBucketCount][]string{}
+	for _, u := range users {
+		if !u.renderEligible() {
+			continue
+		}
+		email := clientEmail(u.ID)
+		b := bareBucketID(email)
+		byBucket[b] = append(byBucket[b], email)
+	}
+	var out [bareBucketCount]string
+	for i, emails := range byBucket {
+		out[i] = bareBucketSum(emails)
+	}
+	return out
+}
+
+// bareDiffBuckets 逐桶比对，返回「节点与面板预期不一致」的桶号；ok=false 表示走不了
+// 逐桶（老 agent 心跳不带 buckets / 形状不符）→ 调用方走全量读。
+//
+// 桶 hash 只覆盖 email 集合：hash 相同 ⇔ 该桶的成员完全一致（含没有多余的人）。
+func bareDiffBuckets(node bareClientsFP, users []reconcileUser) (diff []int, ok bool) {
+	if !node.bucketOK() {
+		return nil, false
+	}
+	want := bareExpectedBucketSums(users)
+	for i := 0; i < bareBucketCount; i++ {
+		if !strings.EqualFold(strings.TrimSpace(node.buckets[i]), want[i]) {
+			diff = append(diff, i)
+		}
+	}
+	return diff, true
+}
+
+// bareFillVerifiedBuckets 把「桶 hash 已核实、本轮没读」的桶按面板预期补进 entries。
+//
+// 为什么必须补：compareBareClients 的语义是「entries 里没有 = 节点上确实没这个人」。
+// 只读差异桶时 entries 里天然缺了没读的那些人，不补就会把 31/32 的人误判成「节点上
+// 缺人」→ 每轮 bump → 内核反复重启。
+//
+// 补进去的值按面板预期（Enable=true / 面板的 totalGB / expiry）：
+//   - 成员关系已被桶 hash 证实（email 集合一字不差）；
+//   - 字段（totalGB/expiryTime）不在桶 hash 里，所以没读的桶差分不出字段漂移 ——
+//     漂移本来只报告、从不触发重拉（见 bareCompareResult.needBump），这里少的只是
+//     报告里的计数，不影响任何修复动作；
+//   - Enable 按 true：裸内核的渲染结果根本不写 enable 字段（见 nodeapi render：
+//     只写 totalGB / expiryTime），agent 侧恒报 true，所以 Disabled 档在裸内核路径上
+//     不可达（它只是「带 enable 的配置形态」的兜底）。⚠️ 将来渲染若开始写 enable，
+//     必须把 enable 纳入桶 hash 或退回全量读 —— 否则「节点上被停用」会被这条补齐掩盖。
+func bareFillVerifiedBuckets(out *bareClientSnapshot, read map[int]bool, users []reconcileUser) {
+	for _, u := range users {
+		if !u.renderEligible() {
+			continue
+		}
+		email := clientEmail(u.ID)
+		if read[bareBucketID(email)] {
+			continue // 这个桶本轮读过，以读回的实际值为准。
+		}
+		out.entries[email] = nodeSnapshotEntry{
+			Enable:   true,
+			TotalGB:  u.Limit,
+			ExpiryMs: u.ExpiryMs,
+		}
+	}
 }
 
 // bareDriverConfigMap 把 driver_config 原始 JSON 解成 map（UseNumber，保大整数原文）。
@@ -506,46 +648,225 @@ func (u reconcileUser) renderEligible() bool {
 
 // ── 读：client_list ───────────────────────────────────────────────
 
-// bareClientSnapshot 通过指令通道读回节点上的全量 client。
+// bareClientListPageSize 是 client_list 分页拉取的每页条数。按每人约 138 字节计，
+// 200 条约 27.6 KB，远低于 agent 的 39000 字符上限，留足余量。
+const bareClientListPageSize = 200
+
+// bareClientListMaxPages 是分页拉取的安全上限（防 agent 异常一直回 next 导致死循环）。
+// 200 × 50 = 10000 人，远超单节点合理容量。
+const bareClientListMaxPages = 50
+
+// bareClientListPayload 拼一页 client_list 的入参。
+//
+// brief=1 告诉 agent 只要对账字段、不要 inbounds 诊断信息（每人省 30-40 字节，
+// 回执离 39000 字符上限更远）；老 agent 不认这个键，忽略它回全量，行为不变。
+// 用数字 1 而不是 true：agent 侧是 flexBool，两种都认，这里保持与 cursor/limit 同风格。
+func bareClientListPayload(cursor int64) []byte {
+	return []byte(fmt.Sprintf(`{"cursor":%d,"limit":%d,"brief":1}`, cursor, bareClientListPageSize))
+}
+
+// bareClientListBucketPayload 拼一页「按桶」client_list 的入参（issue #128 B）。
+//
+// bucket_id 是数字（agent 侧 *int：省略 = 全量，所以这里必须显式发，0 号桶也要发）；
+// cursor/limit 在 agent 过滤后的列表上分页；brief=1 同全量读。
+func bareClientListBucketPayload(bucket int, cursor int64) []byte {
+	return []byte(fmt.Sprintf(`{"bucket_id":%d,"cursor":%d,"limit":%d,"brief":1}`,
+		bucket, cursor, bareClientListPageSize))
+}
+
+// errBareBucketUnsupported = agent 回了不属于该桶的 client（老 agent 不认 bucket_id，
+// 把全量名单当成「这个桶」回给我们）。调用方必须退回全量读：拿它当该桶的内容会漏人。
+var errBareBucketUnsupported = errors.New("agent 未按 bucket_id 过滤（回执里出现其它桶的 client）")
+
+// barePageReader 是分页读回的状态：跨桶共用「第一份整份指纹」与页数预算。
+//
+// 跨桶共用指纹：多条指令之间 agent 若重拉了配置，各桶回执就来自两个版本，合并起来
+// 既可能多出人（旧版还有）也可能少人（新版没写全）—— 拿去对账会误判。所以第一个回执
+// 的整份指纹是全轮基准，任何一页对不上就丢弃本轮（UNKNOWN）。
+type barePageReader struct {
+	c     *Collector
+	ctx   context.Context
+	node  nodeRow
+	ref   bareClientsFP // 第一页的整份指纹（跨页/跨桶一致性基准）
+	have  bool
+	pages int // 已读页数
+	// budget 是本轮页数上限：全量读 = bareClientListMaxPages；逐桶读 = 再加
+	// bareBucketMaxDiff（每个桶分页各自向上取整，最多多出「桶数-1」页）。
+	budget int
+}
+
+// read 读一个桶（bucket<0 = 全量）的全部分页。
+//
+// issue #127 分页：单条 client_list 回执受 39000 字符上限（agent 侧）/ 40000（面板 ack
+// 校验），约 280 人/节点就会顶到。按 cursor/limit 分页拉取，每页 < 上限，逐页合并。
+//
+// issue #128 B 分桶：bucket>=0 时只回该桶的 client（agent 过滤后分页），并且校验回执里
+// 每条 client 确实属于该桶 —— 老 agent 不认 bucket_id 会回全量，那种回执必须判废。
+func (r *barePageReader) read(bucket int) (bareClientSnapshot, error) {
+	out := bareClientSnapshot{entries: map[string]nodeSnapshotEntry{}}
+
+	cursor := int64(0)
+	for {
+		limit := r.budget
+		if limit <= 0 {
+			limit = bareClientListMaxPages
+		}
+		if r.pages >= limit {
+			return out, fmt.Errorf("client_list 分页超过 %d 页仍未读完（节点可能异常）", limit)
+		}
+		// 上一轮的命令还没终结（agent 没认领：老版本不认这个 action，或者节点掉线）：
+		// 本轮不再入队。否则每 5 分钟堆一条 pending，节点回来时一次涌上来一堆同样的读请求。
+		if inflight, err := r.c.bareClientListInFlight(r.ctx, r.node.ID); err == nil && inflight {
+			return out, fmt.Errorf("上一轮 client_list 仍未回执（agent 未认领，可能版本过旧或节点掉线）")
+		}
+
+		payload := bareClientListPayload(cursor)
+		if bucket >= 0 {
+			payload = bareClientListBucketPayload(bucket, cursor)
+		}
+		id, err := r.c.enqueueNodeCommand(r.ctx, r.node.ID, nodeapi.ActionClientList, payload, nil)
+		if err != nil {
+			return out, fmt.Errorf("入队 client_list 失败: %w", err)
+		}
+		status, result, err := r.c.waitNodeCommand(r.ctx, id, r.c.bareReconcileWait())
+		if err != nil {
+			return out, fmt.Errorf("读取 client_list 回执失败: %w", err)
+		}
+		r.pages++
+		switch status {
+		case nodeapi.StatusSuccess:
+		case nodeapi.StatusFailed:
+			// agent 明说失败（老版本不认这个 action 时也是这条）→ 本轮不动。
+			return out, fmt.Errorf("节点执行 client_list 失败: %s", truncateForLog(result, 200))
+		default:
+			return out, fmt.Errorf("client_list 未在 %d 秒内回执（节点可能离线）", r.c.bareReconcileWaitSeconds())
+		}
+
+		parsed, ok := parseBareClientList(result)
+		if !ok {
+			return out, fmt.Errorf("client_list 回执解析失败: %s", truncateForLog(result, 200))
+		}
+		if parsed.truncated {
+			// agent 超过 39000 字符会把回执截短并标 truncated（面板 ack 校验上限 40000，
+			// 超了整条回执会被拒）。半份数据绝不能拿来对账 —— 会把没回的人当「节点上缺人」。
+			return out, fmt.Errorf("client_list 回执被截断，本轮按 UNKNOWN 处理: %s", parsed.reason)
+		}
+		// 跨页/跨桶一致性校验：后续每一页的指纹必须与第一页相同，否则拼起来的集合
+		// 来自两个版本的配置。
+		if !r.have {
+			r.ref, r.have = parsed.clientsFP, true
+		} else if err := barePageFPMismatch(r.ref, parsed.clientsFP); err != nil {
+			return out, err
+		}
+		// 按桶读回时，每条 client 都必须真的属于该桶。老 agent 不认 bucket_id 会把
+		// 全量当成该桶回给我们（它只看 cursor/limit）—— 那种回执必须判废并退回全量读，
+		// 绝不能当「这个桶就这些人」用（会漏掉本在该桶的人）。
+		if bucket >= 0 {
+			for email := range parsed.entries {
+				if bareBucketID(email) != bucket {
+					return out, errBareBucketUnsupported
+				}
+			}
+		}
+
+		// 合并本页。agent 已按 email 去重，分页切片是连续段，跨页不会重复；直接覆盖安全。
+		for email, entry := range parsed.entries {
+			out.entries[email] = entry
+		}
+		out.foreign = append(out.foreign, parsed.foreign...)
+		// sampleKeys 只留第一次拿到的样本（诊断用，字段改名时看一次就够）。
+		if len(out.sampleKeys) == 0 {
+			out.sampleKeys = parsed.sampleKeys
+		}
+
+		if parsed.next <= 0 {
+			// 没有下一页（或老 agent 全量回执 next=0）。
+			return out, nil
+		}
+		cursor = parsed.next
+	}
+}
+
+// bareClientSnapshot 通过指令通道分页读回节点上的全量 client。
+//
+// 老 agent 忽略 cursor/limit 回全量（next=0），循环只跑一次，行为与旧版完全一致。
+// 逐桶增量读见 bareIncrementalSnapshot。
 func (c *Collector) bareClientSnapshot(ctx context.Context, node nodeRow) (bareClientSnapshot, error) {
-	var out bareClientSnapshot
+	r := &barePageReader{c: c, ctx: ctx, node: node, budget: bareClientListMaxPages}
+	return r.read(-1)
+}
 
-	// 上一轮的命令还没终结（agent 没认领：老版本不认这个 action，或者节点掉线）：
-	// 本轮不再入队。否则每 5 分钟堆一条 pending，节点回来时一次涌上来一堆同样的读请求。
-	if inflight, err := c.bareClientListInFlight(ctx, node.ID); err == nil && inflight {
-		return out, fmt.Errorf("上一轮 client_list 仍未回执（agent 未认领，可能版本过旧或节点掉线）")
+// bareIncrementalSnapshot 按桶增量读回节点名单（issue #128 B）。
+//
+// 背景：整体指纹一变（哪怕只增删 1 人）就得全量回读 —— 万级用户 50 页、150 秒。心跳
+// 带 32 桶 hash 后只读差异桶：1 桶 ≈ 2 页 ≈ 6 秒。
+//
+// 走增量的前提：心跳带了可用桶指纹（老 agent 不带 → 全量读，行为与旧版一致），且差异桶
+// 不超过 bareBucketMaxDiff（再多不如顺序全量读一遍）。
+//
+// 读完后把「桶 hash 已核实、本轮没读」的人按面板预期补进 entries（见
+// bareFillVerifiedBuckets）—— 不补会把 31/32 的人误判成「节点上缺人」。
+//
+// 诊断字段只覆盖读过的桶：foreign（陌生 email）/ sampleKeys 来自差异桶的回执，没读的桶
+// 里的陌生 email 本轮看不到（少报，不会误报）—— 它们只进报告的计数，不参与对账判定。
+func (c *Collector) bareIncrementalSnapshot(ctx context.Context, node nodeRow, fp bareClientsFP, users []reconcileUser) (bareClientSnapshot, error) {
+	diff, ok := bareDiffBuckets(fp, users)
+	if !ok || len(diff) > bareBucketMaxDiff {
+		if ok {
+			c.logf_("[reconcile] 裸内核差异桶过多（%d 个），本轮直接全量读 node=%s", len(diff), node.Name)
+		}
+		return c.bareClientSnapshot(ctx, node)
 	}
 
-	id, err := c.enqueueNodeCommand(ctx, node.ID, nodeapi.ActionClientList, nil, nil)
-	if err != nil {
-		return out, fmt.Errorf("入队 client_list 失败: %w", err)
+	out := bareClientSnapshot{entries: make(map[string]nodeSnapshotEntry, len(users))}
+	reader := &barePageReader{
+		c: c, ctx: ctx, node: node,
+		// 逐桶读的页数上限 = 全量上限 + 桶数（每个桶各自向上取整，最多多出「桶数-1」页）。
+		budget: bareClientListMaxPages + bareBucketMaxDiff,
 	}
-	status, result, err := c.waitNodeCommand(ctx, id, c.bareReconcileWait())
-	if err != nil {
-		return out, fmt.Errorf("读取 client_list 回执失败: %w", err)
-	}
-	switch status {
-	case nodeapi.StatusSuccess:
-	case nodeapi.StatusFailed:
-		// agent 明说失败（老版本不认这个 action 时也是这条）→ 本轮不动。
-		return out, fmt.Errorf("节点执行 client_list 失败: %s", truncateForLog(result, 200))
-	default:
-		return out, fmt.Errorf("client_list 未在 %d 秒内回执（节点可能离线）", c.bareReconcileWaitSeconds())
+	readEntries := 0
+	for _, bucket := range diff {
+		snap, err := reader.read(bucket)
+		if err != nil {
+			if errors.Is(err, errBareBucketUnsupported) {
+				// 协议没对上（agent 半新半旧）：本轮回退全量读，绝不拿全量当「这个桶」用。
+				c.logf_("[reconcile] 裸内核按桶读回不可用，本轮回退全量读 node=%s: %v", node.Name, err)
+				return c.bareClientSnapshot(ctx, node)
+			}
+			return out, err
+		}
+		for email, entry := range snap.entries {
+			out.entries[email] = entry
+		}
+		out.foreign = append(out.foreign, snap.foreign...)
+		if len(out.sampleKeys) == 0 {
+			out.sampleKeys = snap.sampleKeys
+		}
+		readEntries += len(snap.entries)
 	}
 
-	parsed, ok := parseBareClientList(result)
-	if !ok {
-		return out, fmt.Errorf("client_list 回执解析失败: %s", truncateForLog(result, 200))
+	read := make(map[int]bool, len(diff))
+	for _, b := range diff {
+		read[b] = true
 	}
-	if parsed.truncated {
-		// agent 超过 39000 字符会把回执截短并标 truncated（面板 ack 校验上限 40000，
-		// 超了整条回执会被拒）。半份数据绝不能拿来对账 —— 会把没回的人当「节点上缺人」。
-		return out, fmt.Errorf("client_list 回执被截断，本轮按 UNKNOWN 处理: %s", parsed.reason)
-	}
-	out.entries = parsed.entries
-	out.foreign = parsed.foreign
-	out.sampleKeys = parsed.sampleKeys
+	bareFillVerifiedBuckets(&out, read, users)
+
+	c.logf_("[reconcile] 裸内核逐桶读回 node=%s 差异桶=%v 共 %d 个，读回 %d 条、核实补齐 %d 条",
+		node.Name, diff, len(diff), readEntries, len(out.entries)-readEntries)
 	return out, nil
+}
+
+// barePageFPMismatch 判定「这一页与第一页是不是同一份配置」（纯函数，便于穷举边界）。
+//
+// first 不可用（ok()=false）说明 agent 是老版本、回执不带 clients_fp —— 此时无从比对，
+// 判没变（行为与旧版一致，不能因为没指纹就让对账永久失败）。第一页有指纹而本页没有/
+// 不同，一律判「变了」：宁可丢弃本轮（UNKNOWN），也不能拿混合了两个版本的集合去删用户。
+// 这一轮丢掉只损失一次对账，下一轮还在。
+func barePageFPMismatch(first, cur bareClientsFP) error {
+	if !first.ok() || cur.sum == first.sum {
+		return nil
+	}
+	return fmt.Errorf("分页期间节点配置被更新（首屏指纹 %s，本页指纹 %q），两页不是同一份配置，本轮按 UNKNOWN 处理", first.sum, cur.sum)
 }
 
 // bareClientParse 是 client_list 回执的解析结果。
@@ -557,13 +878,19 @@ type bareClientParse struct {
 	// 调用方必须按 UNKNOWN 处理：拿半份数据当全量会把没回的人误判成「节点上缺人」。
 	truncated bool
 	reason    string
+	// next = 分页模式下的下一页 cursor；0 = 没有下一页（或老 agent 全量回执）。
+	next int64
+	// clientsFP = 回执里带的名单指纹（clients_fp，与心跳同结构同口径，agent 3.6+）。
+	// 不可用（ok()=false）= 老 agent 不带指纹，此时不做跨页一致性校验（行为与旧版一致）。
+	clientsFP bareClientsFP
 }
 
 // parseBareClientList 解析 client_list 回执，新旧两种形状都认：
 //
 //	新（agent 3.1+，扁平化 issue #115）：
 //	  {"clients":[{"email":"ch_user_12","enable":true,"totalGB":0,"expiryTime":0,
-//	               "inbounds":["vless-443","hy2"]}],"total":103,"truncated":true,"reason":"..."}
+//	               "inbounds":["vless-443","hy2"]}],"total":103,"truncated":true,"reason":"...",
+//	   "next":200,"clients_fp":{"n":103,"sum":"<md5>"}}   ← next/clients_fp/inbounds 都可缺省
 //	旧（agent ≤3.0）：
 //	  {"inbounds":[{"inbound_id":0,"tag":"vless-443","port":443,"protocol":"vless",
 //	                "clients":[{"email":"ch_user_12","enable":true,"totalGB":0,"expiryTime":0}]}],
@@ -571,7 +898,8 @@ type bareClientParse struct {
 //
 // 分流看根级键：有 clients 走新解析（节点侧已按 email 去重，一层数组直接落表），
 // 有 inbounds 走旧解析（跨入站按 email 合并）。clients 里的 inbounds 数组只是节点侧
-// 的诊断信息，比对只认 email，这里忽略。
+// 的诊断信息，比对只认 email，这里忽略（brief 模式下 agent 干脆不回它）。
+// clients_fp 是整份配置的名单指纹，只用于分页跨页一致性校验，不参与对账判定。
 //
 // 用 map + UseNumber 而不是结构体：agent 各版本数值字段可能给 json.Number 或字符串，
 // 结构体一遇类型不符整条回执就废了（整轮 UNKNOWN）。取值复用 3x-ui 侧同一套
@@ -591,11 +919,22 @@ func parseBareClientList(raw string) (bareClientParse, bool) {
 		return bareClientParse{}, false
 	}
 	truncated, _ := truthyField(obj, "truncated")
+	next, _ := asInt64(obj["next"])
+
+	// clients_fp 是 {n, sum} 对象（与心跳同结构）。缺失/类型不符就当没带指纹，
+	// 交给跨页校验按「老 agent」处理 —— 不能因为一个诊断字段把整条回执判废。
+	var clientsFP bareClientsFP
+	if fp, ok := obj["clients_fp"].(map[string]any); ok {
+		n, _ := asInt64(fp["n"])
+		clientsFP = bareClientsFP{n: int(n), sum: strings.TrimSpace(stringOf(fp["sum"]))}
+	}
 
 	out := bareClientParse{
 		entries:   map[string]nodeSnapshotEntry{},
 		truncated: truncated,
 		reason:    stringOf(obj["reason"]),
+		next:      next,
+		clientsFP: clientsFP,
 	}
 	seenForeign := map[string]bool{}
 
