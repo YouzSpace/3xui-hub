@@ -1,6 +1,6 @@
 <script setup>
 /**
- * 我的（新 UI）：资料卡 / 偏好设置 / 服务与支持 / 退出登录
+ * 我的（新 UI）：资料卡 / 账户余额 / 偏好设置 / 服务与支持 / 退出登录
  * 使用文档已改为全屏二级页（user-tutorials），此页只留入口。
  * 反馈链接、公告均为现有真实功能。
  */
@@ -212,6 +212,17 @@ onMounted(() => {
         </button>
       </div>
     </section>
+
+    <!-- 账户余额：只留入口，余额数字收进二级页（用户点进才看到） -->
+    <ListGroup label="账户">
+      <ListRow
+        label="账户余额"
+        sub="充值 · 兑换码 · 余额流水"
+        @press="router.push({ name: 'user-balance' })"
+      >
+        <template #icon><UserIcon name="wallet" :size="20" /></template>
+      </ListRow>
+    </ListGroup>
 
     <!-- 偏好设置 -->
     <ListGroup label="偏好设置">

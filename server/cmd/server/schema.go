@@ -50,6 +50,58 @@ func ensureSchema(db *sql.DB) error {
 			PRIMARY KEY (id),
 			UNIQUE KEY xray_certificates_name_unique (name)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 余额兑换码（#账户余额）：单次使用，面值整数分。
+		`CREATE TABLE IF NOT EXISTS giftcards (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			code varchar(32) NOT NULL COMMENT '兑换码，格式 XXXX-XXXX-XXXX-XXXX',
+			name varchar(255) NOT NULL DEFAULT '' COMMENT '名称/备注',
+			value bigint NOT NULL COMMENT '面值(分)',
+			status varchar(16) NOT NULL DEFAULT 'active' COMMENT 'active=未用 / used=已用 / disabled=作废',
+			used_by bigint unsigned DEFAULT NULL COMMENT '使用它的用户 id，null=未用',
+			used_at timestamp NULL DEFAULT NULL,
+			expires_at datetime DEFAULT NULL COMMENT '过期时间，null=永久',
+			created_by bigint unsigned DEFAULT NULL COMMENT '创建的管理员 id',
+			note varchar(255) DEFAULT NULL COMMENT '管理员备注',
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id),
+			UNIQUE KEY giftcards_code_unique (code),
+			KEY giftcards_status_index (status),
+			KEY giftcards_used_by_index (used_by)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 余额流水（#账户余额）：每次变动一条，含变动后余额。
+		`CREATE TABLE IF NOT EXISTS balance_logs (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			user_id bigint unsigned NOT NULL COMMENT '用户 id',
+			amount bigint NOT NULL COMMENT '变动额(分)，正=加 / 负=扣',
+			type varchar(16) NOT NULL COMMENT 'recharge=充值 / consume=消费 / redeem=兑换 / admin=管理员调整 / rebate=邀请返佣',
+			order_id bigint unsigned DEFAULT NULL COMMENT '关联订单 id（充值/消费/返佣）',
+			giftcard_id bigint unsigned DEFAULT NULL COMMENT '关联兑换码 id（兑换）',
+			operator_id bigint unsigned DEFAULT NULL COMMENT '操作管理员 id（admin 调整时）',
+			balance_after bigint NOT NULL COMMENT '变动后余额(分)',
+			note varchar(255) DEFAULT NULL,
+			created_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id),
+			KEY balance_logs_user_id_index (user_id),
+			KEY balance_logs_type_index (type),
+			KEY balance_logs_order_id_index (order_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 邀请返佣流水（#邀请返佣）：一笔订单最多一条 —— order_id 唯一键就是发放幂等闸门，
+		// 网关回调重推 / 余额支付重复完成时，第二次 INSERT 撞唯一键即跳过（不加钱、不写流水）。
+		`CREATE TABLE IF NOT EXISTS affiliate_rebates (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			inviter_id bigint unsigned NOT NULL COMMENT '邀请人用户 id（返佣收款方）',
+			invitee_id bigint unsigned NOT NULL COMMENT '被邀请人用户 id（产生订单的人）',
+			order_id bigint unsigned NOT NULL COMMENT '触发的订单 id，唯一 = 同一订单只返一次',
+			order_no varchar(64) NOT NULL DEFAULT '' COMMENT '订单号（留痕，订单删了也能看）',
+			amount bigint NOT NULL COMMENT '返佣金额(分)，正数',
+			rate decimal(5,4) NOT NULL DEFAULT '0.0000' COMMENT '发放时的比例（如 0.1000）',
+			created_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id),
+			UNIQUE KEY affiliate_rebates_order_unique (order_id),
+			KEY affiliate_rebates_inviter_index (inviter_id),
+			KEY affiliate_rebates_invitee_index (invitee_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -61,6 +113,7 @@ func ensureSchema(db *sql.DB) error {
 	// 独立加密列存密文，stream_settings 里只留 {"type":"salamander"} 占位。
 	columns := []struct{ table, column, definition string }{
 		{"xray_inbounds", "salamander_password", "text COLLATE utf8mb4_unicode_ci"},
+		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {

@@ -105,6 +105,8 @@ type rateLimits struct {
 	LoginMax         int // rate_login_max_attempts
 	LoginLockSecond  int // rate_login_lock_seconds
 	RegisterIPHourly int // rate_register_ip_hourly
+	RedeemMax        int // rate_redeem_max_attempts（余额兑换码：同 IP 连续失败上限）
+	RedeemLockSecond int // rate_redeem_lock_seconds（余额兑换码：锁定时长）
 }
 
 // 默认值逐字取自 config/panel.php 的 ratelimit 段（.env 未覆盖时）。
@@ -117,6 +119,8 @@ const (
 	defaultRateLoginMax         = 5
 	defaultRateLoginLockSecond  = 300
 	defaultRateRegisterIPHourly = 10
+	defaultRateRedeemMax        = 5
+	defaultRateRedeemLockSecond = 300
 )
 
 // siteConfigRateKeys 是 RateGuardService::CONFIG_KEYS 的用户端子集。
@@ -125,6 +129,7 @@ var siteConfigRateKeys = []string{
 	"rate_verify_max_attempts", "rate_verify_lock_seconds",
 	"rate_login_max_attempts", "rate_login_lock_seconds",
 	"rate_register_ip_hourly",
+	"rate_redeem_max_attempts", "rate_redeem_lock_seconds",
 }
 
 // loadRateLimits 取阈值：site_configs 有非空值就用它，否则用 config/panel.php 的默认值。
@@ -155,6 +160,8 @@ func (h *Handler) loadRateLimits(ctx context.Context) rateLimits {
 		LoginMax:         pick("rate_login_max_attempts", defaultRateLoginMax),
 		LoginLockSecond:  pick("rate_login_lock_seconds", defaultRateLoginLockSecond),
 		RegisterIPHourly: pick("rate_register_ip_hourly", defaultRateRegisterIPHourly),
+		RedeemMax:        pick("rate_redeem_max_attempts", defaultRateRedeemMax),
+		RedeemLockSecond: pick("rate_redeem_lock_seconds", defaultRateRedeemLockSecond),
 	}
 }
 
@@ -253,6 +260,29 @@ func (h *Handler) recordRegister(ctx context.Context, ip string, l rateLimits) e
 		return nil
 	}
 	return h.limiter.hit(ctx, keyRegister(ip), time.Hour)
+}
+
+// ---- 余额兑换码限流（规划 §4「兑换码爆破」）----
+//
+// 与注册接口同一个思路：按 IP 记**失败次数**，打满后锁定时长内直接拒（连码表都不查）。
+// 成功的请求清掉该 IP 的计数 —— 正常用户输错一两次不会被自己的正确兑换锁住。
+// 阈值走 site_configs（rate_redeem_max_attempts / rate_redeem_lock_seconds），后台可调。
+
+func keyRedeem(ip string) string { return ratePrefix + "redeem:" + ip }
+
+func (h *Handler) redeemBlocked(ctx context.Context, ip string, l rateLimits) (bool, error) {
+	return h.limiter.tooManyAttempts(ctx, keyRedeem(ip), l.RedeemMax)
+}
+
+func (h *Handler) recordRedeemFailure(ctx context.Context, ip string, l rateLimits) error {
+	if l.RedeemLockSecond <= 0 {
+		return nil
+	}
+	return h.limiter.hit(ctx, keyRedeem(ip), time.Duration(l.RedeemLockSecond)*time.Second)
+}
+
+func (h *Handler) clearRedeemFailures(ctx context.Context, ip string) error {
+	return h.limiter.clear(ctx, keyRedeem(ip))
 }
 
 // ---- 优惠码限流（PaymentService 的 DiscountRateGuard 接缝，对齐 RateGuardService 折扣段）----

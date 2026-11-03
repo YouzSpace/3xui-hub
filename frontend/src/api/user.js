@@ -33,14 +33,38 @@ export const userApi = {
 
   // 邀请码 / 兑换码
   myInvite: () => client.get('/api/invite/me'),
+  // 我的邀请返佣（返佣域，只读）：data = { rate(0~1), total_rebate(分), invited_count,
+  // invitees:[{ user_id, email(已打码), rebate(分), invited_at }] }
+  myAffiliate: () => client.get('/api/affiliate'),
   // 仅校验不占用次数，用于输码即时反馈
   checkDiscount: (code, planId) => client.post('/api/discount/check', { code, plan_id: planId }),
+
+  // 账户余额（金额一律「分」，展示用 utils/money 换算）
+  // 返回 { balance, logs:[{id, amount, type, note, balance_after, created_at}] }，
+  // logs 按 id 倒序；params 支持 { page, per_page }（默认 20，上限 100）。
+  balance: (params) => client.get('/api/balance', { params }),
+  // 兑换余额码：成功 data={added, balance}；失败后端回 400 + 明确文案
+  //（兑换码不存在 / 已使用 / 已过期 / 已作废），失败次数多了会 429。
+  redeem: (code) => client.post('/api/redeem', { code }).then((r) => r),
 
   // 支付
   paymentMethods: () => client.get('/api/payment/methods'),
   createOrder: (planId, paymentConfigId, discountCode) => {
     const data = { plan_id: planId, payment_config_id: paymentConfigId }
     if (discountCode) data.discount_code = discountCode
+    return client.post('/api/payment/create', data).then((r) => r)
+  },
+  // 余额支付套餐：不经过第三方网关，成功即扣款（status 直接是 paid，没有 pay_url），
+  // 余额不足时后端回 code 400「余额不足」。
+  createBalancePayOrder: (planId, discountCode) => {
+    const data = { plan_id: planId, payment: 'balance' }
+    if (discountCode) data.discount_code = discountCode
+    return client.post('/api/payment/create', data).then((r) => r)
+  },
+  // 余额充值下单（走第三方支付，回调到账）：amount 单位**分**，建的是 order_type=balance 订单。
+  createRechargeOrder: (amountCents, paymentConfigId) => {
+    const data = { order_type: 'balance', amount: amountCents }
+    if (paymentConfigId) data.payment_config_id = paymentConfigId
     return client.post('/api/payment/create', data).then((r) => r)
   },
   createResetOrder: (paymentConfigId) => client.post('/api/payment/create-reset', { payment_config_id: paymentConfigId }).then((r) => r),

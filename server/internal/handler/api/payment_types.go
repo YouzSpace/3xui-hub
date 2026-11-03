@@ -107,6 +107,9 @@ func (o *Order) IsProxyOrder() bool { return o.OrderType == "proxy" }
 // IsResetOrder 对齐 `str_starts_with($order->order_no, 'RST')`。
 func (o *Order) IsResetOrder() bool { return len(o.OrderNo) >= 3 && o.OrderNo[:3] == "RST" }
 
+// IsBalanceRecharge 判定余额充值订单（order_type=balance）：支付成功后钱进余额，不开套餐。
+func (o *Order) IsBalanceRecharge() bool { return o.OrderType == "balance" }
+
 // DiscountCode 是 discount_codes 一行（下单校验与占用所需列）。
 type DiscountCode struct {
 	ID             int64
@@ -228,9 +231,13 @@ type PlanFields struct {
 }
 
 // NewOrderInput 对齐 Order::create([...])（支付路径用到的列）。
+//
+// OrderType 取 plan（默认，空串同义）/ proxy / balance（余额充值）；PlanID 为 0 表示无套餐
+// （充值单），入库写 NULL —— orders.plan_id 有外键，写 0 会直接违反约束。
 type NewOrderInput struct {
 	OrderNo         string
 	UserID          uint64
+	OrderType       string
 	PlanID          uint64
 	Amount          string
 	OriginalAmount  sql.NullString

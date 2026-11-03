@@ -278,12 +278,41 @@ render_nginx_conf() {
 }
 
 
+# 老机器 acme.sh 续期目录迁移：Le_Webroot 从老 frontend/dist 迁到 ACME_WEBROOT。
+#
+# 背景：v2.12.0 前端 go:embed 进二进制、frontend/dist 退库被清空。PR#122 把 nginx 的
+# ACME location root 统一到 ACME_WEBROOT（/var/www/acme），但 acme.sh 各域名 conf 里的
+# Le_Webroot 还指着老目录（申请证书时记进去的，续期 --cron 靠它做 webroot 校验）。
+# 续期时 acme.sh 往 Le_Webroot 写挑战文件、nginx 从 ACME_WEBROOT 读，两目录不一致 →
+# 校验 404 → 续期静默失败（证书到期才暴露）。这里把 Le_Webroot 迁过来，与 nginx 对齐。
+# 幂等：已迁到 ACME_WEBROOT 的跳过；改前备份，只动 Le_Webroot 那一行。
+migrate_acme_webroot() {
+    local old_webroot="${INSTALL_DIR}/frontend/dist"
+    [ "${old_webroot}" = "${ACME_WEBROOT}" ] && return 0
+    local conf dir old_esc
+    old_esc=$(printf '%s' "$old_webroot" | sed 's/\./\\./g')
+    for conf in "$HOME"/.acme.sh/*/*.conf; do
+        [ -f "$conf" ] || continue
+        if grep -qF "$old_webroot" "$conf" 2>/dev/null; then
+            cp -f "$conf" "${conf}.bak-3hub" 2>/dev/null || true
+            sed -i "s#${old_esc}#${ACME_WEBROOT}#g" "$conf"
+            dir="$(basename "$(dirname "$conf")")"
+            echo "ACME: 续期目录已迁移 ${dir}: ${old_webroot} → ${ACME_WEBROOT}"
+        fi
+    done
+    return 0
+}
+
+
 # 把主 conf 收敛到规范模板（幂等；内容一致则不写）
 ensure_nginx_go_proxy() {
     local CONF DOMAIN CERT
     CONF="$(nginx_conf_path)"
     mkdir -p "$(dirname "$CONF")" 2>/dev/null || true
     mkdir -p "${ACME_WEBROOT}/.well-known/acme-challenge" 2>/dev/null || true
+
+    # acme.sh 续期目录与 nginx ACME location 对齐（老机器 Le_Webroot 还指着 frontend/dist）
+    migrate_acme_webroot
 
     # 域名来源优先级：现配置 → APP_URL（安装期就写好了）→ HUB_DOMAIN 环境变量
     if [ -f "$CONF" ]; then
@@ -505,8 +534,11 @@ cmd_status() {
     # 版本
     echo -e "版本:      ${GREEN}${VERSION}${NC}"
 
-    # 后端版本（预编译二进制分发，版本号与 frontend/package.json 对齐）
-    BACKEND_VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    # 后端版本：读二进制 --version 自报（最准），二进制读不到时回退 package.json
+    BACKEND_VER=$("$INSTALL_DIR/server/controlhub-server" --version 2>/dev/null | head -1)
+    if [ -z "$BACKEND_VER" ]; then
+        BACKEND_VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    fi
     echo -e "后端版本:  ${GREEN}${BACKEND_VER:-未知}${NC}"
 
     # 数据库
@@ -718,14 +750,16 @@ _update_rollback() {
     return 0
 }
 
-# 下载预编译 Go 后端二进制（升级/回滚共用）。版本号读 frontend/package.json 的
-# version（与 release tag 对齐），架构由 uname -m 检测；下载到 server/controlhub-server。
-# 下载源按序回退：GitHub Release → gh-proxy → ghfast.top。成功返回 0，失败返回 1。
+# 下载预编译 Go 后端二进制（升级/回滚共用）。版本号读 git tag（与 release tag 对齐，
+# CI 编译锚点），无 tag 时 fallback frontend/package.json；架构由 uname -m 检测。
+# 下载源按序回退：GitHub Release → gh-proxy → ghfast.top。
+# sha256 校验（Release 带 checksums.txt）：排除镜像站坏包/串味，失败换下一镜像。
+# 成功返回 0，失败返回 1。
 fetch_backend_binary() {
-    local VER ARCH BIN URL
-    VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null \
-        | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    [ -n "$VER" ] || { echo -e "${RED}无法从 frontend/package.json 读取版本号${NC}"; return 1; }
+    local VER ARCH BIN URL TMP SUM_URL SUM_FILE EXPECT ACTUAL
+    # 版本号复用 current_tag（describe → 补拉 tags → package.json，单一来源）
+    VER=$(current_tag)
+    [ -n "$VER" ] || { echo -e "${RED}无法确定版本号${NC}"; return 1; }
 
     case "$(uname -m)" in
         x86_64|amd64) ARCH="amd64" ;;
@@ -735,17 +769,31 @@ fetch_backend_binary() {
 
     BIN="controlhub-server-linux-${ARCH}"
     URL="https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
+    SUM_URL="https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/checksums.txt"
     # 先下到临时文件再原子替换：curl 直写运行中的二进制会 Text file busy（内核拒绝
     # 覆盖正在执行的文件）；mv 换新 inode 允许覆盖。stop 后由 phase2 的 restart 拉起来。
-    local TMP="${INSTALL_DIR}/server/.controlhub-server.new"
+    TMP="${INSTALL_DIR}/server/.controlhub-server.new"
     for u in "$URL" "https://gh-proxy.com/$URL" "https://ghfast.top/$URL"; do
-        if curl -fL --connect-timeout 15 --max-time 300 -o "$TMP" "$u" 2>/dev/null; then
-            chmod +x "$TMP"
-            systemctl stop controlhub 2>/dev/null || true
-            mv -f "$TMP" "${INSTALL_DIR}/server/controlhub-server"
-            return 0
+        if ! curl -fL --connect-timeout 15 --max-time 300 -o "$TMP" "$u" 2>/dev/null; then
+            echo -e "${YELLOW}下载失败，尝试下一个镜像...${NC}"
+            continue
         fi
-        echo -e "${YELLOW}下载失败，尝试下一个镜像...${NC}"
+        # sha256 校验：checksums.txt 取不到时告警放行（老 release 可能没带），取到了必须一致。
+        SUM_FILE="/tmp/.controlhub-checksums.$$"
+        if curl -fsSL --connect-timeout 10 --max-time 60 -o "$SUM_FILE" "$SUM_URL" 2>/dev/null; then
+            EXPECT=$(grep -E "controlhub-server-linux-${ARCH}[[:space:]]*$" "$SUM_FILE" 2>/dev/null | awk '{print $1}' | head -1)
+            ACTUAL=$(sha256sum "$TMP" 2>/dev/null | awk '{print $1}')
+            rm -f "$SUM_FILE"
+            if [ -n "$EXPECT" ] && [ "$EXPECT" != "$ACTUAL" ]; then
+                echo -e "${YELLOW}二进制校验失败（期望 ${EXPECT}，实际 ${ACTUAL}），尝试下一个镜像...${NC}"
+                rm -f "$TMP"
+                continue
+            fi
+        fi
+        chmod +x "$TMP"
+        systemctl stop controlhub 2>/dev/null || true
+        mv -f "$TMP" "${INSTALL_DIR}/server/controlhub-server"
+        return 0
     done
     echo -e "${RED}二进制下载失败（已尝试所有镜像）${NC}"
     return 1

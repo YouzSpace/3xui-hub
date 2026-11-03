@@ -49,6 +49,11 @@ const routes = [
         component: () => import('@/views/user/More.vue'),
       },
       {
+        path: 'balance',
+        name: 'user-balance',
+        component: () => import('@/views/user/Balance.vue'),
+      },
+      {
         path: 'announcement',
         name: 'user-announcement',
         component: () => import('@/views/user/Announcement.vue'),
@@ -125,7 +130,13 @@ const routes = [
       { path: 'tutorials', name: 'admin-tutorials', component: () => import('@/views/admin/Tutorials.vue') },
       { path: 'email', name: 'admin-email', component: () => import('@/views/admin/Email.vue') },
       { path: 'telegram', name: 'admin-telegram', component: () => import('@/views/admin/TelegramBot.vue') },
-      { path: 'discount-codes', name: 'admin-discount-codes', component: () => import('@/views/admin/DiscountCodes.vue') },
+      // 码管理：折扣码（打折）+ 余额码（充余额）统一一个页面两个 tab
+      { path: 'codes', name: 'admin-codes', component: () => import('@/views/admin/Codes.vue') },
+      // 旧路径重定向到统一「码管理」页
+      { path: 'discount-codes', redirect: { path: '/admin/codes', query: { tab: 'discount' } } },
+      { path: 'giftcards', redirect: { path: '/admin/codes', query: { tab: 'balance' } } },
+      // 余额管理（余额域）：用户余额查询 + 人工调账（与用户列表页分开，见 prompts/balance-layout-20261103）
+      { path: 'balance', name: 'admin-balance', component: () => import('@/views/admin/Balance.vue') },
       { path: 'site-settings', name: 'admin-site-settings', component: () => import('@/views/admin/SiteSettings.vue') },
       // 主页 + 配色收进一个容器（顶部 Tab），旧路径重定向保留
       { path: 'appearance', name: 'admin-appearance', component: () => import('@/views/admin/Appearance.vue') },
@@ -135,7 +146,8 @@ const routes = [
       { path: 'app-version', name: 'admin-app-version', component: () => import('@/views/admin/AppVersion.vue') },
       { path: 'system-status', name: 'admin-system-status', component: () => import('@/views/admin/SystemStatus.vue') },
       { path: 'audit-logs', name: 'admin-audit-logs', component: () => import('@/views/admin/AuditLogs.vue') },
-      { path: 'invite-settings', name: 'admin-invite-settings', component: () => import('@/views/admin/InviteSettings.vue') },
+      // 邀请机制：邀请设置 + 返佣记录统一一个页面两个 tab（对齐「码管理」）
+      { path: 'invite-settings', name: 'admin-invite-settings', component: () => import('@/views/admin/Invite.vue') },
       { path: 'geodata', name: 'admin-geodata', component: () => import('@/views/admin/Geodata.vue') },
     ],
   },

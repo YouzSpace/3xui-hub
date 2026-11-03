@@ -350,15 +350,29 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 
 func (s *PaymentSQLStore) CreateOrder(ctx context.Context, in NewOrderInput) (*Order, error) {
 	now := in.Now.UTC()
-	orderType := "plan"
-	// 重置流量订单号带 RST 前缀，仍是 plan 类型（P7 只建这两类）。
+	orderType := in.OrderType
+	if orderType == "" {
+		// 重置流量订单号带 RST 前缀，仍是 plan 类型（P7 只建这两类）。
+		orderType = "plan"
+	}
+	// plan_id 为 0 时写 NULL（余额充值单没有套餐；orders.plan_id 有外键，写 0 会违反约束）。
+	var planID any
+	if in.PlanID > 0 {
+		planID = in.PlanID
+	}
+	// payment_config_id 同理：0 = 不经网关（余额支付/充值之外的无网关订单），写 NULL。
+	// 两个列都有外键，直接写 0 会报 1452。
+	var paymentConfigID any
+	if in.PaymentConfigID > 0 {
+		paymentConfigID = in.PaymentConfigID
+	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO orders (order_no, user_id, order_type, plan_id, amount, original_amount,
 		                     discount_code_id, discount_amount, status, payment_config_id, pay_ip,
 		                     created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		in.OrderNo, in.UserID, orderType, in.PlanID, in.Amount, in.OriginalAmount,
-		in.DiscountCodeID, in.DiscountAmount, in.Status, in.PaymentConfigID, in.PayIP, now, now)
+		in.OrderNo, in.UserID, orderType, planID, in.Amount, in.OriginalAmount,
+		in.DiscountCodeID, in.DiscountAmount, in.Status, paymentConfigID, in.PayIP, now, now)
 	if err != nil {
 		return nil, err
 	}

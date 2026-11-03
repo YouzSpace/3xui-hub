@@ -7,9 +7,11 @@ import { useRouter } from 'vue-router'
 import Icon from '@/components/ui/Icon.vue'
 import Modal from '@/components/ui/Modal.vue'
 import UserIcon from '@/components/user/UserIcon.vue'
+import BalanceRechargeSheet from '@/components/user/BalanceRechargeSheet.vue'
 import { useAuthStore } from '@/stores/auth'
 import { userApi } from '@/api/user'
 import { useToast } from '@/components/ui/Toast.vue'
+import { formatYuan } from '@/utils/money'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -23,6 +25,10 @@ const selectedPayment = ref(null)
 const creatingOrder = ref(false)
 const pollingOrder = ref(null)
 const buyModalOpen = ref(false)
+// 余额支付：余额（分）+ 充值弹层。余额是「能不能用余额付」的唯一判据，
+// 每次打开购买弹窗都刷新一次（不能拿进页面时的旧余额做判断）。
+const balanceCents = ref(0)
+const rechargeOpen = ref(false)
 // 移动端套餐布局：宫格（默认）/ 列表
 const planView = ref('grid')
 const VIEW_KEY = 'shop_plan_view'
@@ -48,12 +54,17 @@ const fmtPrice = (p) => { if (!p && p !== 0) return '—'; return p > 0 ? `¥${p
 
 const loadPlans = async () => { try { plans.value = await userApi.plans() } catch (e) { plans.value = [] } }
 const loadPaymentMethods = async () => { try { paymentMethods.value = await userApi.paymentMethods() } catch (e) { paymentMethods.value = [] } }
+// 余额（分）：查不到就按 0 —— 只影响「余额支付够不够」的提示，不阻断下单
+const loadBalance = async () => {
+  try { balanceCents.value = Number((await userApi.balance({ per_page: 1 }))?.balance || 0) } catch (e) { balanceCents.value = 0 }
+}
 
 const openBuy = async (p) => {
   selectedPlan.value = p
   selectedPayment.value = null
   resetDiscount()
   if (!paymentMethods.value.length) await loadPaymentMethods()
+  await loadBalance()
   if (paymentMethods.value.length) selectedPayment.value = paymentMethods.value[0].id
   buyModalOpen.value = true
 }
@@ -106,17 +117,27 @@ const priceInfo = computed(() => {
 const discountHint = computed(() => discountResult.value?.message || '')
 const discountNote = computed(() => (discountUsable.value ? discountResult.value?.note : '') || '')
 
+// 余额支付：能不能付由「余额（分）>= 折后金额（分）」决定，前端先拦一次，
+// 真正的校验在后端（事务 + FOR UPDATE）。折后金额和 /api/discount/check 同源。
+const isBalancePay = computed(() => selectedPayment.value === 'balance')
+const balanceNeededCents = computed(() => Math.round(Number(priceInfo.value.final || 0) * 100))
+const balanceEnough = computed(() => balanceCents.value >= balanceNeededCents.value)
+
 const createOrder = async () => {
   if (!selectedPlan.value) { toast.error('请选择套餐'); return }
+  if (isBalancePay.value && !balanceEnough.value) { toast.error('余额不足，请先充值'); return }
   creatingOrder.value = true
   try {
-    const result = await userApi.createOrder(selectedPlan.value.id, selectedPayment.value, discountCode.value.trim())
+    const code = discountCode.value.trim()
+    const result = isBalancePay.value
+      ? await userApi.createBalancePayOrder(selectedPlan.value.id, code)
+      : await userApi.createOrder(selectedPlan.value.id, selectedPayment.value, code)
     if (result.status === 'paid') {
-      toast.success('购买成功（免费套餐）')
+      toast.success(isBalancePay.value ? '支付成功，套餐已开通' : '购买成功（免费套餐）')
       buyModalOpen.value = false
       selectedPlan.value = null
       resetDiscount()
-      await auth.fetchMe()
+      await Promise.all([auth.fetchMe(), loadBalance()])
       return
     }
     if (result.pay_url) {
@@ -184,6 +205,9 @@ onMounted(async () => {
             <span class="shop-view-glyph shop-view-glyph--list"></span>
           </button>
         </div>
+        <button type="button" class="shop-orders-btn shop-recharge-btn uu-press" @click="rechargeOpen = true">
+          <span>充值</span>
+        </button>
         <button type="button" class="shop-orders-btn uu-press" @click="router.push({ name: 'user-orders' })">
           <UserIcon name="cart" :size="16" />
           <span>订单</span>
@@ -330,7 +354,19 @@ onMounted(async () => {
         <!-- 支付方式 -->
         <div v-if="selectedPlan.price > 0" class="buy-pay">
           <p class="buy-pay-title">支付方式</p>
-          <div v-if="paymentMethods.length" class="buy-pay-list">
+          <div class="buy-pay-list">
+            <!-- 余额支付排最前：不经过第三方网关，扣款即开通 -->
+            <label
+              class="buy-pay-item"
+              :class="{ 'buy-pay-item--on': isBalancePay }"
+            >
+              <input type="radio" value="balance" v-model="selectedPayment" />
+              <span class="buy-pay-name">余额支付</span>
+              <span class="buy-pay-extra">余额 {{ formatYuan(balanceCents) }}</span>
+              <span class="buy-pay-check">
+                <Icon name="check" :size="13" />
+              </span>
+            </label>
             <label
               v-for="m in paymentMethods"
               :key="m.id"
@@ -344,7 +380,9 @@ onMounted(async () => {
               </span>
             </label>
           </div>
-          <p v-else class="buy-pay-empty">暂无可用支付方式</p>
+          <p v-if="isBalancePay && !balanceEnough" class="buy-pay-warn">
+            余额不足以支付 {{ formatYuan(balanceNeededCents) }}，请先充值
+          </p>
         </div>
       </div>
 
@@ -354,7 +392,7 @@ onMounted(async () => {
           <button
             type="button"
             class="buy-btn buy-btn--primary"
-            :disabled="creatingOrder"
+            :disabled="creatingOrder || (isBalancePay && !balanceEnough)"
             @click="createOrder"
           >
             {{ creatingOrder ? '处理中...' : (selectedPlan && selectedPlan.price > 0 ? `支付 ${fmtPrice(priceInfo.final)}` : '免费领取') }}
@@ -362,6 +400,9 @@ onMounted(async () => {
         </div>
       </template>
     </Modal>
+
+    <!-- 充值弹层（余额不足时从支付方式区引导过来） -->
+    <BalanceRechargeSheet v-model="rechargeOpen" @paid="loadBalance" />
   </div>
 </template>
 
@@ -430,6 +471,8 @@ onMounted(async () => {
   font-weight: 600;
   font-family: inherit;
 }
+/* 充值：与「订单」同一外形、不同色（次要动作不用主色） */
+.shop-recharge-btn { background: var(--fill3); color: var(--lbl1); }
 
 /* 骨架屏 */
 .shop-skeleton { display: flex; border-radius: 24px; padding: 5px; background: #fff; border: 1px solid rgba(0,0,0,0.06); }
@@ -643,6 +686,17 @@ html.dark .shop-empty-desc { color: #666; }
   background: var(--blue);
   border-color: var(--blue);
   color: #fff;
+}
+/* 余额支付那行的当前余额（次要信息，靠右且不抢支付方式名） */
+.buy-pay-extra {
+  font-size: 12px;
+  color: var(--lbl3);
+  white-space: nowrap;
+}
+.buy-pay-warn {
+  margin: 0;
+  font-size: 12px;
+  color: var(--red);
 }
 .buy-pay-empty { margin: 0; font-size: 13px; color: var(--lbl3); }
 

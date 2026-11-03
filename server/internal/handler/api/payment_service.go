@@ -43,6 +43,14 @@ type PaymentService struct {
 	rateGuard        DiscountRateGuard
 	tg               *tgbot.Sender
 
+	// balance 是余额域入口（余额支付/充值的扣款与到账）。
+	// 由 store 取出（*PaymentSQLStore 同时实现 BalanceStore）；nil 表示未接入，两条余额路径都拒。
+	balance *BalanceService
+
+	// affiliate 是邀请返佣入口（被邀请人购买套餐后给邀请人加返佣）。
+	// 由 store 取出（*PaymentSQLStore 同时实现 AffiliateStore）；nil 表示未接入，返佣整体跳过。
+	affiliate *AffiliateService
+
 	logger loggerLike
 }
 
@@ -97,6 +105,15 @@ func NewPaymentService(store PaymentStore, opts PaymentServiceOptions, logger lo
 		rateGuard:        opts.RateGuard,
 		tg:               opts.TGSender,
 		logger:           logger,
+	}
+	// 余额能力从 store 取出：生产实现 *PaymentSQLStore 同时实现 PaymentStore 与 BalanceStore，
+	// 这样不用改 cmd/server/routes.go 的构造函数签名（单测可注入内存实现）。
+	if balanceStore, ok := balanceStoreOf(store); ok {
+		s.balance = NewBalanceService(balanceStore, now, logger)
+	}
+	// 返佣能力同样从 store 取出：生产 *PaymentSQLStore 实现了 AffiliateStore。
+	if affiliateStore, ok := affiliateStoreOf(store); ok {
+		s.affiliate = NewAffiliateService(affiliateStore, opts.SiteConfigs, now, logger)
 	}
 	return s
 }
@@ -391,7 +408,10 @@ func (s *PaymentService) buildPayURL(ctx context.Context, cfg *PaymentConfig, or
 	}
 
 	productName := "套餐购买-" // 无套餐时 PHP 也是这个前缀（$order->plan->name ?? ''）
-	if order.PlanID.Valid {
+	if order.IsBalanceRecharge() {
+		// 充值单没有套餐：网关账单上显示「余额充值-50.00元」
+		productName = "余额充值-" + mustMoney(order.Amount).String() + "元"
+	} else if order.PlanID.Valid {
 		if plan, perr := s.store.PlanForPayment(ctx, uint64(order.PlanID.Int64)); perr == nil && plan != nil {
 			productName = "套餐购买-" + plan.Name
 		}
@@ -541,6 +561,11 @@ func (s *PaymentService) CompleteOrder(ctx context.Context, order *Order, tradeN
 		return nil
 	}
 
+	// 余额充值订单（order_type=balance）：置 paid + 加余额 + 写流水在一个事务里，不开套餐。
+	if order.IsBalanceRecharge() {
+		return s.completeRechargeOrder(ctx, order)
+	}
+
 	now := s.now().UTC().Truncate(time.Second)
 	if err := s.store.MarkOrderPaid(ctx, order.ID, tradeNo, now); err != nil {
 		return err
@@ -549,13 +574,7 @@ func (s *PaymentService) CompleteOrder(ctx context.Context, order *Order, tradeN
 	order.TradeNo = tradeNo
 	order.PaidAt = sql.NullTime{Time: now, Valid: true}
 
-	// TG 到账通知（开关 tg_notify_payment 开启才发）。
-	if s.tg != nil {
-		text := fmt.Sprintf("💰 新订单支付成功\n订单号：%s\n金额：%s", order.OrderNo, order.Amount)
-		if err := s.tg.Notify(ctx, tgbot.KeyNotifyPayment, text); err != nil {
-			s.logger.Printf("TG 支付到账通知失败: %v", err)
-		}
-	}
+	s.notifyPaidTG(ctx, order)
 
 	// 代理订单：走独立开通流程，不碰节点套餐、不发邀请奖励。
 	if order.IsProxyOrder() {
@@ -569,6 +588,27 @@ func (s *PaymentService) CompleteOrder(ctx context.Context, order *Order, tradeN
 		}
 		return nil
 	}
+
+	return s.afterPaid(ctx, order)
+}
+
+// notifyPaidTG 发「支付到账」TG 通知（开关 tg_notify_payment 开启才发）。
+func (s *PaymentService) notifyPaidTG(ctx context.Context, order *Order) {
+	if s.tg == nil {
+		return
+	}
+	text := fmt.Sprintf("💰 新订单支付成功\n订单号：%s\n金额：%s", order.OrderNo, order.Amount)
+	if err := s.tg.Notify(ctx, tgbot.KeyNotifyPayment, text); err != nil {
+		s.logger.Printf("TG 支付到账通知失败: %v", err)
+	}
+}
+
+// afterPaid 是「钱已到账」之后的业务副作用：折扣码占用 → 邀请奖励 → 开通套餐 → 下发/解封。
+//
+// 独立成函数是为了让余额支付复用同一条路径：余额支付的订单在扣款事务里就已经置成 paid
+// （不会走上面那次 MarkOrderPaid），但它同样要占折扣码、发邀请奖励、开通套餐。
+func (s *PaymentService) afterPaid(ctx context.Context, order *Order) error {
+	now := s.now().UTC().Truncate(time.Second)
 
 	user, err := s.store.UserByIDPayment(ctx, order.UserID)
 	if err != nil || user == nil {
@@ -597,6 +637,12 @@ func (s *PaymentService) CompleteOrder(ctx context.Context, order *Order, tradeN
 
 	if err := s.rewardInviter(ctx, order); err != nil {
 		s.logf("邀请奖励发放失败 order_no=%s: %v", order.OrderNo, err)
+	}
+
+	// 邀请返佣（平台补贴给邀请人，不从下单人扣）：同一订单只发一次（store 内 order_id 唯一键），
+	// 失败只记日志 —— 钱已经收了，不能因为这个副作用把回调打回 FAIL。
+	if aerr := s.affiliate.Grant(ctx, order); aerr != nil {
+		s.logf("返佣发放失败 order_no=%s: %v", order.OrderNo, aerr)
 	}
 
 	if !order.PlanID.Valid {

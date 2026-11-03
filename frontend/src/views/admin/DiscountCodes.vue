@@ -609,10 +609,9 @@ onMounted(async () => {
 
 <template>
   <div class="dc">
-    <!-- 列表 -->
-    <section class="dc-card">
-      <div class="dc-list-head">
-        <h2 class="dc-title">优惠码</h2>
+    <!-- 标题 + 工具栏（卡片外，对齐余额码） -->
+    <div class="dc-list-head">
+      <h2 class="dc-title">优惠码</h2>
         <div class="dc-tools">
           <Select v-model="filterSource" :options="sourceOptions" @change="applyFilter" />
           <Select v-model="filterStatus" :options="statusFilterOptions" @change="applyFilter" />
@@ -651,6 +650,8 @@ onMounted(async () => {
         </div>
       </div>
 
+    <!-- 文件夹 + 表格（卡片内） -->
+    <section class="dc-card">
       <!-- 文件夹行：点名字展开看里面码；右侧勾选框全选该文件夹全部码（含未展开的） -->
       <div v-if="folders.length" class="dc-folders">
         <div v-for="f in folders" :key="f.id" class="dc-folder">
@@ -1121,13 +1122,24 @@ onMounted(async () => {
 .dc-table-wrap { overflow-x: auto; }
 .dc-table { width: 100%; border-collapse: collapse; min-width: 900px; }
 .dc-table th {
-  text-align: left; padding: 10px 12px; font-size: 12px; font-weight: 600;
-  color: #999; border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap;
+  height: 40px;
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
 }
 .dc-table td {
-  padding: 12px; font-size: 13px; color: #1d1d1f;
-  border-bottom: 1px solid rgba(0,0,0,0.04); vertical-align: middle;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
 }
+.dc-table tbody tr:hover { background: var(--bg-hover); }
 .dc-table tr:last-child td { border-bottom: none; }
 /* 勾选列：窄，只放一个 checkbox */
 .dc-check-cell { width: 36px; padding-right: 0; }
@@ -1233,8 +1245,6 @@ html.dark .dc-folder { background: rgba(255,255,255,0.03); border-color: rgba(25
 html.dark .dc-folder-row.is-open { border-color: rgba(255,255,255,0.08); }
 html.dark .dc-folder-body { background: transparent; }
 html.dark .dc-selected-info { color: #aaa; }
-html.dark .dc-table th { color: #888; border-color: rgba(255,255,255,0.08); }
-html.dark .dc-table td { color: #e5e5e5; border-color: rgba(255,255,255,0.06); }
 html.dark .dc-owner, html.dark .dc-dim { color: #888; }
 html.dark .dc-note { color: #aaa; }
 html.dark .dc-icon-btn { color: #999; }

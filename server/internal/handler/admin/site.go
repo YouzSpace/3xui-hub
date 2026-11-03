@@ -343,8 +343,12 @@ func (h *Handler) saveKeyValues(c *gin.Context, keys []string, what string) {
 // ---- 邀请机制 + 优惠码校验限流 ----
 
 // inviteKeys 是 DiscountCodeController::INVITE_KEYS（顺序即输出顺序）。
+//
+// affiliate_rebate_rate 是 Go 侧新增的「邀请返佣比例」（0~1，默认 0.10，0 = 暂停返佣）：
+// 不放进白名单的话，后台保存这个键会被 saveKeyValues 静默丢弃。
 var inviteKeys = []string{
 	"invite_discount", "invite_refresh_days", "invite_enabled", "redeem_discount",
+	"affiliate_rebate_rate",
 }
 
 // discountRateKeys 是优惠码校验限流的 5 项（顺序即输出顺序）。
@@ -370,6 +374,8 @@ func (h *Handler) inviteSettings(c *gin.Context) {
 		"invite_refresh_days": "30",
 		"invite_enabled":      "1",
 		"redeem_discount":     "0.90",
+		// Go 侧新增：邀请返佣比例（0~1，0 = 暂停返佣）。没配过时 GET 显示这个生效值。
+		"affiliate_rebate_rate": "0.10",
 	}
 	o := jo()
 	for _, k := range inviteKeys {
@@ -433,6 +439,8 @@ func (h *Handler) updateInviteSettings(c *gin.Context) {
 	v.field("invite_refresh_days", "sometimes", "integer", "min:1")
 	v.field("invite_enabled", "sometimes", "boolean")
 	v.field("redeem_discount", "sometimes", "numeric", "gt:0", "lte:1")
+	// 邀请返佣比例：0 合法（= 暂停返佣）；>1 会被返佣服务当配错回默认 0.10。
+	v.field("affiliate_rebate_rate", "sometimes", "numeric", "gte:0", "lte:1")
 	for _, k := range discountRateKeys {
 		v.field(k, "sometimes", "nullable", "integer", "min:0")
 	}

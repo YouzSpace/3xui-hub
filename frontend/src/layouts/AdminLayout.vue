@@ -56,15 +56,14 @@ const groups = [
   {
     id: 'business',
     label: '业务管理',
-    icon: 'users',
+    icon: 'briefcase',
     items: [
       { to: '/admin/users', name: 'admin-users', label: '用户', icon: 'users' },
       { to: '/admin/plans', name: 'admin-plans', label: '套餐', icon: 'package' },
       { to: '/admin/orders', name: 'admin-orders', label: '订单', icon: 'order' },
-      { to: '/admin/upstream/proxy-store', name: 'admin-upstream-proxy-store', label: '商城商品', icon: 'package' },
-      { to: '/admin/upstream/proxy-ops', name: 'admin-upstream-proxy-ops', label: '代理运营', icon: 'shield' },
-      { to: '/admin/discount-codes', name: 'admin-discount-codes', label: '优惠码', icon: 'payment' },
-      { to: '/admin/invite-settings', name: 'admin-invite-settings', label: '邀请机制', icon: 'inbox' },
+      { to: '/admin/codes', name: 'admin-codes', label: '码管理', icon: 'ticket' },
+      { to: '/admin/balance', name: 'admin-balance', label: '余额', icon: 'wallet' },
+      { to: '/admin/invite-settings', name: 'admin-invite-settings', label: '邀请机制', icon: 'gift' },
     ],
   },
   {
@@ -81,10 +80,12 @@ const groups = [
   {
     id: 'upstream',
     label: '上游货源',
-    icon: 'inbox',
+    icon: 'layers',
     items: [
       { to: '/admin/upstream/third-party', name: 'admin-upstream-third-party', label: '第三方机场', icon: 'globe' },
       { to: '/admin/upstream/webshare', name: 'admin-upstream-webshare', label: 'Webshare 代理', icon: 'server' },
+      { to: '/admin/upstream/proxy-store', name: 'admin-upstream-proxy-store', label: '商城商品', icon: 'cart' },
+      { to: '/admin/upstream/proxy-ops', name: 'admin-upstream-proxy-ops', label: '代理运营', icon: 'shield' },
     ],
   },
   {

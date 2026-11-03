@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -33,6 +34,13 @@ import (
 var Version = "dev"
 
 func main() {
+	// --version：打印构建版本后退出（不连数据库）。供 3hub update 读「当前跑的哪一版」，
+	// 版本号由发布流程 -ldflags "-X main.Version=vX.Y.Z" 注入，本地/开发是 "dev"。
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
+
 	app, db, err := bootstrap()
 	if err != nil {
 		log.Fatalf("启动失败: %v", err)

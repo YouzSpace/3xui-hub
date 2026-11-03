@@ -70,11 +70,23 @@ func (h *PaymentHandlers) RegisterPayment(r gin.IRouter) {
 //  3. **1 分钟内的同套餐 pending 单 → 429 文案**（防连点重复下单）
 //  4. 超过 1 分钟的 pending 单 → 先试重发旧单；判重则作废走新建
 //  5. 建单（含折扣码）→ 有 pay_url 才算成功
+//
+// 两个余额分支在入口处分流（字段互斥，见 docs/balance/implementation-plan.md §3.1.3/§3.1.4）：
+//   - {"order_type":"balance","amount":5000}：余额充值下单（走第三方支付，回调到账）
+//   - {"plan_id":1,"payment":"balance"}：用余额支付套餐（不经过网关）
 func (h *PaymentHandlers) handlePaymentCreate(c *gin.Context) {
 	user := currentUser(c)
-	ctx := c.Request.Context()
 
 	input := jsonInput(c)
+	if inputStringOrEmpty(input["order_type"]) == "balance" {
+		h.handleRechargeCreate(c, user, input)
+		return
+	}
+	if inputStringOrEmpty(input["payment"]) == "balance" {
+		h.handleBalancePayCreate(c, user, input)
+		return
+	}
+
 	v := newPaymentValidator(input).
 		field("plan_id", "required", "integer").
 		field("payment_config_id", "sometimes", "nullable", "integer").
@@ -84,6 +96,7 @@ func (h *PaymentHandlers) handlePaymentCreate(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
 	planID := phpInt(input["plan_id"])
 	plan, err := h.store.PlanForPayment(ctx, uint64(planID))
 	if err != nil || plan == nil {
@@ -173,6 +186,79 @@ func (h *PaymentHandlers) handlePaymentCreate(c *gin.Context) {
 		"amount", result.Amount.PHPFloat(),
 		"status", result.Status,
 		"pay_url", nullIfEmpty(result.PayURL),
+	))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/payment/create —— 余额充值 / 余额支付（docs/balance/implementation-plan.md）
+// ---------------------------------------------------------------------------
+
+// handleRechargeCreate 余额充值下单：{"order_type":"balance","amount":5000}（amount 单位分）。
+//
+// 建的是 order_type=balance 的普通待付订单，付款仍走第三方支付；钱在回调
+// （CompleteOrder → completeRechargeOrder）里进余额，重复回调不会重复加钱。
+func (h *PaymentHandlers) handleRechargeCreate(c *gin.Context, user *User, input map[string]any) {
+	v := newPaymentValidator(input).
+		field("amount", "required", "integer").
+		field("payment_config_id", "sometimes", "nullable", "integer")
+	if !v.passes() {
+		respondPaymentValidation(c, v)
+		return
+	}
+
+	result, err := h.svc.CreateRechargeOrder(c.Request.Context(), user, phpInt(input["amount"]),
+		uint64(maxInt64(phpInt(input["payment_config_id"]), 0)), clientIP(c))
+	if err != nil {
+		if IsPaymentError(err) {
+			fail(c, err.Error(), 400)
+			return
+		}
+		if IsPayURLMissing(err) && result != nil {
+			fail(c, "获取支付链接失败，请稍后再试", 500)
+			return
+		}
+		h.logf("payment/create 余额充值建单失败: %v", err)
+		fail(c, "创建订单失败", 500)
+		return
+	}
+
+	success(c, jo(
+		"order_no", result.OrderNo,
+		"amount", result.Amount.PHPFloat(),
+		"status", result.Status,
+		"pay_url", nullIfEmpty(result.PayURL),
+	))
+}
+
+// handleBalancePayCreate 余额支付套餐：{"plan_id":1,"payment":"balance"}。
+//
+// 成功即已扣款并置 paid（status 直接是 paid，没有 pay_url）；余额不足 → code 400「余额不足」。
+func (h *PaymentHandlers) handleBalancePayCreate(c *gin.Context, user *User, input map[string]any) {
+	v := newPaymentValidator(input).
+		field("plan_id", "required", "integer").
+		field("discount_code", "sometimes", "nullable", "string", "max:32")
+	if !v.passes() {
+		respondPaymentValidation(c, v)
+		return
+	}
+
+	result, err := h.svc.PayPlanWithBalance(c.Request.Context(), user, uint64(phpInt(input["plan_id"])),
+		inputStringOrEmpty(input["discount_code"]), clientIP(c))
+	if err != nil {
+		if IsPaymentError(err) {
+			fail(c, err.Error(), 400)
+			return
+		}
+		h.logf("payment/create 余额支付失败 user=%d: %v", user.ID, err)
+		fail(c, "支付失败", 500)
+		return
+	}
+
+	success(c, jo(
+		"order_no", result.OrderNo,
+		"amount", result.Amount.PHPFloat(),
+		"status", result.Status,
+		"pay_url", nil,
 	))
 }
 

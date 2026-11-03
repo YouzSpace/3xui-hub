@@ -221,6 +221,20 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 	paymentDomain.Register(adminGroup)
 
+	// 余额域（兑换码 + 用户余额管理）
+	balanceDomain := admin.NewBalanceDomain(admin.BalanceDeps{
+		Store:  admin.NewBalanceSQLStore(db),
+		Logger: logger,
+	})
+	balanceDomain.Register(adminGroup)
+
+	// 邀请返佣域（只读：返佣流水列表）
+	affiliateDomain := admin.NewAffiliateDomain(admin.AffiliateDeps{
+		Store:  admin.NewAffiliateSQLStore(db),
+		Logger: logger,
+	})
+	affiliateDomain.Register(adminGroup)
+
 	// Telegram 机器人（通知渠道：节点离线/支付到账/备份推送）
 	telegramDomain := admin.NewTelegramDomain(admin.TelegramDeps{
 		Store:  adminStore,

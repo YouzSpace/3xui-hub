@@ -22,6 +22,7 @@ const form = ref({
   invite_refresh_days: '30',
   invite_enabled: '1',
   redeem_discount: '0.90',
+  affiliate_rebate_rate: '0.10',
   rate_discount_per_minute: 10,
   rate_discount_fail_per_day: 50,
   rate_discount_ip_fail_hourly: 100,
@@ -57,6 +58,10 @@ const save = async () => {
     toast.error('兑换码折扣需在 0.01 ~ 1 之间')
     return
   }
+  if (Number(f.affiliate_rebate_rate) < 0 || Number(f.affiliate_rebate_rate) > 1) {
+    toast.error('返佣比例需在 0 ~ 1 之间（0 = 暂停返佣）')
+    return
+  }
 
   saving.value = true
   try {
@@ -65,6 +70,7 @@ const save = async () => {
       invite_refresh_days: Number(f.invite_refresh_days) || 30,
       invite_enabled: f.invite_enabled === '1' || f.invite_enabled === true,
       redeem_discount: Number(f.redeem_discount),
+      affiliate_rebate_rate: Number(f.affiliate_rebate_rate),
       rate_discount_per_minute: rateValue(f.rate_discount_per_minute),
       rate_discount_fail_per_day: rateValue(f.rate_discount_fail_per_day),
       rate_discount_ip_fail_hourly: rateValue(f.rate_discount_ip_fail_hourly),
@@ -108,6 +114,11 @@ onMounted(load)
           <span class="iv-label">兑换码折扣</span>
           <Input v-model.number="form.redeem_discount" type="number" step="0.01" min="0.01" max="1" />
           <span class="iv-tip">0.90 = 9 折</span>
+        </label>
+        <label class="iv-field">
+          <span class="iv-label">邀请返佣比例</span>
+          <Input v-model.number="form.affiliate_rebate_rate" type="number" step="0.01" min="0" max="1" />
+          <span class="iv-tip">好友消费后返给邀请人的比例，0.10 = 10%，填 0 = 暂停返佣</span>
         </label>
         <label class="iv-field">
           <span class="iv-label">邀请码刷新周期（天）</span>

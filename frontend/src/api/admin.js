@@ -190,6 +190,28 @@ export const adminApi = {
     }),
   getInviteSettings: () => client.get('/admin-api/invite-settings'),
   updateInviteSettings: (data) => client.put('/admin-api/invite-settings', data),
+  // 邀请返佣流水（只读，返佣域）：params { page, per_page }（默认 20/页，上限 100）
+  // data = { list:[{ id, inviter_id, inviter_email, invitee_id, invitee_email, order_id, order_no,
+  //                 amount(分), rate(0~1), created_at }], total, page, per_page }
+  listAffiliateRebates: (params, config) => client.get('/admin-api/affiliate/rebates', { params, ...config }),
+
+  // 余额兑换码（余额域，金额一律「分」）
+  // 列表：params { status?, page?, per_page? }，status ∈ active|used|disabled；
+  //       data = { list:[{id,code,name,value,status,used_by,used_at,expires_at,created_by,note,created_at}], total, page, per_page }
+  listGiftcards: (params) => client.get('/admin-api/giftcards', { params }),
+  // 批量生成：{ count(1-100), value(分), name?, note?, expires_at?('YYYY-MM-DD HH:MM:SS'|datetime-local) }
+  // 响应 data = { count, codes:[…] }（codes 是本次真正落库的码）
+  createGiftcards: (data) => client.post('/admin-api/giftcards', data),
+  // 删除：物理删除（任意状态，含已使用/已作废的码）
+  deleteGiftcard: (id) => client.delete(`/admin-api/giftcards/${id}/delete`),
+  // 批量删除：{ ids:[…] } → data = { deleted:[…], failed:[{id,reason}] }
+  batchDeleteGiftcards: (ids) => client.post('/admin-api/giftcards/batch-delete', { ids }),
+
+  // 用户余额（管理端）：金额一律「分」
+  // GET  data = { user_id, balance, logs:[…], total, page, per_page }
+  // POST { amount(分，正=加/负=扣，不能为 0), note? } → data = { user_id, amount, balance, log }
+  getUserBalance: (id, params) => client.get(`/admin-api/users/${id}/balance`, { params }),
+  adjustUserBalance: (id, data) => client.post(`/admin-api/users/${id}/balance`, data),
 
   // 机器流量监控（采样表只读查询；window 非法后端回退 24h）
   // summary → data:{totals:{up,down,total}, window:{key,start,end}, nodes:[{id,name,up,down,total,cpu_avg,cpu_max,mem_avg,mem_max}]}

@@ -49,6 +49,7 @@ const titles = {
   'user-tutorials': '使用文档',
   'user-tutorial': '',
   'user-invite': '邀请好友',
+  'user-balance': '账户余额',
 }
 
 const pageTitle = computed(() => titles[route.name] ?? '')
@@ -63,6 +64,7 @@ const subPageBack = computed(() => ({
   'user-announcement': { name: 'user-more' },
   'user-orders': { name: 'user-shop' },
   'user-invite': { name: 'user-more' },
+  'user-balance': { name: 'user-more' },
 }[route.name] || null))
 
 // 有历史记录就回上一页，否则按二级页自身的上级页兜底（直接分享链接打开时无历史）
@@ -78,7 +80,8 @@ const activeTab = computed(() => {
     route.name === 'user-announcement' ||
     route.name === 'user-tutorials' ||
     route.name === 'user-tutorial' ||
-    route.name === 'user-invite'
+    route.name === 'user-invite' ||
+    route.name === 'user-balance'
   ) return 'user-more'
   return 'user-dashboard'
 })

@@ -26,6 +26,11 @@ type UserExtras struct {
 	async    *task.Service
 	payStore PaymentStore
 	paySvc   *PaymentService
+	// balance 是余额域业务入口（GET /api/balance、POST /api/redeem 用）。
+	// 生产由 payStore（*PaymentSQLStore）取出；nil 表示未接入，两个端点回 500。
+	balance *BalanceService
+	// affiliate 是邀请返佣业务入口（GET /api/affiliate 用），同样由 payStore 取出。
+	affiliate *AffiliateService
 }
 
 // NewUserExtras 构造补充端点 handler。
@@ -34,7 +39,26 @@ type UserExtras struct {
 // （subject=user 去重 + 拆 async_task_items + 派发 SyncNodeTrafficJob）。
 // payStore/paySvc 供 /api/discount/check 复用 PaymentService 的完整校验（对齐 PHP）。
 func NewUserExtras(h *Handler, db *sql.DB, async *task.Service, payStore PaymentStore, paySvc *PaymentService) *UserExtras {
-	return &UserExtras{handler: h, db: db, async: async, payStore: payStore, paySvc: paySvc}
+	// 余额能力从 payStore 取出（生产 *PaymentSQLStore 同时实现 PaymentStore 与 BalanceStore）。
+	// 取不到就留 nil：两个余额端点回 500，而不是拿着 nil store 崩在请求里。
+	var balance *BalanceService
+	if balanceStore, ok := balanceStoreOf(payStore); ok {
+		balance = NewBalanceService(balanceStore, h.now, h.logger)
+	}
+	// 返佣能力同样从 payStore 取出（h.store 供读 site_configs 的返佣比例）。
+	var affiliate *AffiliateService
+	if affiliateStore, ok := affiliateStoreOf(payStore); ok {
+		affiliate = NewAffiliateService(affiliateStore, h.store, h.now, h.logger)
+	}
+	return &UserExtras{
+		handler:   h,
+		db:        db,
+		async:     async,
+		payStore:  payStore,
+		paySvc:    paySvc,
+		balance:   balance,
+		affiliate: affiliate,
+	}
 }
 
 // Register 挂补充路由（需在 api.auth 中间件内）。
@@ -49,6 +73,12 @@ func (e *UserExtras) Register(r gin.IRouter) {
 	r.GET("/api/proxy-store/entitlements/:id/proxies", e.handleProxyEntitlementProxies)
 	// 用户自助重置订阅（换 token + uuid，旧链接失效；不动登录态）。见 user_reset_subscription.go。
 	r.POST("/api/reset-subscription", e.handleResetSubscription)
+	// 账户余额：查余额+流水、兑换码兑换。见 balance_handlers.go。
+	// 余额支付/充值下单走 POST /api/payment/create（见 payment.go 的分支）。
+	r.GET("/api/balance", e.handleBalance)
+	r.POST("/api/redeem", e.handleRedeem)
+	// 邀请返佣：比例 + 累计返佣 + 被邀请人列表（见 affiliate_handlers.go）。
+	r.GET("/api/affiliate", e.handleAffiliate)
 }
 
 // handleSyncTraffic 对齐 ApiUserController::syncTraffic。

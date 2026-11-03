@@ -12,7 +12,7 @@ const NATURAL = {
   home: 26, cart: 26, person: 26, shield: 22, copy: 16, check: 16,
   checkCircle: 20, chevronLeft: 16, chevronRight: 16, chevronDown: 14, bell: 22, qr: 17,
   refresh: 16, sun: 20, moon: 20, logout: 20, wifi: 16, doc: 18,
-  globe: 14, clock: 14, clash: 20, singbox: 20, mail: 20,
+  globe: 14, clock: 14, clash: 20, singbox: 20, mail: 20, wallet: 26,
 }
 
 const props = defineProps({
@@ -219,6 +219,13 @@ const vb = computed(() => NATURAL[props.name] || 20)
     <g v-else-if="name === 'mail'">
       <rect x="2" y="4" width="16" height="12" rx="2.5" stroke="currentColor" stroke-width="1.5" />
       <path d="M3 6l7 5 7-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+
+    <!-- wallet（账户余额） -->
+    <g v-else-if="name === 'wallet'">
+      <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h15V5a1.5 1.5 0 0 0-1.5-1.5H6.5A2.5 2.5 0 0 0 4 6v14A2.5 2.5 0 0 0 6.5 22.5H20a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M21.5 11h-4a2.75 2.75 0 0 0 0 5.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M17.5 13.75h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
     </g>
   </svg>
 </template>

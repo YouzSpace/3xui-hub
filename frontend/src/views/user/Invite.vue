@@ -1,14 +1,16 @@
 <script setup>
 /**
  * Invite — 邀请好友（二级页面）。
- * 我的邀请码（大字 + 复制 + 下次刷新倒计时）/ 规则说明 / 我的兑换码列表。
- * 数据来自 userApi.myInvite()（GET /api/invite/me）。
+ * 我的邀请码（大字 + 复制 + 下次刷新倒计时）/ 累计返佣 + 已邀请 / 规则说明 / 我的兑换码列表。
+ * 数据：userApi.myInvite()（GET /api/invite/me）+ userApi.myAffiliate()（GET /api/affiliate）。
+ * 两个接口各自加载、各自失败：返佣挂了不能把邀请码一起拖成「加载失败」。
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { userApi } from '@/api/user'
 import UserIcon from '@/components/user/UserIcon.vue'
 import ListGroup from '@/components/user/ListGroup.vue'
 import { useToast } from '@/components/ui/Toast.vue'
+import { formatYuan } from '@/utils/money'
 
 const toast = useToast()
 
@@ -19,6 +21,11 @@ const loadError = ref('')
 const invite = ref(null)
 const redeemCodes = ref([])
 const copied = ref(false)
+
+// 返佣（GET /api/affiliate）：与邀请码接口分开存，任一失败只影响自己那块
+const aff = ref(null)
+const affLoading = ref(true)
+const affError = ref('')
 
 // 倒计时每秒走一格
 const now = ref(Date.now())
@@ -44,6 +51,13 @@ const discountLabel = computed(() => {
   return `${(d * 10).toFixed(1)} 折`
 })
 
+// 返佣比例：后端给 0~1 的小数（0.1 = 10%），展示成百分比；多余的小数位去掉
+const ratePercent = computed(() => {
+  const r = Number(aff.value?.rate)
+  if (!Number.isFinite(r)) return '—'
+  return `${Number((r * 100).toFixed(2))}%`
+})
+
 const refreshDate = computed(() => {
   const at = invite.value?.next_refresh_at
   if (!at) return '—'
@@ -53,6 +67,14 @@ const refreshDate = computed(() => {
 })
 
 const codeDiscount = (d) => `${(Number(d) * 10).toFixed(1)} 折`
+
+// 被邀请人加入日期（只到天；解析不了给占位符，不显示 Invalid Date）
+const joinedDate = (iso) => {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('zh-CN')
+}
 
 const statusLabel = (s) => ({
   active: '未使用',
@@ -127,8 +149,23 @@ const load = async () => {
   }
 }
 
+// 返佣数据单独拉：接口挂了只让返佣那块显示失败原因 + 重试，邀请码照常可用
+const loadAffiliate = async () => {
+  affLoading.value = true
+  affError.value = ''
+  try {
+    aff.value = (await userApi.myAffiliate()) || null
+  } catch (e) {
+    aff.value = null
+    affError.value = e?.message || '请求失败'
+  } finally {
+    affLoading.value = false
+  }
+}
+
 onMounted(() => {
   load()
+  loadAffiliate()
   ticker = setInterval(() => { now.value = Date.now() }, 1000)
 })
 onUnmounted(() => { if (ticker) clearInterval(ticker) })
@@ -185,6 +222,48 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
       <button type="button" class="iv-retry uu-press" @click="load">重新加载</button>
     </section>
 
+    <!-- 累计返佣（GET /api/affiliate；与邀请码接口各自失败，互不影响） -->
+    <section class="iv-rebate">
+      <div class="iv-rebate-top">
+        <p class="iv-rebate-label">累计返佣</p>
+        <span class="iv-rebate-rate">返佣 {{ ratePercent }}</span>
+      </div>
+
+      <template v-if="affLoading">
+        <div class="iv-skel iv-skel--lg"></div>
+        <div class="iv-skel iv-skel--sm"></div>
+      </template>
+      <template v-else-if="affError">
+        <p class="iv-rebate-amount iv-rebate-amount--dim">—</p>
+        <p class="iv-empty-reason iv-empty-reason--left">返佣数据加载失败：{{ affError }}</p>
+        <button type="button" class="iv-retry iv-retry--left uu-press" @click="loadAffiliate">重新加载</button>
+      </template>
+      <template v-else>
+        <p class="iv-rebate-amount">{{ formatYuan(aff?.total_rebate ?? 0) }}</p>
+        <p class="iv-rebate-hint">好友购买套餐后，按实付金额的 {{ ratePercent }} 返到你的账户余额</p>
+      </template>
+    </section>
+
+    <!-- 已邀请（每行 = 打码邮箱 + 贡献返佣 + 加入时间） -->
+    <ListGroup v-if="!affError" label="已邀请">
+      <template v-if="affLoading">
+        <div class="iv-invitee iv-invitee--skeleton">
+          <div class="iv-skel iv-skel--sm"></div>
+          <div class="iv-skel iv-skel--sm"></div>
+        </div>
+      </template>
+      <template v-else-if="aff?.invitees?.length">
+        <div v-for="it in aff.invitees" :key="it.user_id" class="iv-invitee">
+          <div class="iv-invitee-row">
+            <span class="iv-invitee-email">{{ it.email || '—' }}</span>
+            <span class="iv-invitee-rebate">{{ formatYuan(it.rebate ?? 0) }}</span>
+          </div>
+          <p class="iv-invitee-time">{{ joinedDate(it.invited_at) }} 加入</p>
+        </div>
+      </template>
+      <p v-else class="iv-empty iv-empty--inset">还没有邀请好友，把邀请码发给朋友试试</p>
+    </ListGroup>
+
     <!-- 规则说明 -->
     <ListGroup label="规则说明">
       <ul class="iv-rules">
@@ -193,6 +272,7 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
         <li>不能使用自己的邀请码</li>
         <li>邀请码定期刷新，刷新后旧码立即失效，只认最新码</li>
         <li>好友支付成功后，你会自动获得一张兑换码</li>
+        <li>好友购买套餐后，你会按比例获得返佣（见上方累计返佣）</li>
       </ul>
     </ListGroup>
 
@@ -321,6 +401,70 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
 .iv-skel--lg { height: 52px; width: 100%; }
 @keyframes iv-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
+/* ===== 累计返佣 ===== */
+.iv-rebate {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  border-radius: 24px;
+  background: var(--mat-regular);
+}
+.iv-rebate-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.iv-rebate-label { margin: 0; font-size: 13px; font-weight: 600; color: var(--lbl3); letter-spacing: 0.04em; }
+.iv-rebate-rate {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--green-t);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.iv-rebate-amount {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--lbl1);
+  line-height: 1.2;
+  word-break: break-all;
+}
+.iv-rebate-amount--dim { color: var(--lbl3); }
+.iv-rebate-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--lbl3); }
+/* 返佣失败时原因与重试贴在卡片内，不要复用整页失败态的居中样式 */
+.iv-empty-reason--left { padding: 0; text-align: left; }
+.iv-retry--left { margin: 0; align-self: flex-start; }
+
+/* ===== 已邀请 ===== */
+.iv-invitee {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--sep);
+}
+.iv-invitee:last-child { border-bottom: none; }
+.iv-invitee--skeleton { gap: 8px; }
+.iv-invitee-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.iv-invitee-email {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--lbl1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.iv-invitee-rebate {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
+.iv-invitee-time { margin: 0; font-size: 11px; color: var(--lbl3); }
+
 /* ===== 规则说明 ===== */
 .iv-rules { list-style: none; margin: 0; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
 .iv-rules li {
@@ -431,5 +575,7 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
   .iv-code { padding: 12px 14px; }
   .iv-hero { padding: 16px; }
   .iv-hero-stat-v { font-size: 12px; }
+  .iv-rebate { padding: 16px; }
+  .iv-rebate-amount { font-size: 24px; }
 }
 </style>
