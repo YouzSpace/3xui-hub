@@ -191,10 +191,17 @@ func ClientsFingerprintPatch(data map[string]any) any {
 	if !isStr || sum == "" {
 		return nil
 	}
-	return Object{
+	out := Object{
 		{Key: "n", Value: intOf(raw["n"])},
 		{Key: "sum", Value: sum},
 	}
+	// buckets（issue #128 B）：分桶 Merkle 的 32 桶 hash，原样保留给 reconcile_bare
+	// 的 bareBucketsOf 解析（形状校验在那边做：非 32 个/有空值 → nil → 走全量读）。
+	// 老 agent 心跳不带 buckets → 这里不写该键，行为与旧版一致。
+	if buckets, ok := raw["buckets"]; ok && buckets != nil {
+		out = append(out, Member{Key: "buckets", Value: buckets})
+	}
+	return out
 }
 
 // AckResult 是一条指令回执（对齐 ack 的 results.*）。
