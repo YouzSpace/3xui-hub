@@ -7,10 +7,12 @@ VERSION="1.0.0"
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 # 运行时环境文件（Go 后端读仓库根 .env；install.sh 生成、3hub 改 APP_URL 都落这里）
 ENV_FILE="${INSTALL_DIR}/.env"
-# ACME HTTP-01 挑战目录：沿用旧路径 frontend/dist —— 老机器上 acme.sh 已把
-# Le_Webroot=<这里> 记进自家 conf，换路径会让自动续期静默失败（证书到期才暴露）。
-# 前端已 go:embed 进二进制，这个目录现在只放 .well-known/acme-challenge 挑战文件。
-ACME_WEBROOT="${INSTALL_DIR}/frontend/dist"
+# ACME HTTP-01 挑战目录：全机统一 /var/www/acme（与现有 nginx 各站点一致）。
+#
+# 不用 frontend/dist：那是前端产物目录，会被构建/更新清空；且实测该路径从公网读到的是
+# 404，而 /var/www/acme 是 200 —— acme.sh 的 webroot 必须与 nginx 真正暴露的目录一致，
+# 否则续期会在证书到期时静默失败。
+ACME_WEBROOT="/var/www/acme"
 # 数据库备份目录：3hub backup 与 Go 调度器同一个落点（env BACKUP_DIR 可覆盖）
 BACKUP_DIR="/var/backups/3xui-hub"
 
@@ -274,6 +276,7 @@ render_nginx_conf() {
         } > "$OUT"
     fi
 }
+
 
 # 把主 conf 收敛到规范模板（幂等；内容一致则不写）
 ensure_nginx_go_proxy() {
@@ -1167,8 +1170,9 @@ cmd_ssl() {
             curl -s https://get.acme.sh | sh 2>&1 | tail -1
         fi
 
-        # ACME 挑战目录必须真实存在（前端已进二进制，这里只放挑战文件）
+        # ACME 挑战目录必须真实存在（统一 /var/www/acme，nginx 各站点都从这里读）
         mkdir -p "${ACME_WEBROOT}/.well-known/acme-challenge"
+        chmod 755 /var/www /var/www/acme 2>/dev/null || true
         # 先写好 80 段（含 ACME location），否则 --issue 的 webroot 校验拿不到文件
         render_nginx_conf "$DOMAIN" "" "$(nginx_conf_path)"
         nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
