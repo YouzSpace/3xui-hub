@@ -18,11 +18,28 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // agentVersion 由编译脚本 -ldflags 注入。
 var agentVersion = "dev"
+
+var (
+	selfSHAOnce  sync.Once
+	selfSHACache string
+)
+
+// binarySHA 返回当前 agent 二进制自身的 sha256（心跳/注册时上报）。
+// 面板拿它和 manifest 里的 sha 比对：同版本号但二进制换过时也能发现并自动升级。
+func binarySHA(p Paths) string {
+	selfSHAOnce.Do(func() {
+		if sum, err := sha256File(p.AgentBin); err == nil {
+			selfSHACache = sum
+		}
+	})
+	return selfSHACache
+}
 
 func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stdout, "[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))

@@ -31,6 +31,8 @@ func validateRegister(data any) error {
 	v := newValidator(data)
 	v.field("xray_version", Nullable(), String(), Max(64))
 	v.field("agent_version", Nullable(), String(), Max(64))
+	// agent_sha = 节点上 agent 二进制的 sha256（同版本号重新编译时靠它发现差异）。
+	v.field("agent_sha", Nullable(), String(), Max(64))
 	v.field("kernel_arch", Nullable(), String(), Max(32))
 	v.field("hostname", Nullable(), String(), Max(128))
 	return collect(v)

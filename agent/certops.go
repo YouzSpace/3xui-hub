@@ -222,6 +222,9 @@ func runCertIssue(_ Paths, cmd Command) AckResult {
 		Domain string `json:"domain"`
 		Method string `json:"method"`
 		Email  string `json:"email"`
+		// Force = 面板要求「立即重签」，即使 acme.sh 认为还没到续期时间。
+		// 手工续签（--renew-certs-once / 后台点「立即续签」）会带上；定时续签不带。
+		Force bool `json:"force"`
 	}
 	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 		return AckResult{ID: cmd.ID, Success: false, Output: "载荷解析失败: " + err.Error()}
@@ -265,6 +268,11 @@ func runCertIssue(_ Paths, cmd Command) AckResult {
 	issueArgs := []string{"--issue", "-d", domain, "--standalone", "--httpport", "80", "--server", "letsencrypt"}
 	if email != "" {
 		issueArgs = append(issueArgs, "-m", email)
+	}
+	if payload.Force {
+		// 强制重签：acme.sh 默认会在到期前 30 天才续，面板手工触发时不受这个限制
+		// （否则会回 "Domains not changed ... Add '--force'" 直接跳过）。
+		issueArgs = append(issueArgs, "--force")
 	}
 	issueOut, issueErr := runCertCmd(ctx, certIssueTimeout, acmeShBin, issueArgs...)
 

@@ -165,7 +165,7 @@ func (d *NodeDomain) runAgentUpgrade(ctx context.Context, manual bool) (AgentUpg
 		out := AgentUpgradeOutcome{NodeID: n.ID, NodeName: n.Name, From: from, To: res.Latest}
 
 		// ── 一道道判定，任何一条不满足就跳过并且说清楚为什么 ──
-		if reason, skip := d.agentUpgradeSkipReason(ctx, n, from, res.Latest); skip {
+		if reason, skip := d.agentUpgradeSkipReason(ctx, n, from, res.Latest, manifest); skip {
 			out.Action = "skipped"
 			out.Reason = reason
 			res.Skipped++
@@ -343,7 +343,7 @@ func auditText(s string) string {
 // ── 判定 ──
 
 // agentUpgradeSkipReason 判断这台节点本轮是否应当跳过下发；返回原因与是否跳过。
-func (d *NodeDomain) agentUpgradeSkipReason(ctx context.Context, n *NodeRecord, from, latest string) (string, bool) {
+func (d *NodeDomain) agentUpgradeSkipReason(ctx context.Context, n *NodeRecord, from, latest string, manifest *ManifestAgent) (string, bool) {
 	if !n.IsXray() {
 		return "不是 agent 节点（3x-ui 面板节点不受管）", true
 	}
@@ -354,7 +354,11 @@ func (d *NodeDomain) agentUpgradeSkipReason(ctx context.Context, n *NodeRecord, 
 		// 不入队：避免给一台不在线的机器堆 pending 指令；上线后由周期补跑自动补上。
 		return "节点离线（心跳不新鲜），跳过；上线后会自动补跑", true
 	}
-	if from != "" && versionAtLeast(from, latest) {
+	wantSHA := ""
+	if t := nodeUpgradeTarget(n, manifest); t != nil {
+		wantSHA = t.SHA256
+	}
+	if from != "" && !agentUpgradeOutdated(from, latest, d.reportedAgentSHA(n), wantSHA) {
 		return "已是最新 " + from, true
 	}
 	inFlight, err := d.store.HasInFlightUpgrade(ctx, n.ID)
@@ -365,6 +369,35 @@ func (d *NodeDomain) agentUpgradeSkipReason(ctx context.Context, n *NodeRecord, 
 		return "已有升级指令在途（等它执行完再检查）", true
 	}
 	return "", false
+}
+
+// agentUpgradeOutdated 判断节点是否需要升级（纯函数，便于单测）：
+//   - 版本落后 → 要；
+//   - 版本相同但上报的二进制 sha 与 manifest 不一致 → 要（同版本号重新编译过）；
+//   - 老 agent 没上报 sha / manifest 没 sha → 只按版本号判断，保持旧行为。
+//
+// 为什么要比 sha：manifest 的 agent.version 漏 bump 时（v2.15.0 真实踩过），
+// 只比版本号会让节点永远「已是最新」，节点侧的新代码永远上不去。
+func agentUpgradeOutdated(from, latest, reportedSHA, wantSHA string) bool {
+	if from == "" {
+		return true
+	}
+	if !versionAtLeast(from, latest) {
+		return true
+	}
+	if reportedSHA == "" || wantSHA == "" {
+		return false
+	}
+	return !strings.EqualFold(reportedSHA, wantSHA)
+}
+
+// reportedAgentSHA 读节点上报的 agent 二进制 sha256（老 agent 不报 → 空串）。
+func (d *NodeDomain) reportedAgentSHA(n *NodeRecord) string {
+	v := nodeDriverConfigString(n, "agent_sha")
+	if v == nil {
+		return ""
+	}
+	return nodeScalarString(v)
 }
 
 // agentNodeOnline 判断节点心跳是否新鲜（与 xray 驱动 HealthCheck 同一阈值口径）。

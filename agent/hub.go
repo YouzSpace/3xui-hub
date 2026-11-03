@@ -107,8 +107,11 @@ type RegisterInfo struct {
 type RegisterBody struct {
 	XrayVersion  string `json:"xray_version"`
 	AgentVersion string `json:"agent_version"`
-	KernelArch   string `json:"kernel_arch"`
-	Hostname     string `json:"hostname"`
+	// AgentSHA 是当前 agent 二进制自身的 sha256：面板存进 driver_config，
+	// 同版本号重新编译过（manifest version 忘了 bump）时靠它发现「节点还是旧二进制」。
+	AgentSHA   string `json:"agent_sha,omitempty"`
+	KernelArch string `json:"kernel_arch"`
+	Hostname   string `json:"hostname"`
 }
 
 // ConfigResponse 全量配置拉取结果。
