@@ -615,7 +615,10 @@ setup_nginx() {
     NGINX_CONF="${NGINX_CONF_DIR}3xui-hub.conf"
     mkdir -p "$NGINX_CONF_DIR"
     # ACME 挑战目录（3hub ssl / acme.sh --webroot 落盘处，必须真实存在）
-    mkdir -p "${INSTALL_DIR}/frontend/dist/.well-known/acme-challenge"
+    # 全机统一 /var/www/acme：与 3hub 的 ACME_WEBROOT、以及 nginx 各站点的
+    # location 保持一致（用 frontend/dist 会在前端产物被清空后续期失败）。
+    mkdir -p /var/www/acme/.well-known/acme-challenge
+    chmod 755 /var/www /var/www/acme 2>/dev/null || true
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
@@ -634,7 +637,7 @@ server {
 
     # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；3hub ssl 续期靠它，别删）
     location /.well-known/acme-challenge/ {
-        root ${INSTALL_DIR}/frontend/dist;
+        root /var/www/acme;
     }
 
     location / {
@@ -659,7 +662,7 @@ server {
 
     # ACME HTTP-01 挑战（同 80 段）
     location /.well-known/acme-challenge/ {
-        root ${INSTALL_DIR}/frontend/dist;
+        root /var/www/acme;
     }
 
     # xray 节点 WS 长连接（agent 主通道；Go 内置，必须保留 Upgrade 头）
@@ -715,7 +718,7 @@ server {
 
     # ACME HTTP-01 挑战（acme.sh --webroot 落盘目录；3hub ssl 续期靠它，别删）
     location /.well-known/acme-challenge/ {
-        root ${INSTALL_DIR}/frontend/dist;
+        root /var/www/acme;
     }
 
     # xray 节点 WS 长连接（agent 主通道；Go 内置，必须保留 Upgrade 头）
