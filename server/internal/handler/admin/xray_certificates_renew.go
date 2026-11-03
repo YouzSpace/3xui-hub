@@ -252,6 +252,12 @@ func refNodeIDs(refs []certInboundRef) []uint64 {
 	return out
 }
 
+// shouldRewriteInlineCert 判断续签后要不要把新 PEM 写回这个入站：
+// 只有本来就有内联证书的（老用法）才回写；引用式入站没有 PEM 段，保持没有。
+func shouldRewriteInlineCert(stream []byte) bool {
+	return inlineCertOfStream(stream) != ""
+}
+
 // inlineCertOfStream 取 TLS 入站内联证书的第一张（老用法判重用；HY2 没有这个字段）。
 func inlineCertOfStream(stream []byte) string {
 	if len(stream) == 0 {
@@ -362,6 +368,11 @@ func (d *NodeDomain) refreshInboundCertificate(ctx context.Context, ref certInbo
 		return err
 	}
 	if ib.Protocol == "hysteria" {
+		return nil
+	}
+	if !shouldRewriteInlineCert(ib.StreamSettings) {
+		// 引用式入站（stream_settings 里没写内联 PEM）：只更新证书库，不往里塞 PEM。
+		// 没配置内联 PEM 的入站保持没有，避免凭空多出一份证书副本。
 		return nil
 	}
 	raw, err := applyCertificateToStream(ib.StreamSettings, certID, certPEM, keyPEM)

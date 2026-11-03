@@ -78,6 +78,19 @@ func TestInlineCertOfStream(t *testing.T) {
 	}
 }
 
+func TestShouldRewriteInlineCert(t *testing.T) {
+	// 只有引用的入站：不写回 PEM
+	refOnly := []byte(`{"security":"tls","tlsSettings":{"serverName":"a.example.com","tlsCertId":8}}`)
+	if shouldRewriteInlineCert(refOnly) {
+		t.Fatal("引用式入站不应被写回内联 PEM")
+	}
+	// 老的内联 PEM 入站：要写回
+	inline := []byte(`{"tlsSettings":{"serverName":"a.example.com","certificates":[{"certificate":["OLD"],"key":["OLDKEY"]}]}}`)
+	if !shouldRewriteInlineCert(inline) {
+		t.Fatal("有内联 PEM 的入站应当在续签后回写")
+	}
+}
+
 func TestNormalizePEMTextIgnoresWhitespace(t *testing.T) {
 	a := "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n"
 	b := "-----BEGIN CERTIFICATE----- AAA -----END CERTIFICATE-----"
