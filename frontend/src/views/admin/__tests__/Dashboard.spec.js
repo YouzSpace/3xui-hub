@@ -213,17 +213,28 @@ beforeEach(() => {
 })
 
 describe('Dashboard.vue 业务概览', () => {
-  it('显示用户总数、服务器在线/总数、节点数、今日成交额', async () => {
+  it('显示用户总数（含活跃/连接）、服务器在线/总数、节点数、24h 流量、今日成交额', async () => {
     const wrapper = await mountDashboard()
     const values = cardValues(wrapper)
 
     expect(values[0]).toBe('42')
     expect(values[1].replace(/\s+/g, '')).toBe('2/3')
     expect(values[2]).toBe('3') // 入站配置总数 = 2 + 1 + 0
-    expect(values[3]).toBe('¥128.50')
+    expect(values[3]).toBe('¥128.50') // 今日成交额仍在第 4 格（位置没动）
+    // 近 24 小时流量（上行 3 GB + 下行 1 GB = 4 GB），排在成交额之后
+    expect(values[4]).toBe('4.0 GB')
     expect(wrapper.text()).toContain('部分离线')
     expect(wrapper.text()).toContain('累计 ¥9640.25')
     expect(wrapper.text()).toContain('3 单')
+    // 用户卡：活跃人数与连接数并进说明行（不再有「注册用户数」这行冗余文案）
+    expect(wrapper.text()).toContain('活跃')
+    expect(wrapper.text()).not.toContain('注册用户数')
+    // 流量卡：上下行分两行 + TOP1 机器徽章
+    expect(wrapper.text()).toContain('↑ 上传')
+    expect(wrapper.text()).toContain('↓ 下载')
+    expect(wrapper.text()).toContain('TOP1')
+    // 说明行独占一行（用户卡；流量卡已移到 NodeMonitor，用它的 nm-note-line）
+    expect(wrapper.findAll('.dsh-note-line').length).toBe(1)
   })
 
   it('全部在线 / 全部离线的状态文案', async () => {
@@ -240,6 +251,7 @@ describe('Dashboard.vue 业务概览', () => {
     const wrapper = await mountDashboard({ getRevenueStats: vi.fn(() => Promise.reject(new Error('boom'))) })
 
     // 拿不到就是拿不到：显示 ¥0.00 等于谎报「今天没成交」
+    // 索引 3 = 今日成交额（0 用户 / 1 服务器 / 2 节点 / 3 成交额 / 4 近24h流量）
     expect(cardValues(wrapper)[3]).toBe('—')
     expect(wrapper.text()).toContain('—')
   })
@@ -287,7 +299,8 @@ describe('Dashboard.vue 流量消耗 Top 5', () => {
 
   it('切换窗口触发重新取数（两个接口都换 window）', async () => {
     const wrapper = await mountDashboard()
-    expect(adminApi.monitorSummary).toHaveBeenCalledTimes(1)
+    // NodeMonitor 的汇总卡也会取一次 24h 汇总，这里不再断言次数，只看参数
+    expect(adminApi.monitorSummary).toHaveBeenLastCalledWith('24h')
 
     wrapper.vm.windowKey = '7d'
     await flushPromises()
@@ -649,16 +662,16 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     expect(userCards(wrapper).length).toBe(1)
   })
 
-  it('用户榜表格：排名 / 打码邮箱+#id / 套餐用量 / 占比 / 原始上下行 / 套餐类型', async () => {
+  it('用户榜表格：排名 / 用户 ID / 用量 / 占比 / 原始上下行 / 套餐类型', async () => {
     const wrapper = await mountDashboard()
     const rows = userRowsOf(wrapper)
 
     expect(rows.length).toBe(2)
     // 排名
     expect(rows[0].find('.dsh-ut-seq').text()).toBe('1')
-    // 邮箱打码（a***@example.com 形式）+ #id
-    expect(rows[0].find('.dsh-ut-email').text()).toBe('a***@example.com')
+    // 用户列只展示 #id（不再展示邮箱）
     expect(rows[0].find('.dsh-ut-uid').text()).toBe('#1')
+    expect(rows[0].find('.dsh-ut-email').exists()).toBe(false)
     // 套餐用量（计费口径 weighted）
     expect(rows[0].find('.dsh-ut-strong').text()).toBe('3.0 GB')
     // 原始上下行（不乘倍率）
@@ -672,14 +685,6 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     expect(rows[1].find('.dsh-ut-plan').text()).toBe('总量')
     // 明细入口
     expect(rows[0].find('.dsh-ut-toggle').text()).toContain('明细')
-  })
-
-  it('邮箱打码：保留首字符与域名；无邮箱回落到 #id', async () => {
-    const wrapper = await mountDashboard()
-
-    expect(wrapper.vm.maskEmail('zhang@qq.com')).toBe('z***@qq.com')
-    expect(wrapper.vm.maskEmail('a@x.com')).toBe('a***@x.com')
-    expect(wrapper.vm.maskEmail(null)).toBeNull()
   })
 
   it('标出数据起始日（24h 当天可用，7d/30d 要等满）', async () => {
@@ -800,8 +805,8 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     const banner = wrapper.find('.dsh-ut .dsh-banner')
     expect(banner.exists()).toBe(true)
     expect(banner.text()).toContain('用户流量暂时取不到')
-    // 上一次的数据还在（不清成 0 / 空）
-    expect(wrapper.text()).toContain('a***@example.com')
+    // 上一次的数据还在（不清成 0 / 空）—— 用户列现在展示 #id
+    expect(wrapper.text()).toContain('#1')
     // 机器监控那块照旧（它自己有数据）
     expect(wrapper.find('.dsh-total').text()).toContain('总上传')
   })

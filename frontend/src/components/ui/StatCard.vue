@@ -86,6 +86,11 @@ defineProps({
   color: var(--warning);
   background: var(--warning-muted);
 }
+/* 「TOP1 xxx」这类名次徽章：用警示黄，比灰色醒目、又不同于在线绿 / 离线红 */
+.sc[data-health='top'] .sc-health {
+  color: var(--warning);
+  background: var(--warning-muted);
+}
 .sc[data-health='offline'] .sc-health {
   color: var(--danger);
   background: var(--danger-muted);

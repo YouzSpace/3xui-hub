@@ -24,10 +24,13 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
+        // 本地模拟节点的域名不可达，后端逐台探测要等超时，默认代理超时会 502
+        timeout: 120000,
       },
       '/admin-api': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
+        timeout: 120000,
       },
       '/storage': {
         target: 'http://127.0.0.1:8080',

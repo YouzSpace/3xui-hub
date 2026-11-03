@@ -45,8 +45,10 @@ const xrayNode = (overrides = {}) => ({
   ...overrides,
 })
 
-const mountMonitor = async (nodes) => {
+const mountMonitor = async (nodes, summary = null) => {
   adminApi.listNodes = vi.fn(() => Promise.resolve(nodes))
+  // load() 现在连同 24h 汇总一起取（Promise.all），缺了这个 mock 整个 load 会进失败分支
+  adminApi.monitorSummary = vi.fn(() => Promise.resolve(summary))
   const wrapper = mount(NodeMonitor)
   await flushPromises()
 
@@ -62,7 +64,7 @@ afterEach(() => {
 })
 
 describe('NodeMonitor.vue', () => {
-  it('汇总卡显示实时连接、平均 CPU / 内存、覆盖地区', async () => {
+  it('汇总卡 4 张：24h 流量 / CPU / 内存 / 实时速率；覆盖地区在「节点地区」卡右上角', async () => {
     const wrapper = await mountMonitor([
       panelNode(),
       xrayNode(),
@@ -70,10 +72,19 @@ describe('NodeMonitor.vue', () => {
     ])
 
     const values = wrapper.findAll('.sc-value').map((n) => n.text())
-    expect(values[0]).toBe('5') // 只有 xray 节点上报连接数
+    // 活跃人数/连接数已合并到上面的「用户总数」卡，这里不再重复
+    expect(values.length).toBe(4)
+    // [0] 近24h流量（summary 未 mock 数据 → —）
+    expect(values[0]).toBe('—')
     expect(values[1]).toBe('20.0%') // (10 + 30) / 2
     expect(values[2]).toBe('30.0%') // (20 + 40) / 2
-    expect(values[3].replace(/\s+/g, ' ')).toBe('3 个') // HK / JP / US
+    // [3] 实时速率：大字是上下行**总和**（up 1024 + down 2048 B/s）
+    expect(values[3].replace(/\s+/g, ' ')).toBe('3.0 KB/s')
+    expect(wrapper.text()).not.toContain('活跃人数')
+    // 覆盖地区挪到「节点地区」标题右上角
+    const cov = wrapper.find('.nm-coverage')
+    expect(cov.exists()).toBe(true)
+    expect(cov.text()).toContain('覆盖 3 个地区')
   })
 
   it('平均 CPU / 内存只算在线节点，且没有读数时显示 — 而不是 0', async () => {
@@ -83,18 +94,15 @@ describe('NodeMonitor.vue', () => {
     ])
 
     const values = wrapper.findAll('.sc-value').map((n) => n.text())
+    expect(values[0]).toBe('—')
     expect(values[1]).toBe('—')
-    expect(values[2]).toBe('—')
   })
 
-  it('实时连接只统计 xray 节点，没有上报时显示 —', async () => {
-    const withXray = await mountMonitor([xrayNode()])
-    expect(withXray.findAll('.sc-value')[0].text()).toBe('5')
-    expect(withXray.text()).toContain('活跃用户 2')
+  it('活跃人数/连接数不再出现在监控汇总里（已并进业务概览的用户总数卡）', async () => {
+    const wrapper = await mountMonitor([xrayNode()])
 
-    const onlyPanel = await mountMonitor([panelNode()])
-    expect(onlyPanel.findAll('.sc-value')[0].text()).toBe('—')
-    expect(onlyPanel.text()).toContain('活跃用户 —')
+    expect(wrapper.text()).not.toContain('活跃人数')
+    expect(wrapper.text()).not.toContain('仅 xray 节点上报')
   })
 
   it('节点卡片：地区名、状态、CPU/内存，缺失值显示 —', async () => {
@@ -122,10 +130,11 @@ describe('NodeMonitor.vue', () => {
 
   it('实时上下行只统计 xray 节点；全是面板节点时显示 —', async () => {
     const withXray = await mountMonitor([xrayNode()])
-    expect(withXray.findAll('.nm-live strong').map((n) => n.text())).toEqual(['1.0 KB/s', '2.0 KB/s'])
+    // 实时速率在汇总卡（.sc-value 第 4 张）的说明行里
+    expect(withXray.findAll('.nm-note-line').at(-1).text()).toContain('↑ 上传 1.0 KB/s · ↓ 下载 2.0 KB/s')
 
     const onlyPanel = await mountMonitor([panelNode()])
-    expect(onlyPanel.findAll('.nm-live strong').map((n) => n.text())).toEqual(['—', '—'])
+    expect(onlyPanel.findAll('.nm-note-line').at(-1).text()).toContain('↑ 上传 — · ↓ 下载 —')
   })
 
   it('拉取失败：显示数据中断横幅，并保留上一次数据不清空', async () => {
@@ -141,7 +150,8 @@ describe('NodeMonitor.vue', () => {
     expect(wrapper.text()).toContain('数据中断')
     // 关键：上一次的数据还在，没有被清成 0 / 空
     expect(wrapper.text()).toContain('HK01')
-    expect(wrapper.findAll('.sc-value')[3].text().replace(/\s+/g, ' ')).toBe('1 个')
+    // 覆盖地区已挪到「节点地区」卡右上角（不再是第 4 张汇总卡）
+    expect(wrapper.find('.nm-coverage').text()).toContain('覆盖 1 个地区')
   })
 
   it('每 5 秒轮询一次，标签页隐藏时跳过', async () => {
@@ -181,7 +191,7 @@ describe('NodeMonitor.vue', () => {
     const wrapper = await mountMonitor([panelNode({ region: null })])
 
     expect(wrapper.text()).toContain('未识别地区')
-    expect(wrapper.text()).toContain('1 个节点无法识别地区')
+    expect(wrapper.find('.nm-coverage').text()).toContain('1 个无法识别')
     expect(wrapper.text()).toContain('暂无可定位的地区')
   })
 })
