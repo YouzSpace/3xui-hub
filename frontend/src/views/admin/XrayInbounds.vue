@@ -531,6 +531,9 @@ const certOptions = computed(() => [
   }),
 ])
 
+// 证书库里有没有「覆盖当前 serverName」的证书（HY2 下拉用来提示「先签发」）。
+const hasFittingCert = computed(() => certOptions.value.some((o) => o.value && !o.disabled))
+
 // 选中项自己可能已经不匹配了（先选证书、后改 SNI）：显式点名，别让人以为一切正常
 const selectedCertProblem = computed(() => {
   const id = form.value.tls_cert_id
@@ -639,6 +642,24 @@ const bestPemCert = () => {
   return latestExpiry(matched.length ? matched : usable)
 }
 
+// 当前域名在证书库里有没有能用的证书：没有就留空并提示先签发，
+// 不要让一张域名不匹配的旧证书继续顶在框里（保存后客户端按 SNI 必握手失败）。
+const pemCertPlaceholder = computed(() =>
+  pemPickable.value.length ? '选一张证书' : '当前域名没有可用证书，先点上方「签发证书」',
+)
+
+// 改了 serverName（或换了节点）之后，原来选中的证书可能已经覆盖不到新域名：清掉重选。
+// 覆盖不到时留着它只会误导人 —— 显示框里还是那张证书，实际连不上。
+watch(certTargetHost, () => {
+  const stillFits = (id) => {
+    if (!id) return true
+    const c = certificates.value.find((x) => Number(x.id) === Number(id))
+    return !!c && certFits(c)
+  }
+  if (!stillFits(pemCertId.value)) pemCertId.value = null
+  if (!stillFits(form.value.tls_cert_id)) form.value.tls_cert_id = null
+})
+
 const fillTlsPemFromLibrary = async () => {
   if (pemFilling.value) return
   if (!certificates.value.length) {
@@ -672,35 +693,38 @@ const fillTlsPemFromLibrary = async () => {
 }
 
 // ── 远程签发证书（面板下发 cert_issue，节点跑 acme.sh，成功后写回证书库）──
-// 域名取节点 host：HTTP-01 要求 Let's Encrypt 能从 80 端口打到这台节点，IP 签不出来。
-const nodeHostIsIp = computed(() => {
-  const h = nodeHost.value
+// 签发域名跟 TLS serverName 走：证书必须覆盖客户端握手用的 SNI，否则签了也握不上手。
+// 只有 serverName 留空时才回落节点 host（老行为）；IP 一律不签（Let's Encrypt 不发 IP 证书）。
+const certSignDomain = computed(() => bareHost(form.value.tls_server_name) || nodeHost.value)
+const certSignDomainIsIp = computed(() => {
+  const h = certSignDomain.value
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || (h.includes(':') && !h.includes('.'))
 })
 const issuingCert = ref(false)
 
 const issueNodeCert = async () => {
   if (issuingCert.value) return
-  if (!nodeId.value || !nodeHost.value) {
-    toast.error('先选节点，并确认节点地址填的是域名')
+  const domain = certSignDomain.value
+  if (!nodeId.value || !domain) {
+    toast.error('先选节点，并在 TLS serverName 里填要签的域名（或把节点地址填成域名）')
     return
   }
-  if (nodeHostIsIp.value) {
-    toast.error(`节点地址是 IP（${nodeHost.value}）：Let's Encrypt 不签 IP，先把节点地址改成域名`)
+  if (certSignDomainIsIp.value) {
+    toast.error(`签发域名是 IP（${domain}）：Let's Encrypt 不签 IP，请把 TLS serverName 改成解析到本节点的域名`)
     return
   }
   issuingCert.value = true
   try {
     const res = await adminApi.issueXrayCertificate({
       node_id: Number(nodeId.value),
-      domain: nodeHost.value,
+      domain,
       method: 'http-01',
     })
     await loadCertificates()
     // 新条目 id 优先取回执；后端只回路径时，按域名在刷新后的库里取到期最晚的那张
     let newId = res?.certificate?.id
     if (!newId) {
-      const hit = certificates.value.filter((c) => certCoversHost(c.domain, nodeHost.value))
+      const hit = certificates.value.filter((c) => certCoversHost(c.domain, domain))
       newId = hit.length ? latestExpiry(hit).id : null
     }
     if (newId) {
@@ -710,7 +734,7 @@ const issueNodeCert = async () => {
     }
     const notAfter = res?.certificate?.not_after || res?.not_after
     toast.success(
-      `已签发 ${nodeHost.value} 的证书${notAfter ? `（到期 ${String(notAfter).slice(0, 10)}）` : ''}，已写入证书库`,
+      `已签发 ${domain} 的证书${notAfter ? `（到期 ${String(notAfter).slice(0, 10)}）` : ''}，已写入证书库`,
     )
     if (newId && !isHy.value) await fillTlsPemFromLibrary()
   } catch (e) {
@@ -1753,6 +1777,32 @@ const clientLabel = (ib) => {
             <span>TLS serverName</span>
             <Input v-model="form.tls_server_name" placeholder="your.domain.com" />
           </label>
+
+          <!-- 远程签发：面板给裸内核节点下发 cert_issue，节点侧跑 acme.sh（HTTP-01），
+               成功后后端把 PEM 写进证书库。签发域名跟上面的 serverName 走（证书必须覆盖客户端
+               握手用的 SNI），只有 serverName 留空才回落节点 host；签完自动选到下方（HY2）
+               或回填两个框（TLS）。 -->
+          <div class="an-section-title">
+            <span>节点证书签发</span>
+            <span class="an-section-actions">
+              <Button
+                size="sm"
+                variant="secondary"
+                :disabled="!certSignDomain || certSignDomainIsIp || issuingCert"
+                :loading="issuingCert"
+                @click="issueNodeCert"
+              >
+                <Icon name="shield" :size="14" /> 签发证书
+              </Button>
+            </span>
+          </div>
+          <p class="an-hint">
+            按 <code>{{ certSignDomain || '（未填域名）' }}</code> 向 Let's Encrypt 申请一张证书：
+            HTTP-01 校验，这个域名要能解析到本节点、节点的 80 端口要能从公网打到本机，签发要等几十秒。
+            签好自动写进「TLS 证书库」并用于本表单。
+            <template v-if="certSignDomainIsIp">当前填的是 IP，Let's Encrypt 不签 IP，请先把 serverName 改成域名。</template>
+          </p>
+
           <!-- 证书 PEM 只对 TLS 入站（vless/trojan）有意义：后端 security==tls && protocol!=hysteria
                时才读 tls_certificate / tls_key。HY2 完全不读这两个框（只认 tlsCertId），
                显示出来会误导人以为必须手贴 → HY2 下一律隐藏。 -->
@@ -1773,8 +1823,12 @@ const clientLabel = (ib) => {
             </div>
             <label class="an-field">
               <span>证书库条目（只用于回填，不写进入站配置）</span>
-              <Select v-model="pemCertId" :options="pemCertOptions" placeholder="选一张证书" />
+              <Select v-model="pemCertId" :options="pemCertOptions" :placeholder="pemCertPlaceholder" />
             </label>
+            <p v-if="!pemPickable.length" class="an-hint">
+              证书库里没有能用于 <code>{{ certTargetHost || '当前域名' }}</code> 的证书（没有、已过期或域名不匹配）：
+              先点上方「签发证书」签一张，签完会自动填进来。
+            </p>
             <div class="an-grid">
               <label class="an-field">
                 <span>证书 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '' }}</span>
@@ -1793,29 +1847,6 @@ const clientLabel = (ib) => {
           <p v-else class="an-hint">
             HY2 不读内联 PEM：证书走下方「TLS 证书库」引用，入站里只存证书 id、私钥留在库里。
             上面的 serverName 就是客户端握手用的域名，填对之后点证书区的「自动填充证书」即可挑到匹配的那张。
-          </p>
-
-          <!-- 远程签发：面板给裸内核节点下发 cert_issue，节点侧跑 acme.sh（HTTP-01），
-               成功后后端把 PEM 写进证书库。签完自动选到上面（HY2）或回填两个框（TLS）。 -->
-          <div class="an-section-title">
-            <span>节点证书签发</span>
-            <span class="an-section-actions">
-              <Button
-                size="sm"
-                variant="secondary"
-                :disabled="!nodeHost || nodeHostIsIp || issuingCert"
-                :loading="issuingCert"
-                @click="issueNodeCert"
-              >
-                <Icon name="shield" :size="14" /> 签发证书
-              </Button>
-            </span>
-          </div>
-          <p class="an-hint">
-            按节点域名 <code>{{ nodeHost || '（未填）' }}</code> 向 Let's Encrypt 申请一张证书：
-            HTTP-01 校验，节点的 80 端口要能从公网打到本机，签发要等几十秒。签好自动写进
-            「TLS 证书库」并用于本表单。
-            <template v-if="nodeHostIsIp">当前节点地址是 IP，Let's Encrypt 不签 IP，先把节点地址改成域名。</template>
           </p>
         </template>
 
@@ -1971,6 +2002,9 @@ const clientLabel = (ib) => {
             再回来这里选。
           </p>
           <p v-if="selectedCertProblem" class="an-hint">{{ selectedCertProblem }}</p>
+          <p v-if="certificates.length && !hasFittingCert" class="an-hint">
+            没有覆盖 <code>{{ certTargetHost }}</code> 的证书：先点上方「签发证书」签一张，签完会自动选中。
+          </p>
           <p v-if="certificates.length" class="an-hint">
             灰色条目的证书域名覆盖不到
             <code>{{ certTargetHost || '当前节点' }}</code>

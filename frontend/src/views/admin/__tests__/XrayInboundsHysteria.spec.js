@@ -345,7 +345,7 @@ describe('XrayInbounds — 证书三项（#103）', () => {
  * 证书库回填 PEM + 远程签发：
  *   ① TLS 入站（vless/trojan）多一个「从证书库填充 PEM」，选中条目 → 取解密 PEM → 填满两个框
  *   ② HY2 分支不出现这个按钮（它没有 PEM 框，走证书 id 引用）
- *   ③ 「签发证书」按节点域名下发 cert_issue；节点是 IP 时禁用并说清原因
+ *   ③ 「签发证书」按 TLS serverName 下发 cert_issue（留空才回落节点域名）；serverName 是 IP 时禁用并说清原因
  */
 describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
   const mountWithCerts = async (certs, host = 'https://tls1.example.com:2053/panel') => {
@@ -434,15 +434,74 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     expect(wrapper.vm.form.tls_key).toBe('KEY-PEM')
   })
 
-  it('节点地址是 IP：签发按钮禁用，点了也不发请求', async () => {
+  it('签发域名是 IP：按钮禁用，点了也不发请求', async () => {
     const wrapper = await mountWithCerts([], 'http://203.0.113.9:2053')
     await openTls(wrapper)
 
-    expect(wrapper.vm.nodeHostIsIp).toBe(true)
+    // serverName 留空 → 回落节点 host（IP），不该能签
+    expect(wrapper.vm.certSignDomain).toBe('203.0.113.9')
+    expect(wrapper.vm.certSignDomainIsIp).toBe(true)
     wrapper.vm.issueNodeCert()
     await flushPromises()
 
     expect(adminApi.issueXrayCertificate).not.toHaveBeenCalled()
     expect(toast.error).toHaveBeenCalled()
+  })
+
+  it('serverName 与节点域名不同：按 serverName 签发并回填 PEM', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+
+    wrapper.vm.form.tls_server_name = 'v6.efu.top'
+    await flushPromises()
+    expect(wrapper.vm.certSignDomain).toBe('v6.efu.top')
+
+    const issued = {
+      id: 11, name: 'v6.efu.top', domain: 'v6.efu.top', source: 'manual',
+      has_cert: true, has_key: true, not_after: '2099-05-01T00:00:00Z',
+    }
+    adminApi.issueXrayCertificate.mockResolvedValue({ certificate: issued })
+    adminApi.listXrayCertificates.mockResolvedValue({ certificates: [tlsCert, issued] })
+    adminApi.getXrayCertificatePem.mockResolvedValue({ cert_pem: 'CERT-PEM', key_pem: 'KEY-PEM' })
+
+    wrapper.vm.issueNodeCert()
+    await flushPromises()
+
+    expect(adminApi.issueXrayCertificate).toHaveBeenCalledWith({
+      node_id: 1,
+      domain: 'v6.efu.top',
+      method: 'http-01',
+    })
+    expect(wrapper.vm.form.tls_certificate).toBe('CERT-PEM')
+    expect(wrapper.vm.form.tls_key).toBe('KEY-PEM')
+  })
+
+  it('改 serverName 后旧证书不再匹配：清空选择并提示先签发', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+
+    // 打开时按节点域名自动选中 tls1.example.com 那张
+    expect(wrapper.vm.pemCertId).toBe(7)
+
+    wrapper.vm.form.tls_server_name = 'wu.top'
+    await flushPromises()
+
+    expect(wrapper.vm.pemCertId).toBeNull()
+    expect(wrapper.vm.pemCertPlaceholder).toContain('先点上方')
+  })
+
+  it('HY2 改 serverName 后，不匹配的已选证书同样被清空', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    wrapper.vm.openCreate()
+    await flushPromises()
+    wrapper.vm.form.protocol = 'hysteria'
+    await flushPromises()
+
+    wrapper.vm.form.tls_cert_id = 7
+    await flushPromises()
+    wrapper.vm.form.tls_server_name = 'wu.top'
+    await flushPromises()
+
+    expect(wrapper.vm.form.tls_cert_id).toBeNull()
   })
 })
