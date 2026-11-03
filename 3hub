@@ -867,10 +867,15 @@ EOF
         systemctl disable "$u" 2>/dev/null || true
     done
 
-    # 老 PHP 版 nginx 反代完整切到 Go（root/api/php-fpm/node-ws 端口）——升级关键
+    # nginx 受管配置收敛到规范模板（纯反代；前端已 go:embed 进二进制）
+    # 幂等：内容一致不写；写前备份，nginx -t 不过自动回滚。
     ensure_nginx_go_proxy
     # gzip 自愈（缓存头由 Go 输出：assets 长缓存、index.html no-cache）
     ensure_nginx_gzip
+    # 收尾自检：配置若仍是老形态（root 到 dist / try_files），明确提示而不是静默
+    if nginx_conf_outdated; then
+        echo -e "${YELLOW}⚠ nginx 配置仍是老形态（$(nginx_conf_path)），站点可能 404；请执行 3hub fix-nginx${NC}"
+    fi
 
     # 更新 3hub 命令本身
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
@@ -970,13 +975,24 @@ cmd_fix_nginx() {
     return 1
 }
 
-# nginx 配置是否仍是「老形态」（root 到 dist / try_files / 指 php-fpm）。
-# 供 update 收尾与 status 用：命中说明需要跑一次 fix-nginx。
+# nginx 配置是否仍是「老形态」：前端被 nginx 自己从磁盘端出去，而不是全反代给 Go。
+#
+# 判定只看三件事，且都限定在 server 顶层（4 空格缩进，location 内的是 8 空格）：
+#   1. server 级 root 指向前端产物目录；
+#   2. try_files 回落到 index.html / index.php；
+#   3. 有 php-fpm / index.php 反代（老 PHP 版遗留）。
+#
+# ⚠️ 不能只看 "root .*frontend/dist" —— ACME 挑战 location 里的 root 也可能含该串，
+# 那是合法的（挑战文件目录），误判会让 update 一直报「配置仍是老形态」。
 nginx_conf_outdated() {
     local CONF
     CONF="$(nginx_conf_path)"
     [ -f "$CONF" ] || return 1
-    grep -qE '^\s*root\s+.*frontend/dist|try_files\s+\$uri\s+\$uri/\s+/index\.(html|php)|fastcgi_pass|index\.php' "$CONF" 2>/dev/null
+    # server 级 root（行首 4 个空格，location 内是 8 个空格）
+    awk '/^server[[:space:]]*\{/{srv=1} /^}/{srv=0} srv && /^    root[[:space:]]/ && /frontend\/dist|backend\/public/ {found=1} END{exit found?0:1}' "$CONF" && return 0
+    grep -qE 'try_files[[:space:]]+\$uri[[:space:]]+\$uri/[[:space:]]+/index\.(html|php)' "$CONF" 2>/dev/null && return 0
+    grep -qE 'fastcgi_pass|index\.php' "$CONF" 2>/dev/null && return 0
+    return 1
 }
 
 # 卸载：只做「找脚本 + 转发」，三档模式和交互菜单都由 uninstall.sh 自己处理。
@@ -1196,6 +1212,7 @@ cmd_ssl() {
         mkdir -p /etc/nginx/ssl
         $HOME/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
             --key-file "/etc/nginx/ssl/${DOMAIN}.key" \
+            --cert-file "/etc/nginx/ssl/${DOMAIN}.crt" \
             --fullchain-file "/etc/nginx/ssl/${DOMAIN}.pem" \
             --reloadcmd "systemctl reload nginx" 2>&1 | tail -1
 
