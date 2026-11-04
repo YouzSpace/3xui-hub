@@ -168,6 +168,8 @@ func (d *NodeDomain) xrayInboundDestroy(c *gin.Context) {
 		d.failServer(c, "删除入站", err)
 		return
 	}
+	// 入站删了，节点上属于它的 HY2 跳跃链也要跟着删（只入队，不影响删除结果）。
+	d.removeHysteriaHopAfterDelete(ctxOf(c), node, existing)
 	version, err := d.store.BumpConfigVersion(ctxOf(c), node.ID)
 	if err != nil {
 		d.failServer(c, "递增配置版本", err)
@@ -220,11 +222,12 @@ func (d *NodeDomain) xrayInboundBatchDestroy(c *gin.Context) {
 			failed = append(failed, jo("id", id, "reason", err.Error()))
 			continue
 		}
-		_ = target
 		if err := d.store.DeleteXrayInbound(ctxOf(c), uint64(id)); err != nil {
 			failed = append(failed, jo("id", id, "reason", err.Error()))
 			continue
 		}
+		// 与单条删除同一口径：删掉入站就清掉它自己的 HY2 跳跃链。
+		d.removeHysteriaHopAfterDelete(ctxOf(c), node, target)
 		deleted = append(deleted, id)
 		anyDeleted = true
 	}
