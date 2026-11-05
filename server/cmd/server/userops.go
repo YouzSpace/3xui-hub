@@ -174,6 +174,17 @@ func (o *userPanelOps) RebuildUserCredentials(ctx context.Context, user *admin.U
 			if err := o.provisionXray(ctx, nd.Xray, user, email); err != nil {
 				o.logger.Printf("[userops] rebuild 新建 xray client 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
 			}
+			// hysteria 入站没有热加通道（`xray api adu` 报 unsupported inbound type）：
+			// 上面这一步只能把 HY2 的旧 client 删掉、加不回新的，必须 bump 版本让 agent
+			// 重拉全量配置（渲染时按 users.uuid 重新注入）才会生效。
+			// 其余协议（vless/vmess/trojan/ss）走 adu/rmu 已热应用，bump 只会白重启内核。
+			if hasHY2, herr := o.col.NodeHasHysteriaInbound(ctx, nd.NodeID); herr != nil {
+				o.logger.Printf("[userops] rebuild 判断 hysteria 入站失败 user=%d node=%d: %v", user.ID, nd.NodeID, herr)
+			} else if hasHY2 {
+				if _, berr := o.col.BumpNodeConfigVersion(ctx, nd.NodeID); berr != nil {
+					o.logger.Printf("[userops] rebuild bump 配置版本失败 user=%d node=%d: %v", user.ID, nd.NodeID, berr)
+				}
+			}
 		}
 	}
 	return nil

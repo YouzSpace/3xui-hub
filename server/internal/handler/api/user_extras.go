@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"controlhub-server/internal/handler/admin"
 	"controlhub-server/internal/task"
 
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,11 @@ type UserExtras struct {
 	balance *BalanceService
 	// affiliate 是邀请返佣业务入口（GET /api/affiliate 用），同样由 payStore 取出。
 	affiliate *AffiliateService
+	// ops / users 是「重置订阅后重建节点 client」的接缝（见 user_reset_subscription.go）。
+	// 由 cmd/server/routes.go 注入 admin.UserPanelOps + admin.AdminUserStore；
+	// api 包不能反向依赖 admin 之外的下发实现，所以走接口。nil 时该步跳过、只记日志。
+	ops   admin.UserPanelOps
+	users admin.AdminUserStore
 }
 
 // NewUserExtras 构造补充端点 handler。
@@ -59,6 +65,16 @@ func NewUserExtras(h *Handler, db *sql.DB, async *task.Service, payStore Payment
 		balance:   balance,
 		affiliate: affiliate,
 	}
+}
+
+// WithNodeRebuild 注入「重置订阅后重建节点 client」的接缝（可选，链式调用）。
+//
+// 不塞进 NewUserExtras 的参数表，是为了不给现有调用点（含测试）制造签名变更；
+// 生产在 cmd/server/routes.go 里 .WithNodeRebuild(NewUserPanelOps(col, logger), admin.NewAdminUserSQLStore(db))。
+func (e *UserExtras) WithNodeRebuild(ops admin.UserPanelOps, users admin.AdminUserStore) *UserExtras {
+	e.ops = ops
+	e.users = users
+	return e
 }
 
 // Register 挂补充路由（需在 api.auth 中间件内）。
