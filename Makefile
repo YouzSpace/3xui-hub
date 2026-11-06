@@ -41,7 +41,7 @@ endif
 
 # 顺序不能反：前端产物是后端 -tags=embed 的输入，先有 dist 才能编出单文件二进制。
 # Order matters: the SPA build output is the input of the embed build.
-build: build-frontend build-backend ## 前端 + 后端全量构建 / full build
+build: build-frontend build-backend build-agent ## 前端 + 后端 + agent 全量构建 / full build
 
 build-frontend: deps ## 构建前端 / build frontend
 	cd $(FRONTEND) && $(NPM) run build
@@ -49,10 +49,16 @@ build-frontend: deps ## 构建前端 / build frontend
 build-backend: ## 编译后端全部包 / compile backend packages
 	cd $(SERVER) && $(GO) build -tags=$(GO_TAGS) ./...
 
-test: test-backend test-frontend ## 后端 + 前端全部单测 / all tests
+build-agent: ## 编译 agent（独立 module，别漏）/ compile agent (separate module)
+	cd agent && $(GO) build ./...
+
+test: test-backend test-agent test-frontend ## 后端 + agent + 前端全部单测 / all tests
 
 test-backend: ## 后端单测 / backend tests
 	cd $(SERVER) && $(GO) test ./...
+
+test-agent: ## agent 单测（独立 module，别漏）/ agent tests (separate module)
+	cd agent && $(GO) test ./...
 
 test-frontend: deps ## 前端单测 / frontend tests
 	cd $(FRONTEND) && $(NPM) test

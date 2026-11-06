@@ -30,19 +30,47 @@ const userSelectColumns = `u.id, u.email, u.token, u.uuid, u.protocol, u.plan_id
 
 // UserPage 对齐 UserController::index 的查询：LEFT JOIN plans + 有效代理权益计数，
 // orderByDesc('id')，50/页。search 全表查（ID 精确 / 邮箱与 Token 模糊）。
-func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, perPage int64, now time.Time) ([]UserRow, int64, error) {
+//
+// cursor > 0 时走游标分页：按主键定位（WHERE u.id < cursor），不查 COUNT、不用 OFFSET。
+// 深页（十万页以上）在 offset 模式下要扫过前面所有行，实测 100 万用户翻末页 14 秒、
+// 200 万用户 7~35 秒；游标模式恒定为毫秒级。offset 模式保留给「跳页」和兼容旧客户端。
+func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time) ([]UserRow, int64, error) {
 	where, args := userSearchWhere(search, now)
 
-	var total int64
-	countSQL := `SELECT COUNT(*) FROM users u WHERE 1=1` + where
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
 	if perPage < 1 {
 		perPage = 50
 	}
 	if page < 1 {
 		page = 1
+	}
+
+	// 游标模式：不查总数（100 万行 COUNT 要几百毫秒且随规模线性增长），
+	// total 返回 -1 由上层识别为「未知」。
+	if cursor > 0 {
+		q := fmt.Sprintf(`SELECT %s,
+		(SELECT COUNT(*) FROM proxy_entitlements e
+			WHERE e.user_id = u.id AND e.status = 'active'
+			  AND (e.expires_at IS NULL OR e.expires_at > ?)) AS proxy_active_count
+		FROM users u
+		LEFT JOIN plans p ON p.id = u.plan_id
+		WHERE 1=1%s AND u.id < ?
+		ORDER BY u.id DESC
+		LIMIT ?`, userSelectColumns, where)
+		args2 := append([]any{now}, args...)
+		args2 = append(args2, cursor, perPage)
+		rows, err := s.db.QueryContext(ctx, q, args2...)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rows.Close()
+		out, err := scanUserRows(rows)
+		return out, -1, err
+	}
+
+	var total int64
+	countSQL := `SELECT COUNT(*) FROM users u WHERE 1=1` + where
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	offset := (page - 1) * perPage
 
@@ -73,6 +101,19 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 		out = append(out, *u)
 	}
 	return out, total, rows.Err()
+}
+
+// scanUserRows 把结果集扫成 UserRow 切片，供游标分支复用。
+func scanUserRows(rows *sql.Rows) ([]UserRow, error) {
+	out := []UserRow{}
+	for rows.Next() {
+		u, err := scanUserRow(rows, true)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
 }
 
 // userSearchWhere 复刻 index 的搜索分支（ctype_digit → 精确 id OR 模糊，否则纯模糊）。

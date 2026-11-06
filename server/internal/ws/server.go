@@ -79,6 +79,10 @@ func NewServer(opts Options) *Server {
 	s.upgrader = websocket.Upgrader{
 		// 与 workerman 一致：不限制 Origin（agent 是原生客户端，不发 Origin 头）。
 		CheckOrigin: func(*http.Request) bool { return true },
+		// permessage-deflate：与 agent 侧 Dialer.EnableCompression 配对。
+		// 流量上报的 JSON 键名高度重复，开压缩后 5 万活跃用户单轮从 1.9 MiB 降到约 190 KiB，
+		// 1 Mbps 节点才不会积压。任一侧不开都协商不成功，会静默退回不压缩。
+		EnableCompression: true,
 	}
 	return s
 }

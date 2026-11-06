@@ -29,7 +29,12 @@ var (
 // 首次落地（本地还没有 config.json）或版本文件丢失时一律重启，保证内核拿到配置。
 func pullAndApply(p Paths, hub *HubClient, trigger string) error {
 	etag := readFileString(p.ETag)
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	// 超时按 env 可调（默认 180 秒）。原值 25 秒在节点多用户时不够：
+	// 50 万用户配置解压后 64 MiB、gzip 后 3.1 MiB，1 Mbps 链路光传输就要 31 秒，
+	// 25 秒会先于 HTTP client 超时触发，报「context deadline exceeded」，
+	// 而 config.json 保持旧版本 —— 表现为节点反复拉取失败但看不出是配置太大。
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(envInt("AGENT_CONFIG_TIMEOUT_SEC", 180))*time.Second)
 	defer cancel()
 
 	resp, err := hub.FetchConfig(ctx, etag)

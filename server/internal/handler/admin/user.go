@@ -153,34 +153,45 @@ func (d *UserDomain) userExistsChecker() func(table, column string, value any) (
 // ---- handlers ----
 
 // userIndex 对齐 UserController::index：50/页 + 全表搜索（ID / 邮箱 / Token）。
+// 支持 ?cursor=<id> 游标翻页：命中时按主键定位，不查总数（pagination.total=-1、
+// last_page=0），深页耗时与页码无关；未传 cursor 走原页码 offset 路径，兼容旧行为。
 func (d *UserDomain) userIndex(c *gin.Context) {
 	search := ""
 	if s := queryString(c, "search"); s != nil {
 		search = phpTrimSpaceOnly(*s)
 	}
 	page := pageParam(c)
-	rows, total, err := d.users.UserPage(ctxOf(c), search, page, userPagePerPage, d.now())
+	cursor := queryInt(c, "cursor", 0)
+	rows, total, err := d.users.UserPage(ctxOf(c), search, page, userPagePerPage, cursor, d.now())
 	if err != nil {
 		d.failServer(c, "查询用户", err)
 		return
 	}
-	lastPage := (total + userPagePerPage - 1) / userPagePerPage
-	if lastPage < 1 {
-		lastPage = 1
-	}
-	if page > lastPage {
-		page = lastPage
-		rows, total, err = d.users.UserPage(ctxOf(c), search, page, userPagePerPage, d.now())
-		if err != nil {
-			d.failServer(c, "查询用户", err)
-			return
+	// 游标模式 total=-1（未统计），跳过越界夹回
+	if total >= 0 {
+		lastPage := (total + userPagePerPage - 1) / userPagePerPage
+		if lastPage < 1 {
+			lastPage = 1
+		}
+		if page > lastPage {
+			page = lastPage
+			rows, total, err = d.users.UserPage(ctxOf(c), search, page, userPagePerPage, 0, d.now())
+			if err != nil {
+				d.failServer(c, "查询用户", err)
+				return
+			}
 		}
 	}
 	items := make([]any, 0, len(rows))
 	for i := range rows {
 		items = append(items, presentUser(&rows[i], false, nil))
 	}
-	d.successPage(c, items, page, userPagePerPage, total)
+	var nextCursor int64
+	// 只有满页才给游标：不满页说明到底了，前端据此停用「下一页」
+	if int64(len(rows)) == userPagePerPage {
+		nextCursor = int64(rows[len(rows)-1].ID)
+	}
+	d.successPageCursor(c, items, page, userPagePerPage, total, nextCursor)
 }
 
 // userShow 对齐 UserController::show（full=true，带 proxies 明细）。

@@ -687,19 +687,29 @@ func (r *Repo) certificateStamp(ctx context.Context) (Stamp, error) {
 	return stamp, nil
 }
 
-// usersPlansSummary 复刻 fingerprint() 里 users / plans 的内容摘要（CRC32 累加）。
+// usersPlansSummary 复刻 fingerprint() 里 users / plans 的内容摘要。
+//
+// 原实现是对全表每行算 CRC32 再求和（COUNT + SUM(CRC32(CONCAT_WS(...)))）：
+// 百万用户时单次 79 秒以上，而 agent 每 pull_interval（默认 30 秒）就要拉一次配置，
+// 等于让数据库持续跑全表扫描，实测会把 2 核机器压到 load 5+ 并拖死面板。
+//
+// 这里改用 COUNT(*) + MAX(updated_at)，两者都走索引，百万级仍是个位数毫秒。
+// 正确性依据（已逐一核对写路径）：
+//   - users.updated_at 没有 ON UPDATE CURRENT_TIMESTAMP，只有显式赋值才会变
+//   - admin 编辑 users 时显式写 updated_at（user_sqlstore.go 的 UpdateUser）
+//   - 封禁/解封写 updated_at（collector/ban.go）
+//   - 购买/续费写 updated_at（payment_sqlstore.go）
+//   - 高频流量累加（collector/traffic.go、nodeapi/trafficsync.go 的 applyDeltaChunk）
+//     刻意不带 updated_at —— 流量变化本来就不影响节点配置，不该触发重渲染
+//   - 用户被删除不会改 updated_at，由 COUNT(*) 兜住；新增会带 created_at/updated_at
+//   - plans 同理（plan_sqlstore.go 的 UpdatePlan 显式写 updated_at）
 func (r *Repo) usersPlansSummary(ctx context.Context, fd *FingerprintData) error {
-	usersSQL := "SELECT COUNT(*), COALESCE(SUM(CRC32(CONCAT_WS('|', id, uuid, protocol, enabled, " +
-		"COALESCE(plan_id, '-'), COALESCE(traffic_limit, '-'), " +
-		"COALESCE(DATE_FORMAT(expired_at, '%Y-%m-%d %H:%i:%s'), '-'), " +
-		"COALESCE(traffic_disabled_at, '-')))), 0) FROM users"
+	usersSQL := "SELECT COUNT(*), COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0) FROM users"
 	if err := r.DB.QueryRowContext(ctx, usersSQL).Scan(&fd.UsersCount, &fd.UsersSum); err != nil {
 		return fmt.Errorf("指纹查询 users 失败: %w", err)
 	}
 
-	plansSQL := "SELECT COUNT(*), COALESCE(SUM(CRC32(CONCAT_WS('|', id, type, " +
-		"COALESCE(months, '-'), COALESCE(monthly_traffic, '-'), " +
-		"COALESCE(period_traffic, '-'), COALESCE(total_traffic, '-')))), 0) FROM plans"
+	plansSQL := "SELECT COUNT(*), COALESCE(UNIX_TIMESTAMP(MAX(updated_at)), 0) FROM plans"
 	if err := r.DB.QueryRowContext(ctx, plansSQL).Scan(&fd.PlansCount, &fd.PlansSum); err != nil {
 		return fmt.Errorf("指纹查询 plans 失败: %w", err)
 	}

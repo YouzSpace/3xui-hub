@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -192,9 +193,27 @@ func (h *HubClient) postJSON(ctx context.Context, client *http.Client, path stri
 
 // postJSONAt 对单个面板地址发一次 POST。
 func (h *HubClient) postJSONAt(ctx context.Context, client *http.Client, base, path string, raw []byte) (json.RawMessage, error) {
+	// 大报文（典型是 /api/node-api/push 的流量表：5 万活跃用户约 1.9 MiB）先 gzip。
+	// 阈值 4 KiB：register/alive 这类小请求压缩反而多花 CPU 和几个字节的头部。
+	// 与 gzip 标记一起传给 newRequest，由它写 Content-Encoding。
+	cEncoding := ""
+	if len(raw) > 4096 {
+		var gz bytes.Buffer
+		zw := gzip.NewWriter(&gz)
+		if _, werr := zw.Write(raw); werr == nil {
+			if cerr := zw.Close(); cerr == nil {
+				raw = gz.Bytes()
+				cEncoding = "gzip"
+			}
+		}
+	}
+
 	req, err := h.newRequest(ctx, base, http.MethodPost, path, raw)
 	if err != nil {
 		return nil, err
+	}
+	if cEncoding != "" {
+		req.Header.Set("Content-Encoding", cEncoding)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -274,7 +293,10 @@ func (h *HubClient) fetchConfigAt(ctx context.Context, base, etag string) (*Conf
 	if etag != "" {
 		req.Header.Set("If-None-Match", etag)
 	}
-	resp, err := h.client(20 * time.Second).Do(req)
+	// 超时也按规模放大：百万用户配置约 128 MiB，面板侧序列化 + 传输实测超过 20 秒，
+	// 原 20 秒固定值会先于字节上限触发，现场报「context deadline exceeded」。
+	cfgTimeout := time.Duration(envInt("AGENT_CONFIG_TIMEOUT_SEC", 180)) * time.Second
+	resp, err := h.client(cfgTimeout).Do(req)
 	if err != nil {
 		return nil, &errTransport{err: err}
 	}
@@ -283,7 +305,10 @@ func (h *HubClient) fetchConfigAt(ctx context.Context, base, etag string) (*Conf
 	if resp.StatusCode == http.StatusNotModified {
 		return &ConfigResponse{NotModified: true}, nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	// 上限按 env 可调（默认 256 MiB）。原值 32 MiB 在约 25 万用户时会静默截断：
+	// LimitReader 超限只截断不报错，agent 拿到半截 JSON 报"unexpected end of JSON input"，
+	// 现场表现为节点反复拉取失败但日志无明确原因。
+	body, err := readLimited(resp.Body, int64(envInt("AGENT_MAX_CONFIG_MB", 256))<<20)
 	if err != nil {
 		return nil, &errTransport{err: err}
 	}
@@ -388,6 +413,19 @@ func hostname() string {
 		return ""
 	}
 	return hn
+}
+
+// readLimited 读取响应体并施加上限。与裸 io.LimitReader 的区别是超限时返回错误，
+// 而不是静默截断——静默截断会让下游 JSON 解析报出与真实原因无关的语法错误。
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("响应超过 %d MiB 上限，已中止（用户规模超出单节点承载，请拆分节点）", limit>>20)
+	}
+	return body, nil
 }
 
 func envInt(name string, def int) int {

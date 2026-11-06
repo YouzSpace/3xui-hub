@@ -128,7 +128,7 @@ type UserPatch struct {
 // 刻意不与 P8d 的 Store 合并：各域在自己文件里声明窄接口，互不牵连，
 // 测试也能只实现自己用到的部分。
 type AdminUserStore interface {
-	UserPage(ctx context.Context, search string, page, perPage int64, now time.Time) ([]UserRow, int64, error)
+	UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time) ([]UserRow, int64, error)
 	UserByID(ctx context.Context, id uint64) (*UserRow, error)
 	UserExists(ctx context.Context, id uint64) (bool, error)
 	UserProxies(ctx context.Context, userID uint64) ([]UserProxy, error)

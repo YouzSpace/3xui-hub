@@ -180,26 +180,41 @@ func (d *UserDomain) noRowsToNotFound(c *gin.Context, err error) bool {
 
 // successPage 对齐 ApiResponse::successPage（固定 50/页，越界夹回最后一页）。
 func (d *UserDomain) successPage(c *gin.Context, items []any, page, perPage, total int64) {
-	lastPage := (total + perPage - 1) / perPage
-	if lastPage < 1 {
-		lastPage = 1
+	d.successPageCursor(c, items, page, perPage, total, 0)
+}
+
+// successPageCursor 分页响应，附带 next_cursor（本页最后一条 id）供游标翻页。
+// total < 0 表示游标模式下未统计总数：last_page 返回 0，前端据此隐藏页码跳转、
+// 只用「下一页」。这样 100 万用户时既不用付 COUNT(*) 的代价，也不会因 last_page
+// 未知而把页码夹错。
+func (d *UserDomain) successPageCursor(c *gin.Context, items []any, page, perPage, total, nextCursor int64) {
+	lastPage := int64(0)
+	if total >= 0 {
+		lastPage = (total + perPage - 1) / perPage
+		if lastPage < 1 {
+			lastPage = 1
+		}
 	}
 	if page < 1 {
 		page = 1
 	}
-	if page > lastPage {
+	if lastPage > 0 && page > lastPage {
 		page = lastPage
+	}
+	pagePairs := []any{
+		"current_page", page,
+		"last_page", lastPage,
+		"total", total,
+		"per_page", perPage,
+	}
+	if nextCursor > 0 {
+		pagePairs = append(pagePairs, "next_cursor", nextCursor)
 	}
 	writeJSON(c, phpEncode(jo(
 		"code", 0,
 		"msg", "ok",
 		"data", jsArr(items),
-		"pagination", jo(
-			"current_page", page,
-			"last_page", lastPage,
-			"total", total,
-			"per_page", perPage,
-		),
+		"pagination", jo(pagePairs...),
 	)))
 }
 

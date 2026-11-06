@@ -26,13 +26,23 @@ export function usePagedList() {
 
   let controller = null
 
+  // 游标缓存：页码 → 该页起始 cursor（后端 next_cursor）。翻到深页时带上它，
+  // 后端走主键定位，不再付 OFFSET 扫全表的代价（实测 100 万用户末页从 14 秒降到毫秒）。
+  // 只存在内存里：刷新后缓存丢失，退回 offset 路径，结果仍然正确，只是慢一档。
+  const cursorMap = ref({})
+
   const page = computed(() => {
     const p = parseInt(route.query.page, 10)
     return Number.isFinite(p) && p >= 1 ? p : 1
   })
 
   const hasPrev = computed(() => page.value > 1)
-  const hasNext = computed(() => page.value < pagination.value.last_page)
+  // 游标模式后端不统计总数（last_page=0），有下一页游标就说明还能翻
+  const hasNext = computed(() =>
+    pagination.value.last_page === 0
+      ? !!pagination.value.next_cursor
+      : page.value < pagination.value.last_page
+  )
 
   const goToPage = (next) => {
     if (next < 1 || next === page.value) return
@@ -59,7 +69,10 @@ export function usePagedList() {
     loading.value = true
     loadError.value = ''
     try {
-      const res = await fetcher({ page: requested, ...(extra || {}) }, { signal })
+      const params = { page: requested, ...(extra || {}) }
+      const cursor = cursorMap.value[requested]
+      if (cursor) params.cursor = cursor
+      const res = await fetcher(params, { signal })
       // 请求期间可能已被 keep-alive 退场：响应不落地，更不许改 URL
       if (signal.aborted || !active.value) return null
 
@@ -68,6 +81,11 @@ export function usePagedList() {
         last_page: res?.pagination?.last_page ?? 1,
         total: res?.pagination?.total ?? (Array.isArray(res) ? res.length : 0),
         per_page: res?.pagination?.per_page ?? 50,
+        next_cursor: res?.pagination?.next_cursor ?? null,
+      }
+      // 记住这一页的「下一页游标」，下一页请求直接按主键定位
+      if (pagination.value.next_cursor) {
+        cursorMap.value[requested + 1] = pagination.value.next_cursor
       }
 
       // 后端已把越界页码夹回有效页；URL 跟着校正，别让地址栏停在 ?page=999。

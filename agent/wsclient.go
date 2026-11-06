@@ -39,6 +39,11 @@ func (w *WSClient) connect(ctx context.Context, helloData map[string]any) error 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 15 * time.Second,
 		Proxy:            http.ProxyFromEnvironment,
+		// permessage-deflate（RFC 7692）：流量上报是 {email:[up,down],...} 结构，
+		// 键名高度重复，压缩率约 10~20 倍。5 万活跃用户单轮上报约 1.9 MiB，
+		// 1 Mbps 节点不压缩要 16 秒、每 5 秒一轮必然积压；开压缩后约 190 KiB，
+		// 1.6 秒推完。面板侧 Upgrader 也必须开，否则协商不生效。
+		EnableCompression: true,
 	}
 	header := http.Header{}
 	header.Set("X-Node-Secret", w.secret)
