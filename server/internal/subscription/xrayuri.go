@@ -19,6 +19,62 @@ import (
 // flow 是 VLESS+Reality 的传输流控（v26 校验要求该值）。
 const xrayFlow = "xtls-rprx-vision"
 
+// mlkemMinVersion 是 REALITY 服务端开始要求 X25519MLKEM768 握手的 xray-core 版本
+// （mihomo 官方文档：v26.7.11+ 服务端与老客户端不兼容）。节点内核 ≥ 此版本时，
+// 生成的 vless 链接带 support-x25519mlkem768=1，Clash 渲染据此输出
+// reality-opts.support-x25519mlkem768: true；老内核节点链接不带（发了会全断）。
+const mlkemMinVersion = "26.7.11"
+
+// nodeSupportsMLKEM 判断该节点的 xray 内核是否 ≥ mlkemMinVersion。
+// 版本号从 driver_config.xray_version（agent 心跳上报）读；取不到按不支持处理（保守）。
+func nodeSupportsMLKEM(node Node) bool {
+	raw := strings.TrimSpace(node.DriverConfig)
+	if raw == "" {
+		return false
+	}
+	stream := decodeJSONAny(raw)
+	ver := strings.TrimSpace(phpString(jsonField(stream, "xray_version")))
+	if ver == "" {
+		return false
+	}
+	return compareSemver(ver, mlkemMinVersion) >= 0
+}
+
+// compareSemver 比较 "26.3.27" 形态的版本号（只比数字段，段数不齐按 0 补）。
+// 返回 -1/0/1。带 v 前缀或额外后缀（如 -beta）时取前缀数字段。
+func compareSemver(a, b string) int {
+	pa := semverParts(a)
+	pb := semverParts(b)
+	for i := 0; i < 3; i++ {
+		if pa[i] != pb[i] {
+			if pa[i] < pb[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+func semverParts(v string) [3]int {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	for i, seg := range strings.SplitN(v, ".", 3) {
+		if i >= 3 {
+			break
+		}
+		n := 0
+		for _, r := range seg {
+			if r < '0' || r > '9' {
+				break
+			}
+			n = n*10 + int(r-'0')
+		}
+		out[i] = n
+	}
+	return out
+}
+
 // reality 默认 dest / SNI（dest 不能用 TLS 记录 >8192 字节的站）。
 const (
 	xrayDefaultDest = "www.cloudflare.com:443"
@@ -116,6 +172,11 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		// 后量子校验（pqv）
 		if pqv := phpTrim(jsonFieldString(client, "mldsa65Verify")); pqv != "" {
 			query += "&pqv=" + rawurlencode(pqv)
+		}
+		// X25519MLKEM768：仅 26.7.11+ 内核节点带此参数（mihomo 需它才启用 MLKEM 握手）；
+		// 老内核节点绝不带（mihomo 文档：26.7.11+ 服务端与不支持的客户端不兼容）。
+		if nodeSupportsMLKEM(node) {
+			query += "&support-x25519mlkem768=1"
 		}
 		if flowApplies(inbound) {
 			query += "&flow=" + xrayFlow
