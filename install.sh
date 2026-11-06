@@ -396,37 +396,13 @@ install_mysql() {
             systemctl start mysqld 2>/dev/null || systemctl start mysql 2>/dev/null || true
             ;;
         apt)
-            # 检测是否能直接安装 mysql-server（用 dry-run 检查）
-            if apt-get install --dry-run -y mysql-server &>/dev/null; then
-                info "从 APT 仓库安装 MySQL..."
-                DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
-            else
-                # 默认仓库没有 mysql-server，添加 MySQL 官方仓库
-                info "添加 MySQL 官方 APT 仓库..."
-                apt-get install -y wget gnupg2 lsb-release ca-certificates 2>/dev/null || true
-                
-                MYSQL_REPO_OK=false
-                # 下载 MySQL APT 配置包
-                MYSQL_APT_DEB="mysql-apt-config_0.8.32-1_all.deb"
-                if wget -q --timeout=15 "https://dev.mysql.com/get/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || \
-                   wget -q --timeout=15 "https://repo.mysql.com/${MYSQL_APT_DEB}" -O "/tmp/${MYSQL_APT_DEB}" 2>/dev/null; then
-                    DEBIAN_FRONTEND=noninteractive dpkg -i "/tmp/${MYSQL_APT_DEB}" 2>/dev/null || true
-                    apt-get update -qq 2>/dev/null || true
-                    if apt-get install --dry-run -y mysql-server &>/dev/null; then
-                        DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
-                        MYSQL_REPO_OK=true
-                    fi
-                    rm -f "/tmp/${MYSQL_APT_DEB}"
-                fi
-                
-                if [ "$MYSQL_REPO_OK" = false ]; then
-                    # MySQL 仓库不可用，使用 MariaDB 作为替代
-                    warn "无法安装 MySQL，使用 MariaDB 替代（兼容 MySQL）..."
-                    DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server
-                fi
-            fi
-            systemctl enable mysql 2>/dev/null || systemctl enable mariadb 2>/dev/null || true
-            systemctl start mysql 2>/dev/null || systemctl start mariadb 2>/dev/null || true
+            # Debian 10+ / Ubuntu 官方仓库没有 mysql-server 包，dry-run 必失败；
+            # 先试 MySQL 再兜底 MariaDB 只会白耗 1-2 分钟（下载官方 repo 也大概率超时）。
+            # MariaDB 与本项目的 SQL（schema/seed/Go 驱动）完全兼容，直接作为首选。
+            info "安装 MariaDB（Debian/Ubuntu 首选，与 MySQL 完全兼容）..."
+            DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server
+            systemctl enable mariadb 2>/dev/null || systemctl enable mysql 2>/dev/null || true
+            systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
             ;;
     esac
 
@@ -439,6 +415,22 @@ install_mysql() {
 
     if ! command -v mysql &>/dev/null; then
         error_exit "MySQL 安装失败"
+    fi
+
+    # Debian 10+ 的 MariaDB 走 systemd socket 激活：端口由 mariadb.socket 单元声明
+    # （ListenStream=3306 裸数字 = 所有地址双栈通配），my.cnf 的 bind-address 被旁路，
+    # 3306 实际公网可达（v4-mapped），只靠 host ACL 挡。写 override 把监听钉死回环。
+    # 幂等：override.conf 已存在时直接覆盖为同一内容。
+    if systemctl list-unit-files mariadb.socket &>/dev/null; then
+        info "收口 MariaDB 3306 监听（systemd socket override → 127.0.0.1）..."
+        mkdir -p /etc/systemd/system/mariadb.socket.d
+        cat > /etc/systemd/system/mariadb.socket.d/override.conf <<'EOF'
+[Socket]
+ListenStream=127.0.0.1:3306
+ListenStream=[::1]:3306
+EOF
+        systemctl daemon-reload
+        systemctl restart mariadb.socket 2>/dev/null || systemctl restart mariadb 2>/dev/null || true
     fi
 
     success "MySQL 安装完成"
