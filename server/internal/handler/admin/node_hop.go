@@ -180,6 +180,24 @@ func (d *NodeDomain) hopRemove(c *gin.Context) {
 		jo("inbound_id", inputInt(input["inbound_id"])))
 }
 
+// removeHysteriaHopAfterDelete 删入站后清掉节点上属于它的 HY2HOP-<id> 链。
+//
+// 删除入站只删库行 + bump 版本，agent 侧那条 nat 链不会自己消失；不删就留下一条
+// 指向已关端口的死规则，还会被 netfilter-persistent 带进重启。这里补发一条
+// firewall_hop_remove：
+//   - 只对 hysteria 入站发（其它协议没有跳跃链）；
+//   - **只入队、不等回执**：入站这时已经删掉，节点离线 / agent 太旧都不该让删除失败，
+//     指令留在队列里，节点上线后自然执行。
+func (d *NodeDomain) removeHysteriaHopAfterDelete(ctx context.Context, node *NodeRecord, ib *XrayInboundRecord) {
+	if ib == nil || ib.Protocol != "hysteria" || !agentSupportsHop(node) {
+		return
+	}
+	if _, err := d.store.CreateCommand(ctx, node.ID, nodeapi.ActionFirewallHopRemove,
+		jo("inbound_id", int64(ib.ID))); err != nil {
+		d.logger.Printf("admin 端口跳跃：删除入站 %d 后入队清链失败: %v", ib.ID, err)
+	}
+}
+
 // hopStatus 转发 firewall_hop_status：列出节点上所有 HY2HOP-* 链的真实运行态。
 //
 // 面板「端口跳跃」列显示的是**实际状态**，不是数据库里的意图 —— 节点重启丢了规则、
