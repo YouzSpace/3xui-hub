@@ -85,8 +85,8 @@ describe('XrayInbounds.vue — 地址族（issue #88）', () => {
     await clickButton(wrapper, '新建入站')
 
     expect(wrapper.vm.form.listen).toBe('0.0.0.0')
-    // 地址族下拉的两个固定选项（IPv4 默认 / IPv6）
-    expect(wrapper.vm.listenOptions.map((o) => o.value)).toEqual(['0.0.0.0', '::'])
+    // 地址族下拉的固定选项（IPv4 默认 / IPv6）+ #129 新增的「自定义连接地址」
+    expect(wrapper.vm.listenOptions.map((o) => o.value)).toEqual(['0.0.0.0', '::', 'custom'])
 
     wrapper.vm.listenFamily = '::'
     await flushPromises()
@@ -110,7 +110,7 @@ describe('XrayInbounds.vue — 地址族（issue #88）', () => {
     // 编辑态回填 + 多出一个「保留原值」选项
     expect(wrapper.vm.form.listen).toBe('127.0.0.1')
     const opts = wrapper.vm.listenOptions
-    expect(opts.map((o) => o.value)).toEqual(['0.0.0.0', '::', '127.0.0.1'])
+    expect(opts.map((o) => o.value)).toEqual(['0.0.0.0', '::', '127.0.0.1', 'custom'])
     expect(opts[2].label).toContain('保留原值')
 
     await submit()
