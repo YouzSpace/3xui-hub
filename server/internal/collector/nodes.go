@@ -401,3 +401,29 @@ func (c *Collector) NodeDrivers(ctx context.Context) ([]NodeDriver, error) {
 func (c *Collector) InboundIDs(ctx context.Context, nodeID int64, protocol string) ([]int64, error) {
 	return c.inboundIDsFor(ctx, nodeID, protocol)
 }
+
+// NodeHasHysteriaInbound 报告该裸内核节点是否有启用的 hysteria 入站。
+//
+// 为什么要这个判据：`xray api adu` **不支持 hysteria 入站类型**，回执是
+// `processing inbound: <tag> unsupported inbound type Added 0 user(s)`。
+// 也就是说 hysteria 的 client 无法热加，只能靠全量配置下发（agent 重拉 config.json
+// 后重启内核）才会生效。换凭据（重置订阅）时若只发 rmu/adu，会把 hysteria 上的
+// 旧 client 删掉、新的加不回去 —— 该节点的 HY2 线路对这个人直接断掉。
+func (c *Collector) NodeHasHysteriaInbound(ctx context.Context, nodeID int64) (bool, error) {
+	var n int64
+	err := c.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM xray_inbounds WHERE node_id = ? AND enabled = 1 AND protocol = 'hysteria'",
+		nodeID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("查询节点 #%d 的 hysteria 入站失败: %w", nodeID, err)
+	}
+	return n > 0, nil
+}
+
+// BumpNodeConfigVersion 递增该节点的 config_version（agent 见版本变化即重拉全量配置）。
+//
+// 供「用户凭据重建」这类**无法纯热应用**的场景使用（目前只有 hysteria 入站）：
+// 用户级变更平时走 adu/rmu 热应用、不 bump；但 hysteria 没有热加通道，只能走全量。
+func (c *Collector) BumpNodeConfigVersion(ctx context.Context, nodeID int64) (int64, error) {
+	return c.bumpConfigVersion(ctx, nodeID)
+}

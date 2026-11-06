@@ -86,7 +86,7 @@ func (e *UserExtras) handleResetSubscription(c *gin.Context) {
 
 	// 节点侧按新凭据重建。失败只记日志：本地已经换完了，回滚反而更糟，
 	// 下一轮对账/重拉会把节点补齐（与管理员版同口径）。
-	if err := e.rebuildNodeCredentials(ctx, u.ID, newUUID, now); err != nil {
+	if err := e.rebuildNodeCredentials(ctx, u.ID); err != nil {
 		e.handler.logger.Printf("重置订阅 %d 后重建节点 client 失败（忽略）: %v", u.ID, err)
 	}
 
@@ -104,57 +104,38 @@ func (e *UserExtras) handleResetSubscription(c *gin.Context) {
 	), "订阅已重置，旧链接立即失效；当前登录不受影响")
 }
 
-// rebuildNodeCredentials 给该用户所在的裸内核节点下发「删旧 client + 加新 client」。
+// rebuildNodeCredentials 在凭据换新后，把该用户在各节点上的 client 删掉并用新 uuid 重建。
 //
-// 用与管理员版同一套指令通道（node_api_commands 的 rmu / adu），只是这里直接写表，
-// 避免 api 包反向依赖 admin 包（两个 handler 包互不引用）。
+// 为什么不再自己拼 node_api_commands：这里原先直接 INSERT `rmu`/`adu` 两行（api 包不能
+// 反向依赖 admin 包，所以手写了一遍）。那条路径有两个硬伤，2026-11-04 线上真实踩到：
 //
-// 顺序必须是「先 rmu 再 adu」：旧 uuid 与新 uuid 是两个不同身份，先删再加才能保证
-// 节点上不留旧凭据（否则旧链接对应的 uuid 在节点上还能用）。
-func (e *UserExtras) rebuildNodeCredentials(ctx context.Context, userID uint64, newUUID string, now time.Time) error {
-	email := "ch_user_" + itoa64(userID)
-
-	rows, err := e.db.QueryContext(ctx,
-		"SELECT id FROM nodes WHERE enabled = 1 AND (driver_type IS NULL OR driver_type = '' OR driver_type = 'xray')")
+//  1. 只选了 `driver_type IN (NULL,'','xray')` 的节点，**3x-ui 节点被整台漏掉** ——
+//     换完 uuid 后那几台上的旧凭据还在，订阅里它们的链接照旧用旧 uuid，表现为
+//     「一更新订阅，除 3x-ui 那两台外全断」；
+//  2. 手拼的载荷与 agent 契约不符：`rmu` 要 `{"tag","emails":[]}`、`adu` 要
+//     `{"inbounds":[{完整入站片段}]}`，而这里发的是 `{"email":..}` / `{"email":..,"id":..}`
+//     ⇒ agent 回 `no emails` / `Added 0 user(s) in total.`，**status=success 但零生效**。
+//
+// 现在统一走 admin.UserPanelOps.RebuildUserCredentials（与管理员端同一套实现）：
+// 3x-ui 走 DeleteClient + AddClient、xray 走 rmu + adu，两种驱动都在里面覆盖，
+// 载荷格式也由驱动层生成，不会再出现「写库成功、节点没变」。
+//
+// 失败只记日志不阻断接口：本地 token/uuid 已经换完，回滚反而更糟；下一轮对账会把节点补齐。
+func (e *UserExtras) rebuildNodeCredentials(ctx context.Context, userID uint64) error {
+	if e.ops == nil || e.users == nil {
+		// 未接线（测试/精简部署）：保持原语义 —— 不报错，由对账兜底。
+		if e.handler != nil && e.handler.logger != nil {
+			e.handler.logger.Printf("重置订阅 %d：节点重建接缝未接线，跳过节点下发", userID)
+		}
+		return nil
+	}
+	// 按 ID 重读完整用户行：重置才刚写完库，这里拿到的已是新 token/uuid，
+	// 且带 protocol/限额/到期等下发必需字段（不能拿鉴权中间件里的旧快照）。
+	user, err := e.users.UserByID(ctx, userID)
 	if err != nil {
 		return err
 	}
-	var nodeIDs []uint64
-	for rows.Next() {
-		var id uint64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		nodeIDs = append(nodeIDs, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(nodeIDs) == 0 {
-		return nil
-	}
-
-	ts := dbTimeLiteral(now)
-	rmuPayload := `{"email":"` + email + `"}`
-	aduPayload := `{"email":"` + email + `","id":"` + newUUID + `"}`
-
-	for _, nid := range nodeIDs {
-		if _, err := e.db.ExecContext(ctx,
-			"INSERT INTO node_api_commands (node_id, user_id, action, payload, status, created_at, updated_at) "+
-				"VALUES (?, ?, 'rmu', ?, 'pending', ?, ?)",
-			nid, userID, rmuPayload, ts, ts); err != nil {
-			return err
-		}
-		if _, err := e.db.ExecContext(ctx,
-			"INSERT INTO node_api_commands (node_id, user_id, action, payload, status, created_at, updated_at) "+
-				"VALUES (?, ?, 'adu', ?, 'pending', ?, ?)",
-			nid, userID, aduPayload, ts, ts); err != nil {
-			return err
-		}
-	}
-	return nil
+	return e.ops.RebuildUserCredentials(ctx, user)
 }
 
 // parseCacheTime 读回限频键里存的时间（DB cache 可能回 string 或 []byte）。
