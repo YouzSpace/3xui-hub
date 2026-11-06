@@ -77,6 +77,7 @@ func (h *Handler) handleMe(c *gin.Context) {
 // handleNodes 对齐 NodeController::index。
 //
 // 规则（逐条对齐）：
+//  0. 无套餐（plan_id 为 NULL/<=0）→ data 恒为 []（与订阅 403「无套餐，暂无流量」同口径）；
 //  1. enabled=1 且 status='online'；
 //  2. 该用户协议在节点上有入站（3x-ui 看 node_inbounds，xray 看 xray_inbounds.enabled）；
 //  3. 纯第三方套餐（include_local=false）→ 本地节点列表整体隐藏；
@@ -87,6 +88,13 @@ func (h *Handler) handleMe(c *gin.Context) {
 func (h *Handler) handleNodes(c *gin.Context) {
 	user := currentUser(c)
 	ctx := c.Request.Context()
+
+	// 0. 无套餐（plan_id 为 NULL 或 <= 0）→ 空列表，与订阅侧「无套餐，暂无流量」403 同口径。
+	// 这里必须提前返回：一旦落到下面就会走 OnlineNodesForProtocol 把全部在线节点吐出去。
+	if !user.PlanID.Valid || user.PlanID.Int64 <= 0 {
+		success(c, jsArr{})
+		return
+	}
 
 	// 3. 纯第三方套餐：本地节点整体隐藏（与订阅注入保持一致）。
 	if user.PlanID.Valid {

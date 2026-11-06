@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"log"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -185,8 +189,191 @@ func keyLogin(email, ip string) string {
 }
 func keyRegister(ip string) string { return ratePrefix + "register:" + ip }
 
+// ---- 共享出口检测（CDN 未还原真实 IP / 大 NAT）----
+//
+// nginx 把 $remote_addr 写进 X-Forwarded-For，而 set_real_ip_from 只认 Cloudflare 网段。
+// 站点前挂阿里云/腾讯云等非 CF 的 CDN 时，所有用户共享 CDN 节点 IP —— 用户端的
+// code_ip（20 次/小时）与 register（10 次/小时）会变成全站共享额度，正常业务被瞬间打满。
+//
+// 判据：某 IP 在窗口内关联的不同账号（email 小写）数量 >= 阈值，就认定它是共享出口，
+// 跳过**该 IP 的纯 IP 维度**限流（code_ip / register）。账号维度（email 每日/间隔、
+// verify、login）一律不受影响。
+//
+// 为什么不看「请求次数」而看「账号数」：共享出口的请求数可能很高但账号数很少
+// （一个人反复刷新），也可能很高且账号数很高（真实的 CDN）。后者才是塌陷，
+// 前者属于正常用户行为，仍应由纯 IP 维度挡住。
+//
+// 内存上限 + 惰性清理：IP 表条目数有硬上限，单 IP 的账号集合也有上限；
+// 过期项在下一次请求时顺手清理，绝不挂后台 goroutine。
+
+const (
+	// defaultRateSharedIPFanout 是共享出口判定的默认账号数阈值。
+	defaultRateSharedIPFanout = 50
+
+	// envRateSharedIPFanout 是阈值变量名；0 表示关闭检测（行为回到改造前）。
+	envRateSharedIPFanout = "RATE_SHARED_IP_FANOUT"
+
+	// rateSharedIPWindow 是「同一窗口」的长度（与 code_ip / register 的 1 小时一致）。
+	rateSharedIPWindow = time.Hour
+
+	// rateSharedIPMaxEntries 是 IP 表条目硬上限；rateSharedIPMaxAccounts 是单 IP
+	// 账号集合的硬上限。两者挡住「拿海量 IP / 海量邮箱灌检测表」的撑内存手法。
+	rateSharedIPMaxEntries  = 20000
+	rateSharedIPMaxAccounts = 200
+
+	// rateSharedIPSweepInterval 是惰性清理的最小间隔。
+	rateSharedIPSweepInterval = time.Minute
+)
+
+// sharedIPEntry 是一个出口 IP 在窗口内见过的账号集合。
+type sharedIPEntry struct {
+	accounts  map[string]struct{} // email 小写
+	expiresAt time.Time           // 窗口结束时刻；到期整条删除
+	warned    bool                // 本窗口是否已打过「判定为共享出口」的日志
+}
+
+// sharedExitDetector 维护「IP → 关联账号集合」，用于识别共享出口。
+// 并发安全；零值不可用，用 newSharedExitDetector 构造。
+// fanout <= 0 表示关闭检测（所有方法退化为 no-op）。
+type sharedExitDetector struct {
+	mu        sync.Mutex
+	entries   map[string]*sharedIPEntry
+	now       func() time.Time
+	fanout    int
+	logger    *log.Logger
+	lastSweep time.Time
+}
+
+// newSharedExitDetector 按 env 构造检测器；非法值回退默认阈值。
+func newSharedExitDetector(logger *log.Logger, now func() time.Time) *sharedExitDetector {
+	if now == nil {
+		now = time.Now
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &sharedExitDetector{
+		entries:   make(map[string]*sharedIPEntry),
+		now:       now,
+		fanout:    rateSharedIPFanoutFromEnv(),
+		logger:    logger,
+		lastSweep: now(),
+	}
+}
+
+// envRateSharedIPFanout 读阈值：缺失/非法回默认；0 表示关闭检测（有效的关闭信号，不回落）。
+func rateSharedIPFanoutFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv(envRateSharedIPFanout))
+	if raw == "" {
+		return defaultRateSharedIPFanout
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultRateSharedIPFanout
+	}
+	return n
+}
+
+// isShared 判断该 IP 是否已被认定为共享出口（不写入任何账号）。
+// 检测关闭时恒为 false。
+func (d *sharedExitDetector) isShared(ip string) bool {
+	if d == nil || d.fanout <= 0 {
+		return false
+	}
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e := d.entries[ip]
+	if e == nil || !d.now().Before(e.expiresAt) {
+		return false
+	}
+	return len(e.accounts) >= d.fanout
+}
+
+// observe 记录「该 IP 关联过该账号」，返回该 IP 当前是否属于共享出口。
+// 达到阈值的那一次会打一条日志（每个窗口每个 IP 只打一次）。
+func (d *sharedExitDetector) observe(ip, email string) bool {
+	if d == nil || d.fanout <= 0 {
+		return false
+	}
+	ip = strings.TrimSpace(ip)
+	email = normalizeEmail(email)
+	if ip == "" || email == "" {
+		return false
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := d.now()
+	d.sweepLocked(now)
+
+	e := d.entries[ip]
+	if e == nil || !now.Before(e.expiresAt) {
+		e = &sharedIPEntry{accounts: make(map[string]struct{}, 4), expiresAt: now.Add(rateSharedIPWindow)}
+		d.entries[ip] = e
+		d.trimLocked(now)
+	}
+	// 单 IP 账号集合封顶：再多也只当作「已知是共享出口」，不影响判定结论。
+	if len(e.accounts) < rateSharedIPMaxAccounts {
+		e.accounts[email] = struct{}{}
+	}
+
+	shared := len(e.accounts) >= d.fanout
+	if shared && !e.warned {
+		e.warned = true
+		d.logger.Printf("检测到共享出口 IP %s：窗口内关联 %d 个账号（阈值 %d），"+
+			"已跳过该 IP 的 code_ip / register 纯 IP 维度限流", ip, len(e.accounts), d.fanout)
+	}
+	return shared
+}
+
+// sweepLocked 惰性清理过期项：最多每 sweepInterval 扫一遍全表。
+func (d *sharedExitDetector) sweepLocked(now time.Time) {
+	if now.Sub(d.lastSweep) < rateSharedIPSweepInterval {
+		return
+	}
+	d.lastSweep = now
+	for ip, e := range d.entries {
+		if !now.Before(e.expiresAt) {
+			delete(d.entries, ip)
+		}
+	}
+}
+
+// trimLocked 守住 IP 表条目上限：到上限先清过期项，仍满则淘汰最早到期的一条。
+func (d *sharedExitDetector) trimLocked(now time.Time) {
+	if len(d.entries) < rateSharedIPMaxEntries {
+		return
+	}
+	oldestIP := ""
+	var oldestAt time.Time
+	for ip, e := range d.entries {
+		if !now.Before(e.expiresAt) {
+			delete(d.entries, ip)
+			continue
+		}
+		if oldestIP == "" || e.expiresAt.Before(oldestAt) {
+			oldestIP, oldestAt = ip, e.expiresAt
+		}
+	}
+	if oldestIP != "" && len(d.entries) >= rateSharedIPMaxEntries {
+		delete(d.entries, oldestIP)
+	}
+}
+
 // codeSendBlocked 对齐 RateGuardService::codeSendBlocked（间隔 / 每日 / 同 IP 每小时三条）。
+//
+// 账号维度的间隔与每日上限永远生效；只有「同 IP 每小时」这一条在共享出口上跳过。
 func (h *Handler) codeSendBlocked(ctx context.Context, email, ip string, l rateLimits) (bool, error) {
+	// 先登记「该 IP 关联了该账号」：判定必须发生在**拦截之前**。
+	// 否则 code_ip 默认 20 次/小时，共享出口在关联到第 21 个账号时就被拦住，
+	// 后续请求进不到这里，账号集合永远长不到 50，检测等于形同虚设。
+	shared := h.sharedExits.observe(ip, email)
+
 	// 间隔：该键最多容 1 次命中，命中即「距上次发码还不到 interval 秒」。
 	if l.CodeInterval > 0 {
 		blocked, err := h.limiter.tooManyAttempts(ctx, keyCodeInterval(email), 1)
@@ -196,6 +383,11 @@ func (h *Handler) codeSendBlocked(ctx context.Context, email, ip string, l rateL
 	}
 	if blocked, err := h.limiter.tooManyAttempts(ctx, keyCodeDaily(email), l.CodePerDay); err != nil || blocked {
 		return blocked, err
+	}
+	// 共享出口：不判本次请求，同时清掉历史窗口里已累加的 code_ip ——
+	// 否则「判定前就被打满」的那段窗口会继续拦着整个出口到过期为止。
+	if shared {
+		return false, h.limiter.clear(ctx, keyCodeIP(ip))
 	}
 	return h.limiter.tooManyAttempts(ctx, keyCodeIP(ip), l.CodeIPHourly)
 }
@@ -211,6 +403,11 @@ func (h *Handler) recordCodeSend(ctx context.Context, email, ip string, l rateLi
 		if err := h.limiter.hit(ctx, keyCodeDaily(email), 24*time.Hour); err != nil {
 			return err
 		}
+	}
+	// 共享出口上不再累加 code_ip：继续加只会把已经打满的额度越推越远，
+	// 窗口过期后仍然拦着整个出口。账号已在上面的 codeSendBlocked 里登记过。
+	if h.sharedExits.observe(ip, email) {
+		return nil
 	}
 	if l.CodeIPHourly > 0 {
 		if err := h.limiter.hit(ctx, keyCodeIP(ip), time.Hour); err != nil {
@@ -251,11 +448,26 @@ func (h *Handler) clearLoginFailures(ctx context.Context, email, ip string) erro
 	return h.limiter.clear(ctx, keyLogin(email, ip))
 }
 
-func (h *Handler) registerBlocked(ctx context.Context, ip string, l rateLimits) (bool, error) {
+// registerBlocked 判「同 IP 每小时注册次数」。
+//
+// 被判定为共享出口的 IP 跳过这一条；账号维度由 handleRegister 后续的
+// 「邮箱已注册」兜住（一个邮箱只能注册一次），不受影响。
+//
+// 与 codeSendBlocked 同理，登记账号必须发生在拦截之前：register 默认 10 次/小时，
+// 否则共享出口在第 11 个账号处就被拦住，账号集合永远长不到阈值。
+func (h *Handler) registerBlocked(ctx context.Context, ip, email string, l rateLimits) (bool, error) {
+	if h.sharedExits.observe(ip, email) {
+		return false, h.limiter.clear(ctx, keyRegister(ip))
+	}
 	return h.limiter.tooManyAttempts(ctx, keyRegister(ip), l.RegisterIPHourly)
 }
 
-func (h *Handler) recordRegister(ctx context.Context, ip string, l rateLimits) error {
+// recordRegister 记一次注册请求。email 用于共享出口检测（入口处已解析可用）；
+// email 为空时不登记账号，检测结论退化为「该 IP 尚未关联任何账号」。
+func (h *Handler) recordRegister(ctx context.Context, ip, email string, l rateLimits) error {
+	if h.sharedExits.observe(ip, email) {
+		return nil
+	}
 	if l.RegisterIPHourly <= 0 {
 		return nil
 	}
@@ -292,7 +504,7 @@ func (h *Handler) clearRedeemFailures(ctx context.Context, ip string) error {
 
 // discount 阈值默认值：逐字取 config/panel.php 的 ratelimit 段。
 const (
-	defaultDiscountPerMinute   = 10
+	defaultDiscountPerMinute    = 10
 	defaultDiscountFailPerDay   = 50
 	defaultDiscountIPFailHourly = 100
 	defaultDiscountMaxAttempts  = 10
@@ -305,10 +517,16 @@ var siteConfigDiscountRateKeys = []string{
 	"rate_discount_fail_per_day", "rate_discount_ip_fail_hourly",
 }
 
-func keyDiscountMin(uid int64) string     { return ratePrefix + "discount_min:" + strconv.FormatInt(uid, 10) }
-func keyDiscountAttempt(uid int64) string { return ratePrefix + "discount_attempt:" + strconv.FormatInt(uid, 10) }
-func keyDiscountFail(uid int64) string    { return ratePrefix + "discount_fail:" + strconv.FormatInt(uid, 10) }
-func keyDiscountIPFail(ip string) string  { return ratePrefix + "discount_ip_fail:" + ip }
+func keyDiscountMin(uid int64) string {
+	return ratePrefix + "discount_min:" + strconv.FormatInt(uid, 10)
+}
+func keyDiscountAttempt(uid int64) string {
+	return ratePrefix + "discount_attempt:" + strconv.FormatInt(uid, 10)
+}
+func keyDiscountFail(uid int64) string {
+	return ratePrefix + "discount_fail:" + strconv.FormatInt(uid, 10)
+}
+func keyDiscountIPFail(ip string) string { return ratePrefix + "discount_ip_fail:" + ip }
 
 // discountRateGuard 实现 DiscountRateGuard 接口（PaymentService 注入）。
 type discountRateGuard struct {

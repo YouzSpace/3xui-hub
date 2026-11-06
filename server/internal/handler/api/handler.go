@@ -27,6 +27,7 @@ type Handler struct {
 	tokenTTL time.Duration
 
 	limiter        *rateLimiter
+	sharedExits    *sharedExitDetector // 共享出口（CDN 未还原真实 IP / 大 NAT）检测
 	captchaSecret  []byte
 	provisioner    Provisioner
 	protocolSwitch ProtocolSwitcher
@@ -99,6 +100,7 @@ func New(d Deps) *Handler {
 	}
 	h.limiter = newRateLimiter(d.Cache)
 	h.limiter.now = now
+	h.sharedExits = newSharedExitDetector(logger, now)
 	h.captchaSecret = captchaSecret(d.Config.AppKey)
 	return h
 }

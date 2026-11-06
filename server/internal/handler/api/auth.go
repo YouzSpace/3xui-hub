@@ -187,13 +187,13 @@ func (h *Handler) handleRegister(c *gin.Context) {
 	limits := h.loadRateLimits(ctx)
 
 	// 注册按 IP 限流，入口先卡一道；放行即记数（后面的校验失败分支同样占额度）。
-	if blocked, err := h.registerBlocked(ctx, ip, limits); err != nil {
+	if blocked, err := h.registerBlocked(ctx, ip, email, limits); err != nil {
 		h.logger.Printf("register 限流查询失败: %v", err)
 	} else if blocked {
 		failStatus(c, rateTooOftenMsg, 429, http.StatusTooManyRequests)
 		return
 	}
-	if err := h.recordRegister(ctx, ip, limits); err != nil {
+	if err := h.recordRegister(ctx, ip, email, limits); err != nil {
 		h.logger.Printf("register 记数失败: %v", err)
 	}
 

@@ -10,6 +10,7 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	logger := log.Default()
 	db := app.DB
 	cfg := app.Cfg
+
+	// 安全响应头：挂在最前面，保证后面所有响应（含 NoRoute 的 index.html、真实 404、
+	// API JSON）都带上 HSTS / XFO / nosniff / Referrer-Policy 与 Report-Only CSP。
+	r.Use(httpx.SecurityHeaders())
 
 	// 操作审计中间件（RecordOperationLog）：挂在全局，内部按路径过滤
 	opLog := httpx.NewOperationLogMiddleware(db, logger)
@@ -298,8 +303,21 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// 前端静态服务：生产由 go:embed 打进二进制（-tags=embed），本地开发从磁盘读 dist。
 	// dist 为空（只有 .gitkeep 占位、前端没构建）时返回 nil，下面的 NoRoute 退回 API 口径 404。
 	frontend := web.FrontendServer()
+	// 静态资源分支的包装器只构造一次：它在 NoRoute 里按请求复用，
+	// 不必每次请求都重新包一层（闭包分配虽小，但每个扫描器请求都会走到）。
+	var staticFrontend http.Handler
+	if frontend != nil {
+		staticFrontend = httpx.SPAFallbackNotFound(frontend)
+	}
 
 	// 管理端 404 兜底（PHP bootstrap/app.php 口径）
+	//
+	// 三类路径分开处理（2026-11-06 修「任意路径都回 200 + index.html」）：
+	//   1. /admin-api/*           → 管理端 JSON 口径 404
+	//   2. /api、/node-* 等后端路径 → API 口径 404（见 web.IsAPIPath）
+	//   3. 其它：只有**真正的前端路由**才回 index.html；静态资源类路径（带扩展名、
+	//      隐藏文件/目录）交给前端处理器后把 index.html 兜底改写成真实 404。
+	//      这样 /robots.txt、/.env、/backup.zip、/.git/config 不再伪装成 200。
 	r.NoRoute(func(c *gin.Context) {
 		p := c.Request.URL.Path
 		if len(p) >= 11 && p[:11] == "/admin-api/" {
@@ -311,8 +329,14 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			writeAPI404(c)
 			return
 		}
-		// 其余路径回 index.html，交给 Vue Router（刷新 /admin/users 这类深链不再 404）
-		frontend.ServeHTTP(c.Writer, c.Request)
+		if httpx.IsFrontendPath(p) {
+			// 真正的前端路由：回 index.html，交给 Vue Router
+			// （刷新 /admin/users、/dashboard/tutorial/3 这类深链不再 404）
+			frontend.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		// 静态资源类路径：dist 里有就照常发，没有就是真实 404
+		staticFrontend.ServeHTTP(c.Writer, c.Request)
 	})
 
 	return wsServer, mailDomain

@@ -105,7 +105,8 @@ if 'node-install' not in s:
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值（追加语义会把伪造地址留在首位）
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -167,7 +168,10 @@ PY
 
 # nginx 主配置路径（宝塔 / 原生两种）
 nginx_conf_path() {
-    if [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
+    # HUB_NGINX_CONF 仅供离线验证/特殊布局覆盖，正常部署不设置
+    if [ -n "${HUB_NGINX_CONF:-}" ]; then
+        echo "${HUB_NGINX_CONF}"
+    elif [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
         echo "/www/server/panel/vhost/nginx/3xui-hub.conf"
     else
         echo "/etc/nginx/conf.d/3xui-hub.conf"
@@ -200,7 +204,10 @@ render_nginx_conf() {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值。
+        # 追加语义会把伪造地址留在首位，后端取「第一个不可信段」就拿到伪造 IP，
+        # 按 IP 的限流（登录/发码/试码/注册/兑换码）可被清零重算。
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
@@ -212,7 +219,8 @@ render_nginx_conf() {
         proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值（追加语义会把伪造地址留在首位）
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -300,6 +308,118 @@ migrate_acme_webroot() {
             echo "ACME: 续期目录已迁移 ${dir}: ${old_webroot} → ${ACME_WEBROOT}"
         fi
     done
+    return 0
+}
+
+
+# 存量部署的安全写法迁移：XFF 覆盖语义 + 后端只听本机。
+#
+# 背景：install.sh 与 3hub 的模板已改成 `$remote_addr` 覆盖 + `LISTEN_ADDR=127.0.0.1:8080`，
+# 但老用户升级二进制后，磁盘上的 nginx conf / systemd unit 还是旧写法，本次安全修复对
+# 存量部署等于没生效：
+#   1. `$proxy_add_x_forwarded_for` 是追加语义，客户端自带的 X-Forwarded-For 会留在首位，
+#      后端取「第一个不可信段」就拿到伪造 IP —— 按 IP 的限流（登录/发码/试码/注册/兑换码）
+#      可被清零重算；
+#   2. `LISTEN_ADDR=:8080` / `0.0.0.0:8080` 把后端暴露到公网，攻击者可绕过 nginx 直连并
+#      自带 X-Forwarded-For 伪造来源 IP。
+# 幂等：已是新写法的文件不动、不备份、不 reload/restart；改前存 `.bak.<时间戳>`。
+# 失败只告警、不中断 update（迁移失败最坏维持现状，不该阻断面板升级）。
+#
+# 返回值约定（内部函数）：0=已改，1=无需改，2=出错。
+
+# _migrate_xff_in_file <conf> <时间戳>
+_migrate_xff_in_file() {
+    local conf="$1" stamp="$2"
+    [ -f "$conf" ] || return 1
+    grep -qF '$proxy_add_x_forwarded_for' "$conf" 2>/dev/null || return 1
+    cp -f "$conf" "${conf}.bak.${stamp}" 2>/dev/null || return 2
+    if ! sed -i 's/\$proxy_add_x_forwarded_for/\$remote_addr/g' "$conf" 2>/dev/null; then
+        cp -f "${conf}.bak.${stamp}" "$conf" 2>/dev/null || true
+        return 2
+    fi
+    return 0
+}
+
+# _migrate_listen_in_unit <unit> <时间戳>
+_migrate_listen_in_unit() {
+    local unit="$1" stamp="$2"
+    [ -f "$unit" ] || return 1
+    grep -Eq 'LISTEN_ADDR=(:8080|0\.0\.0\.0:8080)' "$unit" 2>/dev/null || return 1
+    cp -f "$unit" "${unit}.bak.${stamp}" 2>/dev/null || return 2
+    if ! sed -i -E 's/LISTEN_ADDR=(:8080|0\.0\.0\.0:8080)/LISTEN_ADDR=127.0.0.1:8080/g' "$unit" 2>/dev/null; then
+        cp -f "${unit}.bak.${stamp}" "$unit" 2>/dev/null || true
+        return 2
+    fi
+    return 0
+}
+
+# 扫描本脚本受管的 nginx conf（主 conf + 多域名 conf），就地替换 XFF 追加语义。
+# 只动自己维护的两份文件，不碰同目录下其它站点。
+migrate_nginx_xff() {
+    local main_conf dir conf stamp rc changed=0 failed=0
+    local -a changed_confs=()
+    main_conf="$(nginx_conf_path)"
+    dir="$(dirname "$main_conf")"
+    stamp="$(date +%Y%m%d%H%M%S)"
+    for conf in "${dir}/3xui-hub.conf" "${dir}/3xui-hub-domains.conf"; do
+        [ -f "$conf" ] || continue
+        _migrate_xff_in_file "$conf" "$stamp"
+        rc=$?
+        case "$rc" in
+            0) changed=$((changed + 1)); changed_confs+=("$conf") ;;
+            2) failed=$((failed + 1)) ;;
+        esac
+    done
+
+    if [ "$failed" -gt 0 ]; then
+        echo -e "${YELLOW}⚠ nginx XFF 迁移有 ${failed} 个文件处理失败，已保持原样${NC}"
+    fi
+    [ "$changed" -eq 0 ] && return 0
+
+    # 本机没有 nginx 可执行文件时无法校验（也不存在需要 reload 的进程），直接落盘即可；
+    # 替换本身是等语文档性改写，不引入新指令。有 nginx 则必须校验，不过就整批回滚。
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "Nginx: XFF 已改为覆盖语义（\$remote_addr），共 ${changed} 个文件（本机无 nginx，未校验）"
+        return 0
+    fi
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx >/dev/null 2>&1 || true
+        echo "Nginx: XFF 已改为覆盖语义（\$remote_addr），共 ${changed} 个文件"
+    else
+        # 语法校验不过就整批回滚 —— 迁移绝不能把站点弄挂
+        for conf in "${changed_confs[@]}"; do
+            mv -f "${conf}.bak.${stamp}" "$conf" 2>/dev/null || true
+        done
+        echo -e "${YELLOW}⚠ nginx XFF 迁移后 nginx -t 未通过，已回滚${NC}"
+    fi
+    return 0
+}
+
+# 把 controlhub.service 的监听地址收敛到 127.0.0.1:8080（覆盖 :8080 / 0.0.0.0:8080）。
+migrate_listen_addr() {
+    # HUB_SYSTEMD_UNIT 仅供离线验证覆盖，正常部署不设置
+    local unit="${HUB_SYSTEMD_UNIT:-/etc/systemd/system/controlhub.service}" stamp rc
+    stamp="$(date +%Y%m%d%H%M%S)"
+    _migrate_listen_in_unit "$unit" "$stamp"
+    rc=$?
+    [ "$rc" -eq 1 ] && return 0
+    if [ "$rc" -eq 2 ]; then
+        echo -e "${YELLOW}⚠ controlhub.service 监听地址迁移失败，已保持原样${NC}"
+        return 0
+    fi
+
+    systemctl daemon-reload >/dev/null 2>&1 \
+        || echo -e "${YELLOW}⚠ systemctl daemon-reload 失败，请手工执行${NC}"
+    systemctl restart controlhub >/dev/null 2>&1 \
+        || echo -e "${YELLOW}⚠ controlhub 重启失败，请运行: journalctl -u controlhub${NC}"
+    echo "controlhub.service: LISTEN_ADDR 已改为 127.0.0.1:8080（仅本机监听）"
+    return 0
+}
+
+# update 流程统一入口：任一步失败只告警，绝不中断 update。
+migrate_security_hardening() {
+    migrate_nginx_xff || true
+    migrate_listen_addr || true
     return 0
 }
 
@@ -867,7 +987,10 @@ Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}/server
 Environment=CONFIG_ENV=${ENV_FILE}
-Environment=LISTEN_ADDR=:8080
+# 只听本机：nginx 与本服务同机，反代走 127.0.0.1:8080。
+# 写成 :8080 等于把 8080 暴露到公网，攻击者可绕过 nginx 直连并自带 X-Forwarded-For 伪造来源 IP。
+# 确有必要对外直连时再显式改成 0.0.0.0:8080（注意此时务必同时设置 TRUSTED_PROXIES）。
+Environment=LISTEN_ADDR=127.0.0.1:8080
 ExecStart=${INSTALL_DIR}/server/controlhub-server
 Restart=always
 RestartSec=3
@@ -920,6 +1043,11 @@ EOF
     ensure_nginx_go_proxy
     # gzip 自愈（缓存头由 Go 输出：assets 长缓存、index.html no-cache）
     ensure_nginx_gzip
+    # 存量部署安全写法迁移：XFF 覆盖语义 + 后端只听 127.0.0.1。
+    # 上面重写主 conf 用的是新模板，但 3xui-hub-domains.conf 由 3hub-domain 维护
+    # （老版本助手仍写追加语义），且域名取不到时主 conf 会跳过重写 —— 所以必须再扫一遍兜底。
+    # 幂等：已迁过的文件不备份、不 reload/restart；失败只告警不中断 update。
+    migrate_security_hardening
     # 收尾自检：配置若仍是老形态（root 到 dist / try_files），明确提示而不是静默
     if nginx_conf_outdated; then
         echo -e "${YELLOW}⚠ nginx 配置仍是老形态（$(nginx_conf_path)），站点可能 404；请执行 3hub fix-nginx${NC}"
@@ -1465,6 +1593,13 @@ run_cmd() {
 
 # 实例数在命令分发前解析一次：status / restart / update / log 都读同一个 NODE_QUEUE_INSTANCES，
 # 覆盖文件或内存一变，全部自动跟随（不再需要手工同步脚本里的常量）。
+
+# 测试钩子（仅供离线验证，正常使用不会走到）：
+# `source 3hub` 时只加载函数定义、不执行下面的命令分发，便于对迁移函数做单测。
+# 正常执行（`bash 3hub ...` / `./3hub ...`）时 BASH_SOURCE[0] 与 $0 相同，不会提前 return。
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
 
 # 主逻辑
 if [ -n "$1" ]; then

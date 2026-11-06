@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -64,7 +65,10 @@ func main() {
 		log.Fatalf("初始化 collector 失败: %v", colErr)
 	}
 
-	addr := envOr("LISTEN_ADDR", ":8080")
+	// 默认只听本机：对外必须显式 LISTEN_ADDR=0.0.0.0:8080（或域名/IP）。
+	// 部署形态是 nginx 从本机反代到 127.0.0.1:8080，直接暴露 8080 到公网等于
+	// 给攻击者一条绕过 nginx、自己填 X-Forwarded-For 的旁路。
+	addr := envOr("LISTEN_ADDR", "127.0.0.1:8080")
 	router, wsServer, mailDomain := newRouter(app, col, tgSender)
 	srv := &http.Server{
 		Handler:           router,
@@ -133,6 +137,10 @@ func newRouter(app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender)
 	}
 
 	r := gin.New()
+	// gin.New() 默认把 0.0.0.0/0、::/0 全列为可信代理，等于「谁都能用
+	// X-Forwarded-For 自报 IP」；按 IP 计的限流（登录/发码/试码/注册/兑换码）
+	// 因此能被伪造头清零重算。这里显式收敛成「只信本机反代」。
+	applyProxyTrust(r, log.Printf)
 	r.Use(gin.Logger(), gin.Recovery())
 
 	// 路由注册随迁移阶段逐步接入（handler/api、handler/admin）。
@@ -140,6 +148,95 @@ func newRouter(app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender)
 	wsServer, mailDomain := registerRoutes(r, app, col, tgSender)
 
 	return r, wsServer, mailDomain
+}
+
+// defaultTrustedProxies 是未设置 TRUSTED_PROXIES 时的可信代理白名单。
+// 部署形态固定为「本机 nginx 反代到 127.0.0.1:8080」，所以只认本机回环地址：
+// 只有这两跳递上来的 X-Forwarded-For / X-Real-IP 才可能是 nginx 写的。
+var defaultTrustedProxies = []string{"127.0.0.1", "::1"}
+
+// applyProxyTrust 显式设置 gin 的可信代理，堵住 X-Forwarded-For 伪造：
+// 只有「直连来源」落在可信代理名单内时，gin 才会采信 XFF/X-Real-IP；
+// 其余请求的 ClientIP() 一律取 TCP 对端地址，伪造头不再生效。
+//
+// 名单来源：TRUSTED_PROXIES（逗号分隔的 IP 或 CIDR，如 `127.0.0.1,10.0.0.0/8`），
+// 未设置用 defaultTrustedProxies。配错（IP/CIDR 非法）时**不退回全信任**，
+// 而是改用「不信任任何代理头」并打日志 —— 宁可让审计/限流看到 nginx 的 IP，
+// 也不能让公网请求自带 XFF 直接改写来源。
+//
+// 确实要关掉转发头采信时，把 TRUSTED_PROXIES 设成单个用不到的地址即可
+// （如 `0.0.0.0/32`），效果等价于 SetTrustedProxies(nil)。
+func applyProxyTrust(r *gin.Engine, logf func(string, ...any)) {
+	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
+
+	proxies := defaultTrustedProxies
+	source := "默认（本机回环）"
+	if raw != "" {
+		proxies = splitProxies(raw)
+		source = "TRUSTED_PROXIES"
+		if len(proxies) == 0 {
+			applyNoTrustedProxies(r, logf, "TRUSTED_PROXIES 为空（只有逗号/空白）")
+			return
+		}
+	}
+
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		// gin 是按顺序解析的：非法项之前的项已经生效，后面的没有。
+		// 直接再来一次 nil 覆盖成「不信任任何代理」，避免半截名单留在引擎里。
+		applyNoTrustedProxies(r, logf, fmt.Sprintf("%s=%q 解析失败: %v", source, raw, err))
+		return
+	}
+	// 0.0.0.0/0 或 ::/0 等于 gin 的出厂默认「谁都是可信代理」，正是这次要堵的洞。
+	// 有人这么配基本是照抄了老配置，按配错处理：宁可少采信一层代理头，也不能全放开。
+	if open := openCIDRs(proxies); len(open) > 0 {
+		applyNoTrustedProxies(r, logf,
+			fmt.Sprintf("%s=%q 包含全网段 %v（等于信任任何来源的转发头）", source, raw, open))
+		return
+	}
+	logf("[proxy] 可信代理=%v（来源：%s），仅这些直连来源的 X-Forwarded-For / X-Real-IP 会被采信", proxies, source)
+}
+
+// openCIDRs 返回名单里前缀长度为 0 的网段（0.0.0.0/0、::/0）。
+// 这类网段中包含所有地址，意味着任何直连来源都会被当成可信代理。
+func openCIDRs(proxies []string) []string {
+	var open []string
+	for _, p := range proxies {
+		s := p
+		if !strings.Contains(s, "/") {
+			// 裸 IP 按 gin 的口径补全成 /32 或 /128，前缀一定非 0，跳过即可。
+			continue
+		}
+		_, cidr, err := net.ParseCIDR(s)
+		if err != nil {
+			continue // 非法项交给 SetTrustedProxies 报错，这里不重复判
+		}
+		if ones, _ := cidr.Mask.Size(); ones == 0 {
+			open = append(open, s)
+		}
+	}
+	return open
+}
+
+// applyNoTrustedProxies 把引擎切到「不信任任何代理头」，ClientIP() 只会返回 TCP 对端地址。
+// SetTrustedProxies(nil) 会把 trustedCIDRs 置空，isTrustedProxy 恒为 false。
+func applyNoTrustedProxies(r *gin.Engine, logf func(string, ...any), reason string) {
+	if err := r.SetTrustedProxies(nil); err != nil {
+		// nil 不会走 CIDR 解析，正常不可能失败；真失败就没别的兜底了，必须吼出来。
+		logf("[proxy] 严重：关闭可信代理失败（%v），ClientIP 仍可能采信转发头，原因：%s", err, reason)
+		return
+	}
+	logf("[proxy] 警告：已退回「不信任任何代理头」，ClientIP 只取 TCP 对端地址（原因：%s）", reason)
+}
+
+// splitProxies 拆分逗号分隔的代理名单，去掉空白项与空串。
+func splitProxies(raw string) []string {
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {
@@ -317,6 +414,19 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		if err := cmdRunner.Run(context.Background(), "retention:purge",
 			map[string]string{"--dry-run": dry}); err != nil {
 			log.Printf("[retention] 出错: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// 一次性运维入口：立刻跑一轮节点对账后退出（定时任务每 5 分钟跑同一套逻辑）：
+	//
+	//	controlhub-server --reconcile-once
+	//
+	// 给「改了节点/用户、想立刻对账验证」和「排查对账问题」的场景用，不用等 5 分钟窗口。
+	if len(os.Args) > 1 && os.Args[1] == "--reconcile-once" {
+		if err := cmdRunner.Run(context.Background(), "users:reconcile-enable", nil); err != nil {
+			log.Printf("[reconcile] 出错: %v", err)
 			os.Exit(1)
 		}
 		os.Exit(0)

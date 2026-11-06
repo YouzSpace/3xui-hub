@@ -349,7 +349,10 @@ Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}/server
 Environment=CONFIG_ENV=${INSTALL_DIR}/.env
-Environment=LISTEN_ADDR=:8080
+# 只听本机：nginx 与本服务同机，反代走 127.0.0.1:8080。
+# 写成 :8080 等于把 8080 暴露到公网，攻击者可绕过 nginx 直连并自带 X-Forwarded-For 伪造来源 IP。
+# 确有必要对外直连时再显式改成 0.0.0.0:8080（注意此时务必同时设置 TRUSTED_PROXIES）。
+Environment=LISTEN_ADDR=127.0.0.1:8080
 ExecStart=${INSTALL_DIR}/server/controlhub-server
 Restart=always
 RestartSec=3
@@ -620,6 +623,42 @@ setup_nginx() {
     mkdir -p /var/www/acme/.well-known/acme-challenge
     chmod 755 /var/www /var/www/acme 2>/dev/null || true
 
+    # 真实客户端 IP 还原（set_real_ip_from 只对 CF 来源生效）
+    # 前面挂着 Cloudflare 时 $remote_addr 是 CF 边缘节点，真客户端在 CF-Connecting-IP。
+    # 只在来源确实落在 CF 网段时才还原；别家来源伪造 CF 头不会被采信。
+    # 网段清单见 https://www.cloudflare.com/ips/ —— CF 加段后这条不会放大伪造面，
+    # 只会让新段来的请求退化成按 CF 边缘 IP 计数。
+    SET_REAL_IP_BLOCK='# controlhub: 还原 Cloudflare 后的真实客户端 IP（网段来源 https://www.cloudflare.com/ips/）
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;
+real_ip_recursive on;'
+    # 单独放一个 conf.d 文件：set_real_ip_from / real_ip_header 是 http/server/location 级指令，
+    # 放在这里让整机所有站点都受益（ws 的 /node-ws 与本面板共用）。zz- 前缀只是让它在列表里靠后，
+    # 指令本身不受加载顺序影响。
+    REAL_IP_CONF="${REAL_IP_CONF:-${NGINX_CONF_DIR}zz-cloudflare-realip.conf}"
+    printf '%s\n' "$SET_REAL_IP_BLOCK" > "$REAL_IP_CONF"
+
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
 # controlhub: nginx 仅反代（前端 / 接口 / 节点资产全部由 Go 内置服务提供）
@@ -672,8 +711,11 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值。
+        # 用 $proxy_add_x_forwarded_for 会把伪造地址留在首位，后端取「第一个不可信段」
+        # 就拿到伪造 IP，按 IP 的限流（登录/发码/试码/注册/兑换码）可被清零重算。
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
@@ -685,8 +727,11 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host \$host;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值。
+        # 用 $proxy_add_x_forwarded_for 会把伪造地址留在首位，后端取「第一个不可信段」
+        # 就拿到伪造 IP，按 IP 的限流（登录/发码/试码/注册/兑换码）可被清零重算。
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
@@ -728,8 +773,11 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值。
+        # 用 $proxy_add_x_forwarded_for 会把伪造地址留在首位，后端取「第一个不可信段」
+        # 就拿到伪造 IP，按 IP 的限流（登录/发码/试码/注册/兑换码）可被清零重算。
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
@@ -741,8 +789,11 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host \$host;
+        # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值。
+        # 用 $proxy_add_x_forwarded_for 会把伪造地址留在首位，后端取「第一个不可信段」
+        # 就拿到伪造 IP，按 IP 的限流（登录/发码/试码/注册/兑换码）可被清零重算。
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 

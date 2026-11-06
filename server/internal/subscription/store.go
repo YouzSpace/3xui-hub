@@ -147,8 +147,19 @@ const userColumns = "id, token, uuid, protocol, plan_id, traffic_limit, traffic_
 	"monthly_traffic_used, monthly_traffic_limit, next_traffic_reset_at, expired_at, enabled"
 
 // UserByToken 按 users.token 精确查询（PHP：User::where('token', $token)->first()）。
+//
+// **大小写敏感**：users.token 是 `utf8mb4_unicode_ci`（见 schema/schema.sql），
+// 裸写 `token = ?` 会让 'ABCDEF' 命中 'abcdef' —— 实测全大写/仅前缀大写都能拿到完整订阅。
+// 这里用 `BINARY ?` 强制按字节比较。
+//
+// 为什么选 BINARY 而不是 `... COLLATE utf8mb4_bin`：
+//   - 两种写法实测都仍走 users_token_unique 唯一索引（type=range / rows=1），不会退化成全表扫描；
+//   - COLLATE 会把比较环境的排序规则一并改成 _bin，属于副作用更大的改法；
+//     BINARY 只把**这一个比较值**转成二进制，语义最小、最贴合「按字节相等」的意图。
+//
+// 不要退回 LIKE / LOWER()：LIKE 会把 % _ 当通配符，LOWER() 会让索引失效。
 func (r *SQLRepository) UserByToken(ctx context.Context, token string) (*User, error) {
-	row := r.DB.QueryRowContext(ctx, "SELECT "+userColumns+" FROM users WHERE token = ? LIMIT 1", token)
+	row := r.DB.QueryRowContext(ctx, "SELECT "+userColumns+" FROM users WHERE token = BINARY ? LIMIT 1", token)
 	return r.scanUser(row)
 }
 

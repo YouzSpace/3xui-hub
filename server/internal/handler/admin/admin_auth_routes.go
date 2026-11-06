@@ -6,6 +6,7 @@ package admin
 // login 在 AdminAuth 中间件之外（登录前无需 session）；其余在组内。
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
@@ -13,6 +14,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -24,14 +26,44 @@ import (
 
 // AdminAuthRoutes 持有管理端认证 handler 的依赖。
 type AdminAuthRoutes struct {
-	app *httpx.App
-	db  *sql.DB
-	now func() time.Time
+	app  *httpx.App
+	db   *sql.DB
+	now  func() time.Time
+	auth *loginGuard
+	// lookupAdmin 按用户名取登录所需凭据；查不到返回 (nil, nil)。
+	// 默认实现查 admins 表，单测替换成内存实现（不连库）。
+	lookupAdmin func(ctx context.Context, username string) (*adminCredentials, error)
+}
+
+// adminCredentials 是登录校验要用到的管理员凭据快照。
+type adminCredentials struct {
+	ID               uint64
+	Username         string
+	PasswordHash     string
+	Google2FAEnabled bool
+	Google2FASecret  sql.NullString
 }
 
 // NewAdminAuthRoutes 构造管理端认证 handler。
 func NewAdminAuthRoutes(app *httpx.App, db *sql.DB) *AdminAuthRoutes {
-	return &AdminAuthRoutes{app: app, db: db, now: time.Now}
+	h := &AdminAuthRoutes{app: app, db: db, now: time.Now, auth: newLoginGuardFromEnv()}
+	h.lookupAdmin = h.queryAdminByUsername
+	return h
+}
+
+// queryAdminByUsername 是 lookupAdmin 的生产实现。
+func (h *AdminAuthRoutes) queryAdminByUsername(ctx context.Context, username string) (*adminCredentials, error) {
+	var creds adminCredentials
+	err := h.db.QueryRowContext(ctx,
+		"SELECT id, username, password, google2fa_enabled, google2fa_secret FROM admins WHERE username = ?",
+		username).Scan(&creds.ID, &creds.Username, &creds.PasswordHash, &creds.Google2FAEnabled, &creds.Google2FASecret)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &creds, nil
 }
 
 // RegisterLogin 挂 POST /admin-api/login（无需 AdminAuth 中间件）。
@@ -50,7 +82,7 @@ func (h *AdminAuthRoutes) RegisterAuthed(r gin.IRouter) {
 	r.POST("/google2fa/disable", h.Google2faDisable)
 }
 
-// Login 对齐 AuthController::login。
+// Login 对齐 AuthController::login（外加登录失败限流与锁定，见 login_guard.go）。
 func (h *AdminAuthRoutes) Login(c *gin.Context) {
 	var body struct {
 		Username string `json:"username"`
@@ -62,44 +94,66 @@ func (h *AdminAuthRoutes) Login(c *gin.Context) {
 		return
 	}
 
-	var (
-		id               uint64
-		username         string
-		passwordHash     string
-		google2faEnabled bool
-		google2faSecret  sql.NullString
-	)
-	err := h.db.QueryRowContext(c.Request.Context(),
-		"SELECT id, username, password, google2fa_enabled, google2fa_secret FROM admins WHERE username = ?",
-		body.Username).Scan(&id, &username, &passwordHash, &google2faEnabled, &google2faSecret)
-	if err == sql.ErrNoRows {
-		h.fail(c, "账号或密码错误", 401)
+	ip := c.ClientIP()
+	// 判锁排在查库之前：限流/锁定期内连正确密码也拒，也不做任何凭据比对
+	// （爆破方拿不到「密码对了」这个信号，账号是否存在同样不泄露）。
+	// 先判后记：第 N+1 次请求被判限，本次不再计入 IP 窗口（否则窗口会被自己越推越满）。
+	if locked, retryAfter := h.auth.blocked(ip, body.Username); locked {
+		h.failLocked(c, retryAfter)
 		return
 	}
+	// 每次放行的登录尝试都计入 IP 的分钟窗口（成功失败都算，见 recordAttempt）。
+	h.auth.recordAttempt(ip)
+
+	creds, err := h.lookupAdmin(c.Request.Context(), body.Username)
 	if err != nil {
 		h.fail(c, "服务器错误", 500)
 		return
 	}
-
-	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(body.Password)) != nil {
-		h.fail(c, "账号或密码错误", 401)
+	// 账号不存在与密码错误共用同一条文案、同一个计数（不泄露账号是否存在）。
+	if creds == nil {
+		h.loginFailure(c, ip, body.Username, "账号或密码错误")
 		return
 	}
 
-	if google2faEnabled && google2faSecret.Valid && google2faSecret.String != "" {
+	if bcrypt.CompareHashAndPassword([]byte(creds.PasswordHash), []byte(body.Password)) != nil {
+		h.loginFailure(c, ip, body.Username, "账号或密码错误")
+		return
+	}
+
+	if creds.Google2FAEnabled && creds.Google2FASecret.Valid && creds.Google2FASecret.String != "" {
 		if body.OTP == "" {
-			h.fail(c, "请输入验证码", 401)
+			h.loginFailure(c, ip, body.Username, "请输入验证码")
 			return
 		}
-		if !verifyTOTP(google2faSecret.String, body.OTP, h.now()) {
-			h.fail(c, "验证码错误", 401)
+		if !verifyTOTP(creds.Google2FASecret.String, body.OTP, h.now()) {
+			h.loginFailure(c, ip, body.Username, "验证码错误")
 			return
 		}
 	}
 
-	h.app.SetAdminSession(c, id)
+	h.auth.clear(ip, body.Username)
+	h.app.SetAdminSession(c, creds.ID)
 	writeJSON(c, phpEncode(jo("code", 0, "msg", "登录成功", "data",
-		jo("admin", jo("id", id, "username", username)))))
+		jo("admin", jo("id", creds.ID, "username", creds.Username)))))
+}
+
+// loginFailure 记一次失败（两个维度各一次）并按原口径回 401。
+// 第 N 次失败本身仍回 401；紧接的第 N+1 次才会被判锁回 429（外部验收口径）。
+func (h *AdminAuthRoutes) loginFailure(c *gin.Context, ip, username, msg string) {
+	h.auth.recordFailure(ip, username)
+	h.fail(c, msg, 401)
+}
+
+// failLocked 输出锁定期的 429：body code 与 HTTP status 都是 429
+// （外部扫描器/网关按 http status 判定，前端仍可读 body code）。
+func (h *AdminAuthRoutes) failLocked(c *gin.Context, retryAfter time.Duration) {
+	secs := int(retryAfter/time.Second) + 1 // 向上取整，至少 1 秒
+	if secs < 1 {
+		secs = 1
+	}
+	c.Data(http.StatusTooManyRequests, "application/json; charset=utf-8",
+		phpEncode(jo("code", 429, "msg", fmt.Sprintf("登录失败次数过多，请 %d 秒后再试", secs), "data", nil)))
 }
 
 // Logout 对齐 AuthController::logout。
