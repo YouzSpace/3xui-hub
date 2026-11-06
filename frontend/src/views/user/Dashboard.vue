@@ -25,7 +25,8 @@ const fmtBytes = (b) => {
   const u = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
   const raw = Math.floor(Math.log(b) / Math.log(1024))
   const i = Math.max(0, Math.min(raw, u.length - 1));
-  return `${(b / Math.pow(1024, i)).toFixed(i ? 2 : 0)} ${u[i]}`;
+  // 数字与单位之间不空格（用户 2026-11-06 定）：48.82GB 而不是 48.82 GB
+  return `${(b / Math.pow(1024, i)).toFixed(i ? 2 : 0)}${u[i]}`;
 };
 
 const regionFlags = {
@@ -532,15 +533,11 @@ onUnmounted(() => {
       <div class="db-foot">
         <div v-if="showResetCountdown && !hideTraffic" class="db-foot-item">
           <UserIcon name="clock" :size="14" />
-          <span
-            >重置日期：<b>{{ resetDateLabel }}</b></span
-          >
+          <span>重置日期：<b>{{ resetDateLabel }}</b></span>
         </div>
         <div class="db-foot-item">
           <span class="db-foot-dot"></span>
-          <span
-            >到期：<b>{{ expiredLabel }}</b></span
-          >
+          <span>到期：<b>{{ expiredLabel }}</b></span>
         </div>
       </div>
     </section>
@@ -851,7 +848,8 @@ onUnmounted(() => {
 .db-remaining {
   margin: 0;
   font-size: 13px;
-  color: var(--lbl3);
+  color: var(--lbl1); /* 「剩余」和数字都用主文字色（用户 2026-11-06 定）：lbl3 太浅看不清 */
+  font-weight: 600;
 }
 .db-remaining-num {
   color: var(--lbl1);
@@ -902,6 +900,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--sep);
 }
@@ -911,6 +910,17 @@ onUnmounted(() => {
   gap: 6px;
   font-size: 12px;
   color: var(--lbl3);
+  /* 窄屏两项同行不折行：放不下时文字收缩省略，图标/圆点不缩 */
+  white-space: nowrap;
+  min-width: 0;
+}
+.db-foot-item svg {
+  flex-shrink: 0;
+}
+.db-foot-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .db-foot-item b {
   color: var(--lbl2);
@@ -1251,10 +1261,6 @@ onUnmounted(() => {
   .db-clients {
     grid-template-columns: 1fr;
   }
-  .db-foot {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
+  /* 窄屏：脚注两项仍同行（white-space:nowrap + 收缩），不再竖排折行 */
 }
 </style>

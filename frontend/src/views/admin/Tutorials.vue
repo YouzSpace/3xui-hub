@@ -69,7 +69,7 @@ const categoryOptions = computed(() => {
 
 /** Markdown 实时预览（与用户端 TutorialDetail 同一渲染链：marked + DOMPurify）。 */
 const previewHtml = computed(() => {
-  if (!form.value.content?.trim()) return '<p class="tut-preview-empty">（暂无内容，左侧输入即时预览）</p>'
+  if (!form.value.content?.trim()) return '<p class="tut-preview-empty">（暂无内容，先输入再点预览）</p>'
   return DOMPurify.sanitize(marked.parse(form.value.content))
 })
 

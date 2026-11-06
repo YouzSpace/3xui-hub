@@ -54,7 +54,7 @@ onMounted(async () => {
 .td-content {
   background: var(--bg1, #fff);
   border-radius: 0;
-  padding: 16px;
+  padding: 16px 12px;
 }
 @media (min-width: 768px) {
   .td-content {

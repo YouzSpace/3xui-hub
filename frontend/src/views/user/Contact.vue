@@ -2,7 +2,7 @@
 /**
  * Contact — 用户端「反馈与联系」二级页。
  *
- * 数据：GET /api/site-config 的 feedback_links（后台「网站信息」页维护），
+ * 数据：GET /api/site-config 的 feedback_links（后台「公告与联系」页维护），
  * JSON 数组 [{title, type, url}]：
  *   - type=link：一行，点击整行 window.open 跳转
  *   - type=qr  ：一行带二维码图片（URL 直接 <img>），点击弹大图（长按保存）
@@ -10,12 +10,11 @@
  * feedback_links 未配置 / 为空 → 显示空态（More 页此时也不会把入口换成二级页）。
  */
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { userApi } from '@/api/user'
 import ListGroup from '@/components/user/ListGroup.vue'
 import ListRow from '@/components/user/ListRow.vue'
 import UserIcon from '@/components/user/UserIcon.vue'
 
-const router = useRouter()
 const items = ref([])
 const loaded = ref(false)
 
@@ -41,9 +40,9 @@ const parsed = computed(() => {
 
 onMounted(async () => {
   try {
-    const res = await fetch('/api/site-config')
-    const body = await res.json()
-    items.value = body?.data?.feedback_links || ''
+    // client.js 拦截器已剥掉 {code,data} 壳，返回的直接是配置对象
+    const cfg = await userApi.siteConfig()
+    items.value = cfg?.feedback_links || ''
   } catch {
     items.value = ''
   } finally {

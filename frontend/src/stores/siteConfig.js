@@ -13,6 +13,7 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     register_email_verify: false,
     announcement: '',
     feedback_link: '',
+    feedback_links: '',
   })
   const loaded = ref(false)
 

@@ -159,6 +159,17 @@ const onSave = async () => {
   gap: 8px;
   margin-bottom: 8px;
 }
+/* 窄屏：一行放不下 6 个元素，拆两行（标题+类型 / URL+操作） */
+@media (max-width: 640px) {
+  .ann-fb-row {
+    flex-wrap: wrap;
+  }
+  .ann-fb-title { flex: 1 1 calc(60% - 8px); }
+  .ann-fb-type { width: auto; flex: 0 0 calc(40% - 8px); }
+  .ann-fb-url { flex: 1 1 100%; order: 3; }
+  .ann-fb-row .ann-fb-move:first-of-type { order: 4; margin-left: auto; }
+  .ann-fb-row .ann-fb-del { order: 6; }
+}
 .ann-fb-title { flex: 1.1; }
 .ann-fb-type {
   padding: 8px 10px;
@@ -168,6 +179,7 @@ const onSave = async () => {
   color: var(--text-primary);
   font-size: var(--text-sm);
   font-family: inherit;
+  flex: 0 0 auto;
 }
 .ann-fb-url { flex: 1.6; }
 .ann-fb-move,
@@ -181,6 +193,7 @@ const onSave = async () => {
   cursor: pointer;
   font-size: 13px;
   transition: all 0.2s;
+  flex: 0 0 auto;
 }
 .ann-fb-move:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .ann-fb-move:disabled { opacity: 0.4; cursor: default; }
