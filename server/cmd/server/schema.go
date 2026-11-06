@@ -113,6 +113,9 @@ func ensureSchema(db *sql.DB) error {
 	// 独立加密列存密文，stream_settings 里只留 {"type":"salamander"} 占位。
 	columns := []struct{ table, column, definition string }{
 		{"xray_inbounds", "salamander_password", "text COLLATE utf8mb4_unicode_ci"},
+		// client_host：某些入站要走 CDN（客户端连 CDN 域名，回源才连节点地址），
+		// 订阅链接里的地址需要按入站覆盖节点地址；空 = 维持原行为。
+		{"xray_inbounds", "client_host", "varchar(255) COLLATE utf8mb4_unicode_ci"},
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
 	}
 	for _, c := range columns {

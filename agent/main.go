@@ -76,6 +76,7 @@ func main() {
 		reg, err = hub.Register(context.Background(), RegisterBody{
 			XrayVersion:  st.XrayVersion,
 			AgentVersion: agentVersion,
+			AgentSHA:     binarySHA(p),
 			KernelArch:   st.KernelArch,
 			Hostname:     hostname(),
 		})
@@ -128,6 +129,7 @@ func wsMainLoop(p Paths, st *State, reg *RegisterInfo, wsState *atomic.Pointer[w
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		err := client.connect(ctx, map[string]any{
 			"agent_version":  agentVersion,
+			"agent_sha":      binarySHA(p),
 			"xray_version":   st.XrayVersion,
 			"kernel_arch":    st.KernelArch,
 			"hostname":       hostname(),

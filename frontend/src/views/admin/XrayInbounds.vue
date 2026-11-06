@@ -114,6 +114,8 @@ const emptyForm = () => ({
   remark: '',
   port: 443,
   listen: '0.0.0.0',
+  // 客户端连接地址（可选）：填了订阅链接就用它（CDN 域名等），端口仍用本入站端口
+  client_host: '',
   network: 'tcp',
   security: 'reality',
   dest: 'www.cloudflare.com:443',
@@ -244,12 +246,24 @@ const ADDRESS_FAMILIES = [
 const listenOptions = computed(() => {
   const cur = form.value.listen
   const known = ADDRESS_FAMILIES.some((o) => o.value === cur)
-  if (known || !cur) return ADDRESS_FAMILIES
-  return [...ADDRESS_FAMILIES, { label: `保留原值（${cur}）`, value: cur }]
+  const base = known || !cur ? ADDRESS_FAMILIES : [...ADDRESS_FAMILIES, { label: `保留原值（${cur}）`, value: cur }]
+  // 「自定义」= 绑定地址不动，单独指定订阅链接里给客户端用的地址（CDN 域名 / 另一个 IP）。
+  return [...base, { label: '自定义（客户端连接地址，如 CDN 域名）', value: 'custom' }]
 })
+// 「自定义客户端连接地址」是一个独立的编辑态：选了就显示输入框，值存在 form.client_host。
+// 不能用 client_host 是否为空反推 —— 选了但还没填时会立刻弹回原选项，输入框根本出不来。
+const customAddress = ref(false)
 const listenFamily = computed({
-  get: () => form.value.listen,
-  set: (v) => { form.value.listen = v },
+  get: () => (customAddress.value ? 'custom' : form.value.listen),
+  set: (v) => {
+    if (v === 'custom') {
+      customAddress.value = true // 绑定地址保持不变，只打开下面的自定义地址输入
+      return
+    }
+    customAddress.value = false
+    form.value.client_host = ''
+    form.value.listen = v
+  },
 })
 const isTls = computed(() => form.value.security === 'tls')
 const isWs = computed(() => form.value.network === 'ws')
@@ -531,6 +545,9 @@ const certOptions = computed(() => [
   }),
 ])
 
+// 证书库里有没有「覆盖当前 serverName」的证书（HY2 下拉用来提示「先签发」）。
+const hasFittingCert = computed(() => certOptions.value.some((o) => o.value && !o.disabled))
+
 // 选中项自己可能已经不匹配了（先选证书、后改 SNI）：显式点名，别让人以为一切正常
 const selectedCertProblem = computed(() => {
   const id = form.value.tls_cert_id
@@ -639,6 +656,24 @@ const bestPemCert = () => {
   return latestExpiry(matched.length ? matched : usable)
 }
 
+// 当前域名在证书库里有没有能用的证书：没有就留空并提示先签发，
+// 不要让一张域名不匹配的旧证书继续顶在框里（保存后客户端按 SNI 必握手失败）。
+const pemCertPlaceholder = computed(() =>
+  pemPickable.value.length ? '选一张证书' : '当前域名没有可用证书，先点上方「签发证书」',
+)
+
+// 改了 serverName（或换了节点）之后，原来选中的证书可能已经覆盖不到新域名：清掉重选。
+// 覆盖不到时留着它只会误导人 —— 显示框里还是那张证书，实际连不上。
+watch(certTargetHost, () => {
+  const stillFits = (id) => {
+    if (!id) return true
+    const c = certificates.value.find((x) => Number(x.id) === Number(id))
+    return !!c && certFits(c)
+  }
+  if (!stillFits(pemCertId.value)) pemCertId.value = null
+  if (!stillFits(form.value.tls_cert_id)) form.value.tls_cert_id = null
+})
+
 const fillTlsPemFromLibrary = async () => {
   if (pemFilling.value) return
   if (!certificates.value.length) {
@@ -672,47 +707,50 @@ const fillTlsPemFromLibrary = async () => {
 }
 
 // ── 远程签发证书（面板下发 cert_issue，节点跑 acme.sh，成功后写回证书库）──
-// 域名取节点 host：HTTP-01 要求 Let's Encrypt 能从 80 端口打到这台节点，IP 签不出来。
-const nodeHostIsIp = computed(() => {
-  const h = nodeHost.value
+// 签发域名跟 TLS serverName 走：证书必须覆盖客户端握手用的 SNI，否则签了也握不上手。
+// 只有 serverName 留空时才回落节点 host（老行为）；IP 一律不签（Let's Encrypt 不发 IP 证书）。
+const certSignDomain = computed(() => bareHost(form.value.tls_server_name) || nodeHost.value)
+const certSignDomainIsIp = computed(() => {
+  const h = certSignDomain.value
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || (h.includes(':') && !h.includes('.'))
 })
 const issuingCert = ref(false)
 
 const issueNodeCert = async () => {
   if (issuingCert.value) return
-  if (!nodeId.value || !nodeHost.value) {
-    toast.error('先选节点，并确认节点地址填的是域名')
+  const domain = certSignDomain.value
+  if (!nodeId.value || !domain) {
+    toast.error('先选节点，并在 TLS serverName 里填要签的域名（或把节点地址填成域名）')
     return
   }
-  if (nodeHostIsIp.value) {
-    toast.error(`节点地址是 IP（${nodeHost.value}）：Let's Encrypt 不签 IP，先把节点地址改成域名`)
+  if (certSignDomainIsIp.value) {
+    toast.error(`签发域名是 IP（${domain}）：Let's Encrypt 不签 IP，请把 TLS serverName 改成解析到本节点的域名`)
     return
   }
   issuingCert.value = true
   try {
     const res = await adminApi.issueXrayCertificate({
       node_id: Number(nodeId.value),
-      domain: nodeHost.value,
+      domain,
       method: 'http-01',
     })
     await loadCertificates()
     // 新条目 id 优先取回执；后端只回路径时，按域名在刷新后的库里取到期最晚的那张
     let newId = res?.certificate?.id
     if (!newId) {
-      const hit = certificates.value.filter((c) => certCoversHost(c.domain, nodeHost.value))
+      const hit = certificates.value.filter((c) => certCoversHost(c.domain, domain))
       newId = hit.length ? latestExpiry(hit).id : null
     }
     if (newId) {
-      // HY2 认证书 id，TLS 入站认内联 PEM：两条路各自接上，用户不用再点一次
+      // HY2 认证书 id；TLS 入站只把它选进「证书库条目」（引用），不自动灌 PEM ——
+      // 默认保存的是引用；要用内联 PEM 的人自己点「从证书库填充 PEM」。
       if (isHy.value) form.value.tls_cert_id = newId
       else pemCertId.value = newId
     }
     const notAfter = res?.certificate?.not_after || res?.not_after
     toast.success(
-      `已签发 ${nodeHost.value} 的证书${notAfter ? `（到期 ${String(notAfter).slice(0, 10)}）` : ''}，已写入证书库`,
+      `已签发 ${domain} 的证书${notAfter ? `（到期 ${String(notAfter).slice(0, 10)}）` : ''}，已写入证书库`,
     )
-    if (newId && !isHy.value) await fillTlsPemFromLibrary()
   } catch (e) {
     toast.error(e.message || '签发失败')
   } finally {
@@ -723,6 +761,7 @@ const issueNodeCert = async () => {
 const openCreate = () => {
   editing.value = null
   form.value = emptyForm()
+  customAddress.value = false
   advOpen.value = false
   loadCertificates().then(() => {
     pemCertId.value = bestPemCert()?.id ?? null
@@ -732,12 +771,14 @@ const openCreate = () => {
 
 const openEdit = (ib) => {
   editing.value = ib
+  customAddress.value = !!String(ib.client_host || '').trim()
   form.value = {
     protocol: ib.protocol,
     tag: ib.tag,
     remark: ib.remark || '',
     port: ib.port,
     listen: ib.listen || '0.0.0.0',
+    client_host: ib.client_host || '',
     network: ib.network || 'tcp',
     security: ib.security || 'none',
     dest: ib.dest || 'www.cloudflare.com:443',
@@ -851,7 +892,9 @@ const openEdit = (ib) => {
   }
   advOpen.value = false
   loadCertificates().then(() => {
-    pemCertId.value = bestPemCert()?.id ?? null
+    // 编辑已有入站：优先回显它引用的那张（续签就是按这个 id 找节点的）；
+    // 没引用（老的内联 PEM 用法）才按域名挑一张。
+    pemCertId.value = form.value.tls_cert_id ?? bestPemCert()?.id ?? null
   })
   modalOpen.value = true
 }
@@ -1084,6 +1127,22 @@ const applyScan = () => {
 
 const save = async (forceServerNames = false) => {
   if (!nodeId.value) return
+  // 选了「自定义客户端地址」就必须填一个地址（留空等于没选，却挡住用户不知道怎么办）
+  if (customAddress.value && !String(form.value.client_host || '').trim()) {
+    toast.error('地址族选了「自定义」：请在下面填入 CDN 域名或 IP，或把地址族改回 IPv4/IPv6')
+    return
+  }
+  // TLS 入站（非 HY2）必须能落一张证书：引用证书库（推荐）或手填 PEM。
+  // 引用证书库才能进续签链（tlsCertId），只填 PEM 时后端会按内容自动入库并补上引用。
+  if (isTls.value && !isHy.value) {
+    const hasRef = !!pemCertId.value
+    const hasPem =
+      !!String(form.value.tls_certificate || '').trim() && !!String(form.value.tls_key || '').trim()
+    if (!hasRef && !hasPem) {
+      toast.error('TLS 入站需要先选一张证书库证书（或点上方「签发证书」），也可以手填证书与私钥')
+      return
+    }
+  }
   // 后量子材料成对校验（前后端同守）：只在一边填会让 REALITY 握手失败
   if (isReality.value) {
     const seed = (form.value.mldsa65_seed || '').trim()
@@ -1102,6 +1161,7 @@ const save = async (forceServerNames = false) => {
       remark: form.value.remark || null,
       port: Number(form.value.port),
       listen: form.value.listen,
+      client_host: String(form.value.client_host || '').trim(),
       network: form.value.network,
       security: form.value.security,
       enabled: form.value.enabled,
@@ -1199,6 +1259,9 @@ const save = async (forceServerNames = false) => {
         payload.tls_certificate = form.value.tls_certificate
         payload.tls_key = form.value.tls_key
       }
+      // TLS 入站一律引用证书库（与 HY2 同一条续签链）：选中条目 → 只存 tlsCertId，PEM 可留空；
+      // 没选但贴了 PEM → 后端按内容匹配/入库后自动补上引用。
+      if (!isHy.value && pemCertId.value) payload.tls_cert_id = Number(pemCertId.value)
     }
     if (isSs.value) {
       payload.ss_method = form.value.ss_method
@@ -1429,8 +1492,17 @@ const clientLabel = (ib) => {
         </label>
         <p class="an-hint">
           选 IPv6（<code>::</code>）后，订阅链接里的地址改用节点表单填的「服务器 IPv6 地址」；
-          没填时仍回落到主地址。选 IPv4 则行为与以前一致。
+          没填时仍回落到主地址。选「自定义」则不改绑定地址，只把订阅链接里的地址换成下面填的地址（CDN 场景）。
         </p>
+        <template v-if="customAddress">
+          <label class="an-field">
+            <span>客户端连接地址（CDN 域名 / 另一个 IP；端口仍是本入站端口）</span>
+            <Input v-model="form.client_host" mono placeholder="如 cdn.example.com" />
+          </label>
+          <p class="an-hint">
+            客户端连这个地址，回源才连节点。证书 serverName、WS Host 仍按本入站自己的配置走。
+          </p>
+        </template>
         <label class="an-field">
           <span>标识 tag（留空自动生成，同节点内唯一；仅字母/数字/下划线/连字符）</span>
           <Input v-model="form.tag" placeholder="如 vless-reality" />
@@ -1753,6 +1825,32 @@ const clientLabel = (ib) => {
             <span>TLS serverName</span>
             <Input v-model="form.tls_server_name" placeholder="your.domain.com" />
           </label>
+
+          <!-- 远程签发：面板给裸内核节点下发 cert_issue，节点侧跑 acme.sh（HTTP-01），
+               成功后后端把 PEM 写进证书库。签发域名跟上面的 serverName 走（证书必须覆盖客户端
+               握手用的 SNI），只有 serverName 留空才回落节点 host；签完自动选到下方（HY2）
+               或回填两个框（TLS）。 -->
+          <div class="an-section-title">
+            <span>节点证书签发</span>
+            <span class="an-section-actions">
+              <Button
+                size="sm"
+                variant="secondary"
+                :disabled="!certSignDomain || certSignDomainIsIp || issuingCert"
+                :loading="issuingCert"
+                @click="issueNodeCert"
+              >
+                <Icon name="shield" :size="14" /> 签发证书
+              </Button>
+            </span>
+          </div>
+          <p class="an-hint">
+            按 <code>{{ certSignDomain || '（未填域名）' }}</code> 向 Let's Encrypt 申请一张证书：
+            HTTP-01 校验，这个域名要能解析到本节点、节点的 80 端口要能从公网打到本机，签发要等几十秒。
+            签好自动写进「TLS 证书库」并用于本表单。
+            <template v-if="certSignDomainIsIp">当前填的是 IP，Let's Encrypt 不签 IP，请先把 serverName 改成域名。</template>
+          </p>
+
           <!-- 证书 PEM 只对 TLS 入站（vless/trojan）有意义：后端 security==tls && protocol!=hysteria
                时才读 tls_certificate / tls_key。HY2 完全不读这两个框（只认 tlsCertId），
                显示出来会误导人以为必须手贴 → HY2 下一律隐藏。 -->
@@ -1772,50 +1870,31 @@ const clientLabel = (ib) => {
               </span>
             </div>
             <label class="an-field">
-              <span>证书库条目（只用于回填，不写进入站配置）</span>
-              <Select v-model="pemCertId" :options="pemCertOptions" placeholder="选一张证书" />
+              <span>证书库条目（引用证书库；选中后 PEM 可留空）</span>
+              <Select v-model="pemCertId" :options="pemCertOptions" :placeholder="pemCertPlaceholder" />
             </label>
+            <p v-if="!pemPickable.length" class="an-hint">
+              证书库里没有能用于 <code>{{ certTargetHost || '当前域名' }}</code> 的证书（没有、已过期或域名不匹配）：
+              先点上方「签发证书」签一张，签完会自动填进来。
+            </p>
             <div class="an-grid">
               <label class="an-field">
-                <span>证书 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '' }}</span>
+                <span>证书 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '（引用证书库时可留空）' }}</span>
                 <textarea v-model="form.tls_certificate" class="an-textarea" rows="3" placeholder="-----BEGIN CERTIFICATE-----" />
               </label>
               <label class="an-field">
-                <span>私钥 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '' }}</span>
+                <span>私钥 PEM{{ editing && editing.has_tls_cert ? '（不改留空）' : '（引用证书库时可留空）' }}</span>
                 <textarea v-model="form.tls_key" class="an-textarea" rows="3" placeholder="-----BEGIN PRIVATE KEY-----" />
               </label>
             </div>
             <p class="an-hint">
-              两个框可以手贴，也可以选一张证书库条目后点「从证书库填充 PEM」：回填的是解密后的证书与私钥，
-              保存后与手贴完全一样（私钥不会出现在证书库列表接口里，只有点按钮时才单独取一次）。
+              选中证书库条目 = 引用（推荐）：PEM 可以留空，续签由证书库统一处理、节点自动重拉；
+              手贴 PEM 也行，保存时会按内容写进证书库并自动挂上引用，之后同样自动续签。
             </p>
           </template>
           <p v-else class="an-hint">
             HY2 不读内联 PEM：证书走下方「TLS 证书库」引用，入站里只存证书 id、私钥留在库里。
             上面的 serverName 就是客户端握手用的域名，填对之后点证书区的「自动填充证书」即可挑到匹配的那张。
-          </p>
-
-          <!-- 远程签发：面板给裸内核节点下发 cert_issue，节点侧跑 acme.sh（HTTP-01），
-               成功后后端把 PEM 写进证书库。签完自动选到上面（HY2）或回填两个框（TLS）。 -->
-          <div class="an-section-title">
-            <span>节点证书签发</span>
-            <span class="an-section-actions">
-              <Button
-                size="sm"
-                variant="secondary"
-                :disabled="!nodeHost || nodeHostIsIp || issuingCert"
-                :loading="issuingCert"
-                @click="issueNodeCert"
-              >
-                <Icon name="shield" :size="14" /> 签发证书
-              </Button>
-            </span>
-          </div>
-          <p class="an-hint">
-            按节点域名 <code>{{ nodeHost || '（未填）' }}</code> 向 Let's Encrypt 申请一张证书：
-            HTTP-01 校验，节点的 80 端口要能从公网打到本机，签发要等几十秒。签好自动写进
-            「TLS 证书库」并用于本表单。
-            <template v-if="nodeHostIsIp">当前节点地址是 IP，Let's Encrypt 不签 IP，先把节点地址改成域名。</template>
           </p>
         </template>
 
@@ -1971,6 +2050,9 @@ const clientLabel = (ib) => {
             再回来这里选。
           </p>
           <p v-if="selectedCertProblem" class="an-hint">{{ selectedCertProblem }}</p>
+          <p v-if="certificates.length && !hasFittingCert" class="an-hint">
+            没有覆盖 <code>{{ certTargetHost }}</code> 的证书：先点上方「签发证书」签一张，签完会自动选中。
+          </p>
           <p v-if="certificates.length" class="an-hint">
             灰色条目的证书域名覆盖不到
             <code>{{ certTargetHost || '当前节点' }}</code>

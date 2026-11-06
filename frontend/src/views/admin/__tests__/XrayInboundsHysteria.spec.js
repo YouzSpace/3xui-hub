@@ -345,7 +345,7 @@ describe('XrayInbounds — 证书三项（#103）', () => {
  * 证书库回填 PEM + 远程签发：
  *   ① TLS 入站（vless/trojan）多一个「从证书库填充 PEM」，选中条目 → 取解密 PEM → 填满两个框
  *   ② HY2 分支不出现这个按钮（它没有 PEM 框，走证书 id 引用）
- *   ③ 「签发证书」按节点域名下发 cert_issue；节点是 IP 时禁用并说清原因
+ *   ③ 「签发证书」按 TLS serverName 下发 cert_issue（留空才回落节点域名）；serverName 是 IP 时禁用并说清原因
  */
 describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
   const mountWithCerts = async (certs, host = 'https://tls1.example.com:2053/panel') => {
@@ -408,7 +408,7 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     expect(document.body.textContent).toContain('节点证书签发')
   })
 
-  it('签发证书：域名节点调 issue，新证书回填两个框', async () => {
+  it('签发证书：调 issue，只选中证书库条目，不自动填 PEM', async () => {
     const wrapper = await mountWithCerts([tlsCert])
     await openTls(wrapper)
 
@@ -418,7 +418,6 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
     }
     adminApi.issueXrayCertificate.mockResolvedValue({ certificate: issued })
     adminApi.listXrayCertificates.mockResolvedValue({ certificates: [tlsCert, issued] })
-    adminApi.getXrayCertificatePem.mockResolvedValue({ cert_pem: 'CERT-PEM', key_pem: 'KEY-PEM' })
 
     wrapper.vm.issueNodeCert()
     await flushPromises()
@@ -428,21 +427,143 @@ describe('XrayInbounds — 证书库回填 PEM 与远程签发', () => {
       domain: 'tls1.example.com',
       method: 'http-01',
     })
-    // 列表刷新后按回执 id 取 PEM 回填
-    expect(adminApi.getXrayCertificatePem).toHaveBeenCalledWith(8)
-    expect(wrapper.vm.form.tls_certificate).toBe('CERT-PEM')
-    expect(wrapper.vm.form.tls_key).toBe('KEY-PEM')
+    // 默认保存「引用」，不动 PEM 两个框（要用内联 PEM 的人自己点「从证书库填充 PEM」）
+    expect(adminApi.getXrayCertificatePem).not.toHaveBeenCalled()
+    expect(wrapper.vm.form.tls_certificate).toBe('')
+    expect(wrapper.vm.form.tls_key).toBe('')
+    expect(wrapper.vm.pemCertId).toBe(8)
   })
 
-  it('节点地址是 IP：签发按钮禁用，点了也不发请求', async () => {
+  it('签发域名是 IP：按钮禁用，点了也不发请求', async () => {
     const wrapper = await mountWithCerts([], 'http://203.0.113.9:2053')
     await openTls(wrapper)
 
-    expect(wrapper.vm.nodeHostIsIp).toBe(true)
+    // serverName 留空 → 回落节点 host（IP），不该能签
+    expect(wrapper.vm.certSignDomain).toBe('203.0.113.9')
+    expect(wrapper.vm.certSignDomainIsIp).toBe(true)
     wrapper.vm.issueNodeCert()
     await flushPromises()
 
     expect(adminApi.issueXrayCertificate).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalled()
+  })
+
+  it('serverName 与节点域名不同：按 serverName 签发（不自动填 PEM）', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+
+    wrapper.vm.form.tls_server_name = 'v6.efu.top'
+    await flushPromises()
+    expect(wrapper.vm.certSignDomain).toBe('v6.efu.top')
+
+    const issued = {
+      id: 11, name: 'v6.efu.top', domain: 'v6.efu.top', source: 'manual',
+      has_cert: true, has_key: true, not_after: '2099-05-01T00:00:00Z',
+    }
+    adminApi.issueXrayCertificate.mockResolvedValue({ certificate: issued })
+    adminApi.listXrayCertificates.mockResolvedValue({ certificates: [tlsCert, issued] })
+
+    wrapper.vm.issueNodeCert()
+    await flushPromises()
+
+    expect(adminApi.issueXrayCertificate).toHaveBeenCalledWith({
+      node_id: 1,
+      domain: 'v6.efu.top',
+      method: 'http-01',
+    })
+    expect(adminApi.getXrayCertificatePem).not.toHaveBeenCalled()
+    expect(wrapper.vm.form.tls_certificate).toBe('')
+    expect(wrapper.vm.pemCertId).toBe(11)
+  })
+
+  it('改 serverName 后旧证书不再匹配：清空选择并提示先签发', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+
+    // 打开时按节点域名自动选中 tls1.example.com 那张
+    expect(wrapper.vm.pemCertId).toBe(7)
+
+    wrapper.vm.form.tls_server_name = 'wu.top'
+    await flushPromises()
+
+    expect(wrapper.vm.pemCertId).toBeNull()
+    expect(wrapper.vm.pemCertPlaceholder).toContain('先点上方')
+  })
+
+  it('HY2 改 serverName 后，不匹配的已选证书同样被清空', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    wrapper.vm.openCreate()
+    await flushPromises()
+    wrapper.vm.form.protocol = 'hysteria'
+    await flushPromises()
+
+    wrapper.vm.form.tls_cert_id = 7
+    await flushPromises()
+    wrapper.vm.form.tls_server_name = 'wu.top'
+    await flushPromises()
+
+    expect(wrapper.vm.form.tls_cert_id).toBeNull()
+  })
+
+  it('TLS 入站可以只引用证书库（PEM 留空），保存时带 tls_cert_id', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+    adminApi.createXrayInbound.mockResolvedValue({ id: 1 })
+
+    await wrapper.vm.save()
+    await flushPromises()
+
+    expect(adminApi.createXrayInbound).toHaveBeenCalled()
+    const payload = adminApi.createXrayInbound.mock.calls[0][1]
+    expect(payload.tls_cert_id).toBe(7)
+    expect(payload.tls_certificate).toBeUndefined()
+    expect(payload.tls_key).toBeUndefined()
+  })
+
+  it('地址族选「自定义」：输入框出现，保存时带上 client_host', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+
+    // 选中「自定义」就必须保持这个态（不能因为 client_host 还空着就弹回去）
+    wrapper.vm.listenFamily = 'custom'
+    await flushPromises()
+    expect(wrapper.vm.customAddress).toBe(true)
+    expect(wrapper.vm.listenFamily).toBe('custom')
+    expect(document.body.textContent).toContain('客户端连接地址')
+
+    wrapper.vm.form.client_host = 'cdn.example.com'
+    adminApi.createXrayInbound.mockResolvedValue({ id: 1 })
+    await wrapper.vm.save()
+    await flushPromises()
+
+    const payload = adminApi.createXrayInbound.mock.calls[0][1]
+    expect(payload.client_host).toBe('cdn.example.com')
+    expect(payload.listen).toBe('0.0.0.0')
+  })
+
+  it('选了「自定义」却没填地址：拦下不发请求', async () => {
+    const wrapper = await mountWithCerts([tlsCert])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+    wrapper.vm.listenFamily = 'custom'
+    await flushPromises()
+
+    await wrapper.vm.save()
+
+    expect(adminApi.createXrayInbound).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalled()
+  })
+
+  it('TLS 入站既没引用也没 PEM：拦下不发请求', async () => {
+    const wrapper = await mountWithCerts([])
+    await openTls(wrapper)
+    wrapper.vm.form.port = 8443
+
+    await wrapper.vm.save()
+
+    expect(adminApi.createXrayInbound).not.toHaveBeenCalled()
     expect(toast.error).toHaveBeenCalled()
   })
 })

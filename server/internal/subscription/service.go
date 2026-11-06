@@ -319,10 +319,14 @@ func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repos
 	uris := make([]string, 0, len(inbounds))
 	for _, inbound := range inbounds {
 		// 用户全协议通用：节点上启用的每个入站都出一条链接，不按 users.protocol 过滤。
-		inboundHost, ok := subscriptionHostFor(host, hostV6, inbound.Listen)
-		if !ok {
-			// 两个地址都空 / v6 入站但只有 v4 地址：跳过，绝不产出 "host:port" 残缺链接。
-			continue
+		inboundHost := strings.TrimSpace(inbound.ClientHost)
+		if inboundHost == "" {
+			var ok bool
+			inboundHost, ok = subscriptionHostFor(host, hostV6, inbound.Listen)
+			if !ok {
+				// 两个地址都空 / v6 入站但只有 v4 地址：跳过，绝不产出 "host:port" 残缺链接。
+				continue
+			}
 		}
 		uris = append(uris, xrayInboundURI(node, inbound, user, inboundHost))
 	}

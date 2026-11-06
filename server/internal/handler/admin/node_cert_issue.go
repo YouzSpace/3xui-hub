@@ -104,6 +104,10 @@ func (d *NodeDomain) certIssue(c *gin.Context) {
 	}
 
 	payload := jo("domain", domain, "method", method)
+	if inputBool(input["force"]) {
+		// 立即重签：让 agent 给 acme.sh 带 --force（否则 acme 认为没到期会直接跳过）。
+		payload.put("force", true)
+	}
 	if email := strings.TrimSpace(nodeStringField(input, "email")); email != "" {
 		payload.put("email", email)
 	}

@@ -13,7 +13,9 @@ package admin
 // 失败只记原因不抛（避免整条定时任务标红），下次触发再试。
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -71,7 +73,7 @@ func certRenewDue(notAfter *time.Time, now time.Time, windowDays int) bool {
 
 // RenewDueCertificates 扫证书库，对进入续签窗口的证书逐个续签（定时任务入口）。
 func (d *NodeDomain) RenewDueCertificates(ctx context.Context) (CertRenewResult, error) {
-	return d.renewCertificates(ctx, certRenewBeforeDays(), false)
+	return d.renewCertificates(ctx, certRenewBeforeDays(), false, false)
 }
 
 // RenewAllReferencedCertificates 忽略续签窗口，立刻把所有「有入站引用、且不由面板机 acme.sh
@@ -79,11 +81,13 @@ func (d *NodeDomain) RenewDueCertificates(ctx context.Context) (CertRenewResult,
 //
 // 用途：把「手工导入」的证书一次性切到自动续签轨道（运维入口 --renew-certs-once）。
 func (d *NodeDomain) RenewAllReferencedCertificates(ctx context.Context) (CertRenewResult, error) {
-	return d.renewCertificates(ctx, 0, true)
+	return d.renewCertificates(ctx, 0, true, true)
 }
 
 // renewCertificates 是续签主流程；force=true 时忽略窗口（立刻把这批证书重签一遍）。
-func (d *NodeDomain) renewCertificates(ctx context.Context, windowDays int, force bool) (CertRenewResult, error) {
+// acmeForce=true 时会要求 agent 给 acme.sh 带 --force（节点上证书还没到期也能重签），
+// 用于手工触发；定时任务传 false，交给 acme.sh 自己的到期判断。
+func (d *NodeDomain) renewCertificates(ctx context.Context, windowDays int, force, acmeForce bool) (CertRenewResult, error) {
 	res := CertRenewResult{}
 	certs, err := d.store.XrayCertificates(ctx)
 	if err != nil {
@@ -118,13 +122,14 @@ func (d *NodeDomain) renewCertificates(ctx context.Context, windowDays int, forc
 		}
 		res.Due++
 
-		ids := refs[c.ID]
-		if len(ids) == 0 {
+		refsForCert := refs[c.ID]
+		if len(refsForCert) == 0 {
 			res.Skipped++
 			res.note("证书「%s」到期前 %d 天内，但没有任何入站引用它 —— 不知去哪台节点续签，跳过",
 				c.Name, windowDays)
 			continue
 		}
+		ids := refNodeIDs(refsForCert)
 		target := d.pickCertRenewNode(&c, ids, nodes)
 		if target == nil {
 			res.Skipped++
@@ -136,14 +141,23 @@ func (d *NodeDomain) renewCertificates(ctx context.Context, windowDays int, forc
 			domain = normalizeCertDomain(target.Host)
 		}
 
-		if err := d.renewCertificateOnNode(ctx, target, &c, domain); err != nil {
+		certPEM, keyPEM, err := d.renewCertificateOnNode(ctx, target, &c, domain, acmeForce)
+		if err != nil {
 			res.Failed++
 			res.note("证书「%s」在节点 %s 续签失败：%v", c.Name, target.Name, err)
 			continue
 		}
 		res.Renewed++
 
-		// 续签只换了库里的 PEM：必须让引用它的节点重新拉配置，否则内核还用旧证书直到下次无关变更。
+		// 把新 PEM 刷回引用它的 TLS 入站（HY2 没有内联段，跳过）：
+		// 老的「只贴 PEM」入站也会在这里补上 tlsCertId，从此按引用续签。
+		for _, ref := range refsForCert {
+			if err := d.refreshInboundCertificate(ctx, ref, c.ID, certPEM, keyPEM); err != nil {
+				res.note("入站 #%d 的内联证书刷新失败：%v", ref.InboundID, err)
+			}
+		}
+
+		// 续签换了库里的 PEM：必须让引用它的节点重新拉配置，否则内核还用旧证书。
 		for _, nid := range ids {
 			if _, err := d.store.BumpConfigVersion(ctx, nid); err != nil {
 				res.note("续签后 bump 节点 #%d 配置版本失败：%v", nid, err)
@@ -171,32 +185,98 @@ func (r *CertRenewResult) note(format string, args ...any) {
 	r.Reasons = append(r.Reasons, fmt.Sprintf(format, args...))
 }
 
-// certRefNodes 汇总「证书 id → 引用它的节点 id 列表」。
+// certInboundRef 是一条「证书 ← 入站」引用（节点 + 入站 id）。
 //
-// 引用关系藏在入站的 stream_settings.tlsSettings.tlsCertId 里（JSON），
-// 逐节点读入站解析：节点只有个位数，不做额外 SQL 抽象更省事。
-func (d *NodeDomain) certRefNodes(ctx context.Context) (map[uint64][]uint64, error) {
+// 除了显式 tlsCertId，老的内联 PEM 用法也按「证书内容匹配」收进来：
+// 它们同样要能续签，续签时顺手补上 tlsCertId 并刷新内联 PEM。
+type certInboundRef struct {
+	NodeID    uint64
+	InboundID uint64
+}
+
+// certRefNodes 汇总「证书 id → 引用它的入站」。
+//
+// 两条来源：
+//  1. 入站 stream_settings.tlsSettings.tlsCertId（HY2 与新版 TLS 入站都走这条）；
+//  2. 只有内联 certificates、没有 tlsCertId 的老 TLS 入站：按证书 PEM 内容匹配库里同一张。
+func (d *NodeDomain) certRefNodes(ctx context.Context) (map[uint64][]certInboundRef, error) {
+	certs, err := d.store.XrayCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byPEM := make(map[string]uint64, len(certs))
+	for i := range certs {
+		if k := normalizePEMText(certs[i].CertPEM); k != "" {
+			byPEM[k] = certs[i].ID
+		}
+	}
+
 	nodes, _, err := d.store.NodesPage(ctx, true, 1, 500)
 	if err != nil {
 		return nil, err
 	}
-	out := map[uint64][]uint64{}
+	out := map[uint64][]certInboundRef{}
 	for _, n := range nodes {
 		inbounds, err := d.store.XrayInboundsByNode(ctx, n.ID)
 		if err != nil {
 			return nil, err
 		}
-		seen := map[uint64]bool{}
-		for _, ib := range inbounds {
+		for i := range inbounds {
+			ib := &inbounds[i]
 			id := certIDOfInbound(ib.StreamSettings)
-			if id == 0 || seen[id] {
+			if id == 0 && ib.Protocol != "hysteria" {
+				if pem := inlineCertOfStream(ib.StreamSettings); pem != "" {
+					id = byPEM[normalizePEMText(pem)]
+				}
+			}
+			if id == 0 {
 				continue
 			}
-			seen[id] = true
-			out[id] = append(out[id], n.ID)
+			out[id] = append(out[id], certInboundRef{NodeID: n.ID, InboundID: ib.ID})
 		}
 	}
 	return out, nil
+}
+
+// refNodeIDs 把引用去重成节点 id 列表（续签选点与 bump 用）。
+func refNodeIDs(refs []certInboundRef) []uint64 {
+	out := make([]uint64, 0, len(refs))
+	seen := map[uint64]bool{}
+	for _, r := range refs {
+		if seen[r.NodeID] {
+			continue
+		}
+		seen[r.NodeID] = true
+		out = append(out, r.NodeID)
+	}
+	return out
+}
+
+// shouldRewriteInlineCert 判断续签后要不要把新 PEM 写回这个入站：
+// 只有本来就有内联证书的（老用法）才回写；引用式入站没有 PEM 段，保持没有。
+func shouldRewriteInlineCert(stream []byte) bool {
+	return inlineCertOfStream(stream) != ""
+}
+
+// inlineCertOfStream 取 TLS 入站内联证书的第一张（老用法判重用；HY2 没有这个字段）。
+func inlineCertOfStream(stream []byte) string {
+	if len(stream) == 0 {
+		return ""
+	}
+	var doc struct {
+		TLSSettings struct {
+			Certificates []struct {
+				Certificate []string `json:"certificate"`
+			} `json:"certificates"`
+		} `json:"tlsSettings"`
+	}
+	if err := json.Unmarshal(stream, &doc); err != nil {
+		return ""
+	}
+	if len(doc.TLSSettings.Certificates) == 0 || len(doc.TLSSettings.Certificates[0].Certificate) == 0 {
+		return ""
+	}
+	return doc.TLSSettings.Certificates[0].Certificate[0]
 }
 
 // nodeRecordsByID 读全量节点，按 id 建索引（选目标节点用）。
@@ -242,22 +322,25 @@ func (d *NodeDomain) pickCertRenewNode(cert *XrayCertificate, ids []uint64, node
 //   - 用 context 而非 gin 上下文；
 //   - 失败以 error 返回给调用方汇总，不写 HTTP 响应；
 //   - 同样要求回执带 cert_pem / key_pem（面板读不到节点磁盘）。
-func (d *NodeDomain) renewCertificateOnNode(ctx context.Context, node *NodeRecord, cert *XrayCertificate, domain string) error {
+func (d *NodeDomain) renewCertificateOnNode(ctx context.Context, node *NodeRecord, cert *XrayCertificate, domain string, force bool) (string, string, error) {
 	payload := jo("domain", domain, "method", certRenewMethod)
+	if force {
+		payload.put("force", true)
+	}
 	out := d.runNodeCommandWait(ctx, node, "cert_issue", payload, d.cfg.CertIssueWait)
 	switch {
 	case out.FailErr != nil:
-		return fmt.Errorf("%s: %w", out.FailOp, out.FailErr)
+		return "", "", fmt.Errorf("%s: %w", out.FailOp, out.FailErr)
 	case out.Pending:
-		return fmt.Errorf("节点 %d 秒内未回执（签发还在跑或节点离线）", d.cfg.CertIssueWait)
+		return "", "", fmt.Errorf("节点 %d 秒内未回执（签发还在跑或节点离线）", d.cfg.CertIssueWait)
 	case out.ErrMsg != "":
-		return fmt.Errorf("%s", out.ErrMsg)
+		return "", "", fmt.Errorf("%s", out.ErrMsg)
 	}
 
 	certPEM := strings.TrimSpace(jsonGetString(out.Result, "cert_pem"))
 	keyPEM := strings.TrimSpace(jsonGetString(out.Result, "key_pem"))
 	if !strings.Contains(certPEM, "BEGIN CERTIFICATE") || !strings.Contains(keyPEM, "PRIVATE KEY") {
-		return fmt.Errorf("回执里没有 PEM（只回了路径）—— 该 agent 版本不支持把证书交给面板，需先升级 agent")
+		return "", "", fmt.Errorf("回执里没有 PEM（只回了路径）—— 该 agent 版本不支持把证书交给面板，需先升级 agent")
 	}
 
 	in := XrayCertificateInput{Name: cert.Name, CertPEM: certPEM, KeyPEM: keyPEM}
@@ -266,12 +349,71 @@ func (d *NodeDomain) renewCertificateOnNode(ctx context.Context, node *NodeRecor
 		in.Domain = &dm
 	}
 	if err := d.store.UpdateXrayCertificate(ctx, cert.ID, in); err != nil {
-		return fmt.Errorf("写回证书库失败: %w", err)
+		return "", "", fmt.Errorf("写回证书库失败: %w", err)
 	}
 	if d.logger != nil {
 		d.logger.Printf("证书自动续签：%s（id=%d）已由节点 %s 重签并覆盖入库", cert.Name, cert.ID, node.Name)
 	}
-	return nil
+	return certPEM, keyPEM, nil
+}
+
+// refreshInboundCertificate 把续签后的 PEM 写回入站：
+//   - 内联 certificates 换成新证书（老用法不再拿旧 PEM 握手）；
+//   - 补/更新 tlsCertId，让下一轮续签直接按引用找到它。
+//
+// HY2 入站没有内联段，直接跳过（渲染时本来就按 tlsCertId 从库里取）。
+func (d *NodeDomain) refreshInboundCertificate(ctx context.Context, ref certInboundRef, certID uint64, certPEM, keyPEM string) error {
+	ib, err := d.store.XrayInboundByID(ctx, ref.NodeID, ref.InboundID)
+	if err != nil {
+		return err
+	}
+	if ib.Protocol == "hysteria" {
+		return nil
+	}
+	if !shouldRewriteInlineCert(ib.StreamSettings) {
+		// 引用式入站（stream_settings 里没写内联 PEM）：只更新证书库，不往里塞 PEM。
+		// 没配置内联 PEM 的入站保持没有，避免凭空多出一份证书副本。
+		return nil
+	}
+	raw, err := applyCertificateToStream(ib.StreamSettings, certID, certPEM, keyPEM)
+	if err != nil {
+		return err
+	}
+	in := XrayInboundInput{
+		NodeID:         ib.NodeID,
+		Tag:            ib.Tag,
+		Remark:         ib.Remark,
+		Protocol:       ib.Protocol,
+		Port:           ib.Port,
+		Listen:         ib.Listen,
+		Settings:       ib.Settings,
+		StreamSettings: raw,
+		Sniffing:       ib.Sniffing,
+	}
+	_, err = d.store.UpdateXrayInbound(ctx, ib.ID, in)
+	return err
+}
+
+// applyCertificateToStream 把一张证书写进入站的 stream_settings：
+// 内联 certificates 换成新 PEM，tlsCertId 指向库行，其它字段（serverName / wsSettings…）原样保留。
+func applyCertificateToStream(stream []byte, certID uint64, certPEM, keyPEM string) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(stream))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("stream_settings 解析失败: %w", err)
+	}
+	tls, _ := doc["tlsSettings"].(map[string]any)
+	if tls == nil {
+		tls = map[string]any{}
+		doc["tlsSettings"] = tls
+	}
+	tls["tlsCertId"] = certID
+	tls["certificates"] = []any{map[string]any{
+		"certificate": []string{certPEM},
+		"key":         []string{keyPEM},
+	}}
+	return json.Marshal(doc)
 }
 
 // xrayCertificateRenew 手动触发自动续签（与每日定时任务同一套实现）。
@@ -302,7 +444,7 @@ func (d *NodeDomain) xrayCertificateRenew(c *gin.Context) {
 		return
 	}
 
-	res, err := d.RenewDueCertificates(ctxOf(c))
+	res, err := d.renewCertificates(ctxOf(c), certRenewBeforeDays(), false, inputBool(input["force"]))
 	if err != nil {
 		d.failServer(c, "自动续签", err)
 		return
@@ -357,7 +499,7 @@ func (d *NodeDomain) planCertRenew(ctx context.Context) (*certRenewPlan, error) 
 			continue
 		}
 		plan.result.Due++
-		ids := refs[c.ID]
+		ids := refNodeIDs(refs[c.ID])
 		target := d.pickCertRenewNode(&c, ids, nodes)
 		nodeName := ""
 		if target != nil {

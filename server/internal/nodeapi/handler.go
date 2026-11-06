@@ -217,7 +217,7 @@ func (h *Handler) Register(c *gin.Context) {
 	data, _ := mapToPlain(body).(map[string]any)
 
 	cfg := Object{}
-	for _, k := range []string{"xray_version", "agent_version", "kernel_arch", "hostname"} {
+	for _, k := range []string{"xray_version", "agent_version", "agent_sha", "kernel_arch", "hostname"} {
 		if s, ok := data[k].(string); ok && s != "" {
 			cfg.Set(k, s)
 		}
