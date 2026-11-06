@@ -49,10 +49,20 @@ onMounted(async () => {
 <style scoped>
 .td { padding-top: 8px; }
 
+/* 手机阅读页贴边（用户 2026-11-06 定）：外层 ul-scroll 已把左右边距归零，
+   这里卡片改为直角贴边、去外框阴影；桌面（≥768px）恢复圆角卡片+内边距 */
 .td-content {
-  background: #fff; border: 1px solid rgba(0,0,0,0.04);
-  border-radius: 16px; padding: 12px;
-  box-shadow: 0 2px 12px -2px rgba(0,0,0,0.06);
+  background: var(--bg1, #fff);
+  border-radius: 0;
+  padding: 16px;
+}
+@media (min-width: 768px) {
+  .td-content {
+    border: 1px solid rgba(0,0,0,0.04);
+    border-radius: 16px;
+    padding: 12px;
+    box-shadow: 0 2px 12px -2px rgba(0,0,0,0.06);
+  }
 }
 .td-title { margin: 0 0 8px; font-size: 24px; font-weight: 800; color: #1d1d1f; letter-spacing: -0.02em; }
 .td-meta { font-size: 13px; color: #999; margin-bottom: 24px; }

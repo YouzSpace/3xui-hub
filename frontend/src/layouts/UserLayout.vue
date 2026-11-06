@@ -195,7 +195,7 @@ watch(
           </div>
         </header>
 
-        <div class="ul-scroll">
+        <div class="ul-scroll" :class="{ 'ul-scroll--bleed': route.name === 'user-tutorial' }">
           <h1 v-if="pageTitle" class="ul-page-title ul-page-title--mobile">{{ pageTitle }}</h1>
           <RouterView v-slot="{ Component }">
             <Transition name="page-fade" mode="out-in">
@@ -450,6 +450,11 @@ watch(
   flex: 1;
   padding: 20px 16px calc(env(safe-area-inset-bottom) + 108px);
 }
+/* 教程详情（阅读页）：左右边距归零，正文贴边铺满手机屏（用户 2026-11-06 定） */
+.ul-scroll--bleed {
+  padding-left: 0;
+  padding-right: 0;
+}
 
 .ul-page-title {
   margin: 0 0 20px;
@@ -537,6 +542,11 @@ watch(
   }
   .ul-scroll {
     padding: 20px 24px 48px;
+  }
+  /* 教程详情阅读页：桌面端保留边距（只有手机贴边） */
+  .ul-scroll--bleed {
+    padding-left: 24px;
+    padding-right: 24px;
   }
   .ul-tabbar {
     display: none;

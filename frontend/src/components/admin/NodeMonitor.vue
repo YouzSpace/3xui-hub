@@ -35,15 +35,16 @@ import {
 const POLL_MS = 5000
 /** 24h 汇总的取数间隔：全表聚合，没必要跟着 5 秒轮询跑。 */
 const SUMMARY_MS = 60 * 1000
-/** 实时曲线保留窗口（毫秒）。 */
+/** 采样缓存窗口（毫秒）：3 分钟曲线窗口 + 富余（页面隐藏丢失的采样也能兜住）。 */
 const WINDOW_MS = 5 * 60 * 1000
+/** 曲线展示窗口（秒）：三张曲线卡统一 3 分钟（用户定稿 2026-11-06）。 */
+const SPARK_WINDOW_SEC = 180
 
 const nodes = ref([])
 const regions = ref([])
 const loading = ref(true)
 const failed = ref(false)
 const lastSuccessAt = ref(0)
-const liveWindow = ref(60)
 const globeRef = ref(null)
 /** 24h 监控汇总（提供「近 24 小时流量」合计与 TOP1 机器） */
 const trafficSummary = ref(null)
@@ -121,14 +122,14 @@ const trafficTopNode = computed(() => {
   return ranked[0] || null
 })
 
-/** 实时曲线窗口内的采样点。 */
+/** 实时曲线窗口内的采样点（三张曲线卡统一 3 分钟）。 */
 const windowSamples = computed(() => {
-  const from = chartNow.value - liveWindow.value * 1000
+  const from = chartNow.value - SPARK_WINDOW_SEC * 1000
 
   return samples.value.filter((sample) => sample.t >= from)
 })
 
-/** 汇总卡里的实时速率迷你走势：**只画总和一根**（用户定稿），尺寸与 CPU/内存一致。 */
+/** 汇总卡里的实时速率迷你走势：**只画总和一根**（用户定稿）。 */
 const liveSpark = computed(() =>
   chartGeometry(
     windowSamples.value.map((sample) => ({
@@ -141,12 +142,12 @@ const liveSpark = computed(() =>
   ),
 )
 
-/** 汇总卡里的迷你曲线（CPU / 内存，按 0–100 固定刻度）。 */
+/** 汇总卡里的迷你曲线（CPU / 内存，按 0–100 固定刻度），同样走 3 分钟窗口。 */
 const cpuSpark = computed(() =>
-  chartGeometry(samples.value, [{ key: 'cpu' }], { width: 160, height: 34, padTop: 3, padBottom: 3, max: 100 }),
+  chartGeometry(windowSamples.value, [{ key: 'cpu' }], { width: 160, height: 34, padTop: 3, padBottom: 3, max: 100 }),
 )
 const memSpark = computed(() =>
-  chartGeometry(samples.value, [{ key: 'mem' }], { width: 160, height: 34, padTop: 3, padBottom: 3, max: 100 }),
+  chartGeometry(windowSamples.value, [{ key: 'mem' }], { width: 160, height: 34, padTop: 3, padBottom: 3, max: 100 }),
 )
 
 const unmapped = computed(() => nodes.value.filter((node) => !node.region).length)
@@ -306,26 +307,29 @@ onBeforeUnmount(() => {
         </template>
       </StatCard>
 
-      <StatCard label="平均 CPU" :value="formatPercent(avgCpu, 1)" note="在线节点的平均值">
+      <StatCard label="平均 CPU" :value="formatPercent(avgCpu, 1)" note="在线节点的平均值" spark>
         <svg class="nm-spark" viewBox="0 0 160 34" preserveAspectRatio="none" aria-hidden="true">
+          <path class="nm-area nm-area--cpu" :d="cpuSpark.areaPath[0]" />
           <path class="nm-line nm-line--cpu" vector-effect="non-scaling-stroke" :d="cpuSpark.paths[0]?.d" />
         </svg>
       </StatCard>
 
-      <StatCard label="平均内存" :value="formatPercent(avgMem, 1)" note="在线节点的平均值">
+      <StatCard label="平均内存" :value="formatPercent(avgMem, 1)" note="在线节点的平均值" spark>
         <svg class="nm-spark" viewBox="0 0 160 34" preserveAspectRatio="none" aria-hidden="true">
+          <path class="nm-area nm-area--mem" :d="memSpark.areaPath[0]" />
           <path class="nm-line nm-line--mem" vector-effect="non-scaling-stroke" :d="memSpark.paths[0]?.d" />
         </svg>
       </StatCard>
 
       <!-- 实时速率：大字是上下行**总和**，说明行才分开写上传/下载；曲线也只画总和一根 -->
-      <StatCard label="实时速率" :value="formatSpeed(liveTotal)" note="">
+      <StatCard label="实时速率" :value="formatSpeed(liveTotal)" note="" spark>
         <template #note>
           <span class="nm-note-line">
             ↑ 上传 {{ formatSpeed(liveUp) }} · ↓ 下载 {{ formatSpeed(liveDown) }}
           </span>
         </template>
         <svg class="nm-spark" viewBox="0 0 160 34" preserveAspectRatio="none" aria-hidden="true">
+          <path class="nm-area nm-area--total" :d="liveSpark.areaPath[0]" />
           <path class="nm-line nm-line--total" vector-effect="non-scaling-stroke" :d="liveSpark.paths[0]?.d" />
         </svg>
       </StatCard>
@@ -469,11 +473,17 @@ onBeforeUnmount(() => {
 }
 .nm-spark {
   width: 100%;
-  height: 34px;
+  height: 100%;
   display: block;
-  /* margin-top:auto 把曲线顶到卡片底部：曲线的 0 基准线就贴着下边框（用户定稿） */
-  margin-top: auto;
 }
+/* 铺满式曲线：面积层（淡色渐变观感）+ 折线层（实线描边）。透明度压低保证文字可读。 */
+.nm-area {
+  fill: currentColor;
+  opacity: 0.08;
+}
+.nm-area--cpu { color: var(--accent); }
+.nm-area--mem { color: var(--warning, #d97706); }
+.nm-area--total { color: var(--success, #16a34a); }
 /* 三张带曲线的小卡（CPU / 内存 / 实时速率）底部内边距压小，让基准线更贴近下边框 */
 .nm-summary :deep(.ch-card) {
   padding-bottom: var(--space-2);

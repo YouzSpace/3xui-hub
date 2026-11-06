@@ -82,6 +82,17 @@ export function chartGeometry(samples, series, options = {}) {
     y,
     y2,
     paths,
+    // areaPath：折线下方的填充区域（先沿折线走一遍，再闭合到底边）。
+    // 没有 path 时返回空串。铺满式监控卡用：折线 + 渐变面积两层。
+    areaPath: paths.map((p) => {
+      if (!p.d) return ''
+      // 末点 x + 底边 y(height) 闭合：M..L..L(x_last,height)L(x_first,height)Z
+      const coords = p.d.match(/[ML]([\d.]+),([\d.]+)/g) || []
+      if (coords.length < 2) return ''
+      const first = coords[0].slice(1).split(',')
+      const last = coords[coords.length - 1].slice(1).split(',')
+      return `${p.d}L${last[0]},${height}L${first[0]},${height}Z`
+    }),
     width,
     height,
     padTop,

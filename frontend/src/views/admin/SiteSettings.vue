@@ -1,6 +1,7 @@
 <script setup>
 /**
  * 站点信息配置：修改网站标题、描述、关键词、Logo、Favicon。
+ * （反馈与联系列表已挪到「公告与联系」页 —— 2026-11-06 用户定稿归属公告入口）
  */
 import { ref, onMounted, onActivated } from 'vue'
 import Card from '@/components/ui/Card.vue'
@@ -134,4 +135,5 @@ onActivated(load)
 .ss-actions {
   padding-top: var(--space-2);
 }
+
 </style>

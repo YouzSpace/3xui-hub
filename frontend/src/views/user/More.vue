@@ -41,7 +41,33 @@ const openAnnouncement = () => {
   router.push({ name: 'user-announcement' })
 }
 
+/** 入口可见性：配了 feedback_links（联系方式列表）或 feedback_link（老跳转）任一即显示。 */
+const feedbackVisible = computed(() => {
+  if (siteConfig.config.feedback_link) return true
+  try {
+    const links = siteConfig.config.feedback_links
+    const arr = typeof links === 'string' ? JSON.parse(links || '[]') : links
+    return Array.isArray(arr) && arr.some((it) => it && it.title && it.url)
+  } catch {
+    return false
+  }
+})
+
 const openFeedback = () => {
+  // 2026-11-06：配了 feedback_links（联系方式列表）→ 进二级页；
+  // 没配 → 维持老行为（整行直接跳 feedback_link）。
+  const links = siteConfig.config.feedback_links
+  let hasList = false
+  try {
+    const arr = typeof links === 'string' ? JSON.parse(links || '[]') : links
+    hasList = Array.isArray(arr) && arr.some((it) => it && it.title && it.url)
+  } catch {
+    hasList = false
+  }
+  if (hasList) {
+    router.push({ name: 'user-contact' })
+    return
+  }
   const link = siteConfig.config.feedback_link
   if (link) window.open(link, '_blank')
 }
@@ -278,7 +304,7 @@ onMounted(() => {
         <template #icon><UserIcon name="doc" :size="20" /></template>
       </ListRow>
       <ListRow
-        v-if="siteConfig.config.feedback_link"
+        v-if="feedbackVisible"
         label="反馈与联系"
         sub="问题反馈与联系我们"
         @press="openFeedback"

@@ -95,7 +95,7 @@ const groups = [
     items: [
       { to: '/admin/site-settings', name: 'admin-site-settings', label: '网站信息', icon: 'edit' },
       { to: '/admin/appearance', name: 'admin-appearance', label: '主页与配色', icon: 'palette' },
-      { to: '/admin/announcement', name: 'admin-announcement', label: '公告', icon: 'edit' },
+      { to: '/admin/announcement', name: 'admin-announcement', label: '公告与联系', icon: 'edit' },
       { to: '/admin/tutorials', name: 'admin-tutorials', label: '教程', icon: 'copy' },
       { to: '/admin/subscription-settings', name: 'admin-subscription-settings', label: '订阅配置', icon: 'refresh' },
     ],

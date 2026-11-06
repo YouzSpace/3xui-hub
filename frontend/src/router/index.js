@@ -88,6 +88,11 @@ const routes = [
         name: 'user-tutorial',
         component: () => import('@/views/user/TutorialDetail.vue'),
       },
+      {
+        path: 'contact',
+        name: 'user-contact',
+        component: () => import('@/views/user/Contact.vue'),
+      },
     ],
   },
 
