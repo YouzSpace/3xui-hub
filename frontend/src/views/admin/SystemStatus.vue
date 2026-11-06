@@ -10,11 +10,21 @@ import Badge from '@/components/ui/Badge.vue'
 import Icon from '@/components/ui/Icon.vue'
 import { adminApi } from '@/api/admin'
 import { useToast } from '@/components/ui/Toast.vue'
+import ExpandText from '@/components/ui/ExpandText.vue'
 
 const toast = useToast()
 const loading = ref(false)
 const tasks = ref({ events: [], recent: [] })
 const worker = ref({ alive: false, last_seen: null, pending: 0, running: 0, failed_count: 0, recent_failed: [] })
+
+// 定时任务的一次运行：scheduled_task_runs.status 后端只会写 finished / failed
+// （见 internal/task/schedule.go）。别的一律原样显示，不硬塞成「失败」。
+const runStatusMeta = {
+  finished: { label: '正常', variant: 'success' },
+  failed: { label: '失败', variant: 'danger' },
+}
+const runStatus = (s) => runStatusMeta[s] || { label: s || '未知', variant: 'warning' }
+const runFailed = (r) => r?.status !== 'finished'
 
 
 /**
@@ -273,12 +283,12 @@ onActivated(load)
               <td class="mono">{{ t.expression }}</td>
               <td>{{ fmtTime(t.next_run, '—') }}</td>
               <td>{{ fmtTime(t.last_run, '从未') }}</td>
-              <td>
+              <td class="sys-status-cell">
                 <template v-if="t.last_status">
-                  <Badge :variant="t.last_status === 'finished' ? 'success' : 'danger'" dot>
-                    {{ t.last_status === 'finished' ? '正常' : '失败' }}
+                  <Badge :variant="runStatus(t.last_status).variant" dot>
+                    {{ runStatus(t.last_status).label }}
                   </Badge>
-                  <span v-if="t.last_error" class="sys-err-text">{{ t.last_error }}</span>
+                  <ExpandText v-if="t.last_error" :text="t.last_error" :limit="80" danger />
                 </template>
                 <span v-else class="sys-muted">尚未记录</span>
               </td>
@@ -291,11 +301,17 @@ onActivated(load)
       </div>
       <div v-if="tasks.recent?.length" class="sys-recent">
         <div class="sys-recent-title">最近运行记录</div>
-        <div v-for="(r, i) in tasks.recent" :key="i" class="sys-recent-item mono">
-          <Badge :variant="r.status === 'finished' ? 'success' : 'danger'" dot>{{ r.status === 'finished' ? '正常' : '失败' }}</Badge>
+        <div
+          v-for="(r, i) in tasks.recent"
+          :key="i"
+          class="sys-recent-item mono"
+          :class="{ 'is-failed': runFailed(r) }"
+        >
+          <Badge :variant="runStatus(r.status).variant" dot>{{ runStatus(r.status).label }}</Badge>
           <span class="sys-recent-cmd">{{ r.command }}</span>
-          <span class="sys-recent-meta">{{ fmtTime(r.ran_at, '') }} · {{ r.duration_ms }}ms</span>
-          <span v-if="r.error" class="sys-err-text">{{ r.error }}</span>
+          <span class="sys-recent-meta">{{ fmtTime(r.ran_at, '') }} · {{ r.duration_ms }}ms · {{ r.status }}</span>
+          <ExpandText v-if="r.error" :text="r.error" :limit="80" danger class="sys-recent-err" />
+          <span v-else-if="runFailed(r)" class="sys-muted">后端没记下失败原因</span>
         </div>
       </div>
     </Card>
@@ -345,7 +361,7 @@ onActivated(load)
               </td>
               <td class="sys-muted">{{ fmtTime(t.created_at, '—') }}</td>
               <td class="sys-err-cell">
-                <span v-if="t.error" class="sys-err-text">{{ t.error }}</span>
+                <ExpandText v-if="t.error" :text="t.error" :limit="80" danger />
                 <span v-else class="sys-muted">—</span>
               </td>
               <td>
@@ -439,20 +455,27 @@ onActivated(load)
   color: var(--text-secondary);
 }
 .sys-table td.sys-err-cell { max-width: 280px; white-space: normal; }
+/* 状态列带失败原因：允许折行，别让长错误把整表顶出屏幕 */
+.sys-table td.sys-status-cell { white-space: normal; max-width: 420px; }
 .sys-empty { text-align: center; color: var(--text-muted); padding: var(--space-6); }
 .sys-muted { color: var(--text-muted); }
 .sys-path { color: var(--text-muted); font-size: var(--text-xs); }
-.sys-err-text {
-  display: inline-block; color: var(--color-danger, #dc2626); font-size: var(--text-xs);
-  word-break: break-all;
-}
 .sys-recent {
   padding: 0 var(--space-4) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);
 }
 .sys-recent-title { font-size: var(--text-xs); color: var(--text-muted); font-weight: var(--font-medium); }
 .sys-recent-item { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-sm); }
+/* 失败的那一次运行整行淡红打底 + 左侧色条：翻「最近运行记录」时不用逐条读状态徽章 */
+.sys-recent-item.is-failed {
+  background: var(--danger-muted);
+  border-left: 3px solid var(--danger);
+  padding-left: var(--space-2);
+  border-radius: var(--radius-sm);
+}
 .sys-recent-cmd { flex: 1; min-width: 100px; }
 .sys-recent-meta { font-size: var(--text-xs); color: var(--text-muted); }
+/* 失败原因可能上千字（后端截断到 1000 字），折叠显示，点开看全文 */
+.sys-recent-err { flex-basis: 100%; font-size: var(--text-xs); }
 .sys-progress {
   width: 90px; height: 4px; border-radius: 2px; background: var(--bg-hover);
   overflow: hidden; margin-bottom: 4px;

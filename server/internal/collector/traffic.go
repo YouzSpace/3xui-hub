@@ -615,6 +615,22 @@ func (c *Collector) pruneExpiredHourly(ctx context.Context) {
 func (c *Collector) recordDrift(ctx context.Context, userID int64, email string, node nodeRow) error {
 	const action = "节点与面板状态分叉"
 	path := fmt.Sprintf("node#%d/user#%d", node.ID, userID)
+	return c.recordSystemAudit24h(ctx, "traffic-sync", action, path,
+		fmt.Sprintf("%s 在节点 %s(#%d) 上被关闭，面板仍认为放行（可能是另一套面板在写）", email, node.Name, node.ID))
+}
+
+// recordSystemAudit24h 写一条系统审计（operation_logs，type='system'），
+// 同一 action+path 24 小时内只留一条。
+//
+// 抽成公共函数的理由：traffic-sync 的「节点与面板状态分叉」、对账的三档字段漂移、
+// 3x-ui 写回失败都要按同一口径去重 —— 这些任务都是每 5 分钟一轮，不去重会把
+// 操作审计页（只留最近 500 条）刷满，把真正的管理操作挤掉。
+//
+// 失败只返回错误、由调用方决定是否中断：本函数**不**打日志，也绝不 panic。
+func (c *Collector) recordSystemAudit24h(ctx context.Context, actor, action, path, errMsg string) error {
+	if c.db == nil {
+		return nil // 无库场景（纯渲染/单测）：没有可写的地方，按已记录处理
+	}
 
 	var exists int
 	err := c.db.QueryRowContext(ctx,
@@ -624,17 +640,14 @@ func (c *Collector) recordDrift(ctx context.Context, userID int64, email string,
 		return nil // 24h 内已有告警
 	}
 	if err != sql.ErrNoRows {
-		return fmt.Errorf("查询漂移告警失败: %w", err)
+		return fmt.Errorf("查询系统审计失败: %w", err)
 	}
 
-	_, err = c.db.ExecContext(ctx,
+	if _, err := c.db.ExecContext(ctx,
 		"INSERT INTO operation_logs (type, actor_name, action, method, path, status, error, created_at) "+
-			"VALUES ('system', 'traffic-sync', ?, 'CLI', ?, 500, ?, ?)",
-		action, path,
-		fmt.Sprintf("%s 在节点 %s(#%d) 上被关闭，面板仍认为放行（可能是另一套面板在写）", email, node.Name, node.ID),
-		dbDateTime(c.now()))
-	if err != nil {
-		return fmt.Errorf("写入漂移告警失败: %w", err)
+			"VALUES ('system', ?, ?, 'CLI', ?, 500, ?, ?)",
+		actor, action, path, errMsg, dbDateTime(c.now())); err != nil {
+		return fmt.Errorf("写入系统审计失败: %w", err)
 	}
 	return nil
 }

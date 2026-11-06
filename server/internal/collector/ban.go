@@ -389,15 +389,26 @@ func (c *Collector) applyEnableOnNode(ctx context.Context, node nodeRow, protoco
 	clientData["enable"] = enable
 
 	ok := true
+	var firstErr error
 	for _, inboundID := range inboundIDs {
 		id := inboundID
 		if err := client.UpdateClient(ctx, email, clientData, &id); err != nil {
 			ok = false
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	// 兜底不带 inboundId 再更新一次（与 PHP 顺序一致）。
 	if err := client.UpdateClient(ctx, email, clientData, nil); err != nil {
 		ok = false
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		// 写回失败落审计（issue #135）；落库失败只打日志，绝不改变本函数的确认口径。
+		_ = c.RecordWritebackFailure(ctx, node.ID, email, firstErr)
 	}
 	return ok, nil
 }

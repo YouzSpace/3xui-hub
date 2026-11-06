@@ -334,6 +334,9 @@ func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Cli
 	payload["expiryTime"] = expiryMs
 	payload["limitIp"] = 0
 	if err := client.UpdateClient(ctx, email, payload, nil); err != nil {
+		// 写回失败留痕（operation_logs，type='system'）：后台改套餐/开关时节点静默失败，
+		// 事后只能翻 journald。落库失败由 collector 内部打日志，绝不影响这里的错误返回。
+		_ = o.col.RecordWritebackFailure(ctx, nodeID, email, err)
 		return fmt.Errorf("UpdateClient: %w", err)
 	}
 	// 3x-ui 的 update 只改 client 定义，**不会把 client 挂到它还没挂的入站上**：

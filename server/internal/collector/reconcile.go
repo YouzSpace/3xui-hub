@@ -21,6 +21,12 @@ package collector
 // 表示「节点比面板更紧、有人正被提前掐」，调用方据此把日志升到 WARN。
 // ProbeFailed 单独计数：它既不进 Probed 也不进 Unknown，是「本轮什么都没看到」的唯一信号。
 //
+// 可见性（issue #135）：漂移原先只累加计数 + 打一行 journald WARN，管理端任何页面都看不到；
+// 现在每条漂移另外落一行 operation_logs（type='system'、actor='reconcile'、status=500），
+// action 按方向区分（见 driftClass.action），path='node#<id>/user#<uid>'，同 node+user+action
+// 24 小时内只留一条（与 traffic-sync 的 recordDrift 同一范式）。落库失败只打日志，不中断对账。
+// 3x-ui 写回（UpdateClient）失败同样落一行（action='3x-ui 写回失败'），见 RecordWritebackFailure。
+//
 // 修法（用户定稿）：
 //   - 节点上没有这个人 + 面板判「该可用」→ **补注册**（AddClient，uuid 由节点生成）；
 //   - 字段对不上（含残留旧记录）→ **先 UpdateClient 保留 uuid**（重建会换 uuid：
@@ -40,6 +46,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,6 +114,8 @@ type reconcileUser struct {
 	// AccountEnabled 是 users.enabled（账号级开关），与 Intent 分开：裸内核对账的基准是
 	// 「重拉配置后节点应该长什么样」，判据只认 enabled + 套餐 + 无标记（reconcile_bare.go）。
 	AccountEnabled bool
+	// Email 是 users.email（可空）：只用于漂移审计的可读文案，不参与任何判定。
+	Email    string
 	Limit    int64
 	ExpiryMs int64
 	FlagSet  bool // traffic_disabled_at 非空
@@ -397,6 +406,21 @@ func (d driftClass) label() string {
 	}
 }
 
+// action 是落库（operation_logs.action）里的中文口径，按方向分三条。
+//
+// 为什么不能用 label()：label 是 journald 日志的括号式文案，太长且带逗号；
+// 操作审计页按 action 分列展示，三条固定短句才好筛。两者措辞保持同一含义。
+func (d driftClass) action() string {
+	switch d {
+	case driftEarlyCut:
+		return "对账漂移·会提前掐人"
+	case driftLoose:
+		return "对账漂移·节点更宽松"
+	default:
+		return "对账漂移·安全方向"
+	}
+}
+
 // classifyDrift 判定一条漂移的方向分档（纯函数，只读三个字段）。
 //
 // 3x-ui 语义（实测）：total==0 = **不限流量**（不是"限额 0"）；expiry==0 = 不过期。
@@ -429,6 +453,97 @@ func (o *nodeOutcome) recordDrift(d driftClass) {
 	default:
 		o.DriftSafe++
 	}
+}
+
+// ── 审计落库（operation_logs，type='system'）────────────────────
+//
+// 口径（issue #135）：
+//   - 漂移：actor='reconcile'，action=driftClass.action()，path='node#<id>/user#<uid>'，
+//     status=500，error 写清字段与两侧值（节点 vs 面板）+ 节点名 + 用户 email；
+//   - 写回失败：actor='reconcile'，action='3x-ui 写回失败'，path='node#<id>/user#<email>'，
+//     status=500，error=错误原文；
+//   - 两者都按 action+path 24h 去重（recordSystemAudit24h，与 traffic-sync 同一范式）；
+//   - **任何落库失败只打日志**：审计写不进去绝不能中断对账主流程，
+//     更不能把「写不进审计」误当成「节点状态未知」而改变修复动作。
+
+const (
+	// reconcileDriftActor 是对账写进 operation_logs.actor_name 的固定值。
+	reconcileDriftActor = "reconcile"
+	// writebackFailureAction 是 3x-ui 写回（UpdateClient）失败的动作名。
+	writebackFailureAction = "3x-ui 写回失败"
+)
+
+// recordReconcileDrift 把一条字段漂移落进 operation_logs（只报告，不改节点）。
+func (c *Collector) recordReconcileDrift(ctx context.Context, node nodeRow, u reconcileUser,
+	entry nodeSnapshotEntry, dir driftClass) {
+	path := fmt.Sprintf("node#%d/user#%d", node.ID, u.ID)
+	msg := fmt.Sprintf("节点 %s(#%d) 上 %s 的配额/期限与面板不一致：%s。%s",
+		node.Name, node.ID, reconcileUserLabel(u), driftFieldSummary(entry, u), dir.label())
+	if err := c.recordSystemAudit24h(ctx, reconcileDriftActor, dir.action(), path, msg); err != nil {
+		c.logf_("[reconcile] 漂移审计落库失败（不影响对账）node=%s user=%d action=%s: %v",
+			node.Name, u.ID, dir.action(), err)
+	}
+}
+
+// RecordWritebackFailure 记录一次 3x-ui 写回（UpdateClient）失败。
+//
+// 由写回调用方在收到 UpdateClient 错误时调用（驱动层是纯 API 客户端、不碰 DB）。
+// nodeID/email 拼出 path，err 原文进 error 列；同 node+user 24h 内只留一条。
+// 返回错误仅供调用方记录，调用方**不得**据此改变业务判定。
+func (c *Collector) RecordWritebackFailure(ctx context.Context, nodeID int64, email string, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	path := fmt.Sprintf("node#%d/user#%s", nodeID, email)
+	err := c.recordSystemAudit24h(ctx, reconcileDriftActor, writebackFailureAction, path, cause.Error())
+	if err != nil {
+		c.logf_("[reconcile] 写回失败审计落库失败（不影响下发）node=%d email=%s: %v", nodeID, email, err)
+	}
+	return err
+}
+
+// reconcileUserLabel 是审计文案里的人：优先 email，没有就退回 client email（ch_user_<id>）。
+func reconcileUserLabel(u reconcileUser) string {
+	if strings.TrimSpace(u.Email) != "" {
+		return u.Email
+	}
+	return clientEmail(u.ID)
+}
+
+// driftFieldSummary 把两侧值写成人类可读的一句（只写真正不一致的字段）。
+//
+// 3x-ui 语义：total==0 不限流量、expiry==0 不过期，所以文案里直接写「不限/不过期」，
+// 避免管理员把 0 当成「限额 0 字节」。
+func driftFieldSummary(entry nodeSnapshotEntry, u reconcileUser) string {
+	var parts []string
+	if entry.TotalGB != u.Limit {
+		parts = append(parts, fmt.Sprintf("total 节点=%s 面板=%s",
+			quotaText(entry.TotalGB), quotaText(u.Limit)))
+	}
+	if entry.ExpiryMs != u.ExpiryMs {
+		parts = append(parts, fmt.Sprintf("expiry 节点=%s 面板=%s",
+			expiryText(entry.ExpiryMs), expiryText(u.ExpiryMs)))
+	}
+	if len(parts) == 0 {
+		return "字段一致（不应出现）"
+	}
+	return strings.Join(parts, "；")
+}
+
+// quotaText 把流量值写成可读口径（0 = 不限）。
+func quotaText(v int64) string {
+	if v == 0 {
+		return "不限"
+	}
+	return strconv.FormatInt(v, 10)
+}
+
+// expiryText 把期限毫秒写成可读口径（0 = 不过期）。
+func expiryText(ms int64) string {
+	if ms == 0 {
+		return "不过期"
+	}
+	return time.UnixMilli(ms).UTC().Format("2006-01-02 15:04")
 }
 
 // reconcileOnNode 处理单台 3x-ui 节点：取快照 → 逐用户按面板意图比对 → 只修开关方向。
@@ -606,6 +721,9 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 				c.logf_("[reconcile] 字段漂移（只报告）node=%s user=%d total %d/%d expiry %d/%d %s",
 					node.Name, u.ID, entry.TotalGB, u.Limit, entry.ExpiryMs, u.ExpiryMs, dir.label())
 			}
+			// 落库（issue #135）：原先只有计数 + 日志，管理端任何页面都看不到。
+			// 只报告不写回节点的口径不变 —— 这里写的是 operation_logs，不是节点。
+			c.recordReconcileDrift(ctx, node, u, entry, dir)
 			continue
 		}
 		out.Unchanged++
@@ -960,6 +1078,11 @@ func (c *Collector) updateClientOnNode(ctx context.Context, client *threexui.Cli
 	if err := client.UpdateClient(ctx, email, payload, nil); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	if firstErr != nil {
+		// 写回失败必须留痕（issue #135）：原先只有一行 journald 日志，事后翻不到。
+		// 落库失败只在 RecordWritebackFailure 内部打日志，不影响这里的返回值。
+		_ = c.RecordWritebackFailure(ctx, node.ID, email, firstErr)
+	}
 	return firstErr
 }
 
@@ -994,7 +1117,7 @@ func (c *Collector) clientMatches(ctx context.Context, client *threexui.Client, 
 func (c *Collector) reconcileUsers(ctx context.Context) ([]reconcileUser, error) {
 	rows, err := c.db.QueryContext(ctx,
 		"SELECT u.id, u.uuid, u.protocol, u.enabled, u.traffic_disabled_at, u.expired_at, u.traffic_limit, "+
-			"u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit, u.plan_id, p.type "+
+			"u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit, u.plan_id, p.type, u.email "+
 			"FROM users u LEFT JOIN plans p ON p.id = u.plan_id ORDER BY u.id")
 	if err != nil {
 		return nil, fmt.Errorf("查询对账用户失败: %w", err)
@@ -1011,14 +1134,16 @@ func (c *Collector) reconcileUsers(ctx context.Context) ([]reconcileUser, error)
 			expired  sql.NullTime
 			planID   sql.NullInt64
 			planType sql.NullString
+			email    sql.NullString
 			used     int64
 			monthly  int64
 			monthLim int64
 		)
 		if err := rows.Scan(&u.ID, &u.UUID, &u.Protocol, &enabled, &flagAt, &expired, &u.Limit,
-			&used, &monthly, &monthLim, &planID, &planType); err != nil {
+			&used, &monthly, &monthLim, &planID, &planType, &email); err != nil {
 			return nil, fmt.Errorf("读取对账用户失败: %w", err)
 		}
+		u.Email = email.String
 		row := userRow{
 			ID:                 u.ID,
 			Enabled:            enabled != 0,
