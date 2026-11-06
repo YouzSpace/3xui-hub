@@ -196,8 +196,13 @@ func keyRegister(ip string) string { return ratePrefix + "register:" + ip }
 // code_ip（20 次/小时）与 register（10 次/小时）会变成全站共享额度，正常业务被瞬间打满。
 //
 // 判据：某 IP 在窗口内关联的不同账号（email 小写）数量 >= 阈值，就认定它是共享出口，
-// 跳过**该 IP 的纯 IP 维度**限流（code_ip / register）。账号维度（email 每日/间隔、
-// verify、login）一律不受影响。
+// **放大该 IP 的纯 IP 维度阈值**（code_ip / register 的 base × RATE_SHARED_IP_MULTIPLIER），
+// 而不是跳过。账号维度（email 每日/间隔、verify、login）一律不受影响。
+//
+// 为什么是「放大」而不是「跳过」：跳过等于把纯 IP 维度变成无限额度 —— 攻击者
+// 花 50 个一次性邮箱就能把出口「洗白」，此后 code_ip / register 完全失效（实测序列
+// 0×20 → 429×30 → 0×∞）。放大把「共享出口」从「无上限」变回「有上限，只是更宽」：
+// 正常 CDN 的业务量够用，攻击者仍会在放大后的额度处被拦住。
 //
 // 为什么不看「请求次数」而看「账号数」：共享出口的请求数可能很高但账号数很少
 // （一个人反复刷新），也可能很高且账号数很高（真实的 CDN）。后者才是塌陷，
@@ -212,6 +217,12 @@ const (
 
 	// envRateSharedIPFanout 是阈值变量名；0 表示关闭检测（行为回到改造前）。
 	envRateSharedIPFanout = "RATE_SHARED_IP_FANOUT"
+
+	// defaultRateSharedIPMultiplier 是共享出口上纯 IP 维度阈值的放大倍数。
+	defaultRateSharedIPMultiplier = 10
+
+	// envRateSharedIPMultiplier 是放大倍数变量名；非法值或 <= 0 按 1（等价于不放大）。
+	envRateSharedIPMultiplier = "RATE_SHARED_IP_MULTIPLIER"
 
 	// rateSharedIPWindow 是「同一窗口」的长度（与 code_ip / register 的 1 小时一致）。
 	rateSharedIPWindow = time.Hour
@@ -235,13 +246,15 @@ type sharedIPEntry struct {
 // sharedExitDetector 维护「IP → 关联账号集合」，用于识别共享出口。
 // 并发安全；零值不可用，用 newSharedExitDetector 构造。
 // fanout <= 0 表示关闭检测（所有方法退化为 no-op）。
+// multiplier 是判定成立后纯 IP 维度阈值的放大倍数（<= 1 表示不放大）。
 type sharedExitDetector struct {
-	mu        sync.Mutex
-	entries   map[string]*sharedIPEntry
-	now       func() time.Time
-	fanout    int
-	logger    *log.Logger
-	lastSweep time.Time
+	mu         sync.Mutex
+	entries    map[string]*sharedIPEntry
+	now        func() time.Time
+	fanout     int
+	multiplier int
+	logger     *log.Logger
+	lastSweep  time.Time
 }
 
 // newSharedExitDetector 按 env 构造检测器；非法值回退默认阈值。
@@ -253,11 +266,12 @@ func newSharedExitDetector(logger *log.Logger, now func() time.Time) *sharedExit
 		logger = log.Default()
 	}
 	return &sharedExitDetector{
-		entries:   make(map[string]*sharedIPEntry),
-		now:       now,
-		fanout:    rateSharedIPFanoutFromEnv(),
-		logger:    logger,
-		lastSweep: now(),
+		entries:    make(map[string]*sharedIPEntry),
+		now:        now,
+		fanout:     rateSharedIPFanoutFromEnv(),
+		multiplier: rateSharedIPMultiplierFromEnv(),
+		logger:     logger,
+		lastSweep:  now(),
 	}
 }
 
@@ -272,6 +286,41 @@ func rateSharedIPFanoutFromEnv() int {
 		return defaultRateSharedIPFanout
 	}
 	return n
+}
+
+// rateSharedIPMultiplierFromEnv 读放大倍数：缺失/非法/<= 0 一律按 1（不放大）。
+// 刻意不回落默认值 10 —— 显式写 0 的运维意图是「别放大」，把他静默改成 10 反而
+// 放开了额度；而 1 在语义上正是「不放大」，与未命中共享出口时完全等价。
+func rateSharedIPMultiplierFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv(envRateSharedIPMultiplier))
+	if raw == "" {
+		return defaultRateSharedIPMultiplier
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 1
+	}
+	return n
+}
+
+// scaled 把纯 IP 维度的阈值按共享出口倍数放大。
+// 原始阈值 <= 0 表示「该项不限」，放大后仍是 0（tooManyAttempts 对 <= 0 直接放行），
+// 不把「不限」变成「有限」。
+func (d *sharedExitDetector) scaled(limit int) int {
+	if d == nil || limit <= 0 {
+		return limit
+	}
+	m := d.multiplier
+	if m <= 1 {
+		return limit
+	}
+	// 防溢出：limit 与 m 都来自 int，极端组合下相乘可能回绕成负数，
+	// 那样会变成「不限」。这里只在上界处夹住，不影响现实阈值。
+	const maxInt = int(^uint(0) >> 1)
+	if limit > maxInt/m {
+		return maxInt
+	}
+	return limit * m
 }
 
 // isShared 判断该 IP 是否已被认定为共享出口（不写入任何账号）。
@@ -326,7 +375,7 @@ func (d *sharedExitDetector) observe(ip, email string) bool {
 	if shared && !e.warned {
 		e.warned = true
 		d.logger.Printf("检测到共享出口 IP %s：窗口内关联 %d 个账号（阈值 %d），"+
-			"已跳过该 IP 的 code_ip / register 纯 IP 维度限流", ip, len(e.accounts), d.fanout)
+			"该 IP 的 code_ip / register 纯 IP 维度阈值已放大 %d 倍", ip, len(e.accounts), d.fanout, d.multiplier)
 	}
 	return shared
 }
@@ -367,7 +416,7 @@ func (d *sharedExitDetector) trimLocked(now time.Time) {
 
 // codeSendBlocked 对齐 RateGuardService::codeSendBlocked（间隔 / 每日 / 同 IP 每小时三条）。
 //
-// 账号维度的间隔与每日上限永远生效；只有「同 IP 每小时」这一条在共享出口上跳过。
+// 账号维度的间隔与每日上限永远生效；只有「同 IP 每小时」这一条在共享出口上被放大。
 func (h *Handler) codeSendBlocked(ctx context.Context, email, ip string, l rateLimits) (bool, error) {
 	// 先登记「该 IP 关联了该账号」：判定必须发生在**拦截之前**。
 	// 否则 code_ip 默认 20 次/小时，共享出口在关联到第 21 个账号时就被拦住，
@@ -384,15 +433,20 @@ func (h *Handler) codeSendBlocked(ctx context.Context, email, ip string, l rateL
 	if blocked, err := h.limiter.tooManyAttempts(ctx, keyCodeDaily(email), l.CodePerDay); err != nil || blocked {
 		return blocked, err
 	}
-	// 共享出口：不判本次请求，同时清掉历史窗口里已累加的 code_ip ——
-	// 否则「判定前就被打满」的那段窗口会继续拦着整个出口到过期为止。
+	// 共享出口：放大阈值，而不是跳过 —— 跳过等于给攻击者一个「拿 50 个邮箱换
+	// 无限额度」的后门（实测 0×20 → 429×30 → 0×∞）。放大后正常 CDN 够用，
+	// 滥用者照样会在放大后的额度处被拦住。
+	limit := l.CodeIPHourly
 	if shared {
-		return false, h.limiter.clear(ctx, keyCodeIP(ip))
+		limit = h.sharedExits.scaled(limit)
 	}
-	return h.limiter.tooManyAttempts(ctx, keyCodeIP(ip), l.CodeIPHourly)
+	return h.limiter.tooManyAttempts(ctx, keyCodeIP(ip), limit)
 }
 
 // recordCodeSend 记一次发码请求 —— 放行后必须无条件调用（防枚举，见函数头注释）。
+//
+// 共享出口上**照常**累加 code_ip：放大后的阈值要靠这个计数才拦得住人；
+// 只有真的「不限」（阈值为 0）时才不记。
 func (h *Handler) recordCodeSend(ctx context.Context, email, ip string, l rateLimits) error {
 	if l.CodeInterval > 0 {
 		if err := h.limiter.hit(ctx, keyCodeInterval(email), time.Duration(l.CodeInterval)*time.Second); err != nil {
@@ -403,11 +457,6 @@ func (h *Handler) recordCodeSend(ctx context.Context, email, ip string, l rateLi
 		if err := h.limiter.hit(ctx, keyCodeDaily(email), 24*time.Hour); err != nil {
 			return err
 		}
-	}
-	// 共享出口上不再累加 code_ip：继续加只会把已经打满的额度越推越远，
-	// 窗口过期后仍然拦着整个出口。账号已在上面的 codeSendBlocked 里登记过。
-	if h.sharedExits.observe(ip, email) {
-		return nil
 	}
 	if l.CodeIPHourly > 0 {
 		if err := h.limiter.hit(ctx, keyCodeIP(ip), time.Hour); err != nil {
@@ -450,24 +499,24 @@ func (h *Handler) clearLoginFailures(ctx context.Context, email, ip string) erro
 
 // registerBlocked 判「同 IP 每小时注册次数」。
 //
-// 被判定为共享出口的 IP 跳过这一条；账号维度由 handleRegister 后续的
-// 「邮箱已注册」兜住（一个邮箱只能注册一次），不受影响。
+// 被判定为共享出口的 IP 只是**放大**这一条，不跳过；账号维度由 handleRegister
+// 后续的「邮箱已注册」兜住（一个邮箱只能注册一次），不受影响。
 //
 // 与 codeSendBlocked 同理，登记账号必须发生在拦截之前：register 默认 10 次/小时，
 // 否则共享出口在第 11 个账号处就被拦住，账号集合永远长不到阈值。
 func (h *Handler) registerBlocked(ctx context.Context, ip, email string, l rateLimits) (bool, error) {
+	limit := l.RegisterIPHourly
 	if h.sharedExits.observe(ip, email) {
-		return false, h.limiter.clear(ctx, keyRegister(ip))
+		limit = h.sharedExits.scaled(limit)
 	}
-	return h.limiter.tooManyAttempts(ctx, keyRegister(ip), l.RegisterIPHourly)
+	return h.limiter.tooManyAttempts(ctx, keyRegister(ip), limit)
 }
 
-// recordRegister 记一次注册请求。email 用于共享出口检测（入口处已解析可用）；
-// email 为空时不登记账号，检测结论退化为「该 IP 尚未关联任何账号」。
+// recordRegister 记一次注册请求，共享出口上照常累加（放大后的阈值靠它才拦得住）。
+// email 用于共享出口检测（入口处已解析可用）；email 为空时不登记账号，
+// 检测结论退化为「该 IP 尚未关联任何账号」。
 func (h *Handler) recordRegister(ctx context.Context, ip, email string, l rateLimits) error {
-	if h.sharedExits.observe(ip, email) {
-		return nil
-	}
+	h.sharedExits.observe(ip, email)
 	if l.RegisterIPHourly <= 0 {
 		return nil
 	}
