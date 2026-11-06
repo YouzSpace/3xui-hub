@@ -15,19 +15,22 @@ import (
 //
 // 金额按 data-contract §3 以字符串持有，输出时按 PHP 的 (float) 走 phpFloat。
 type OrderRow struct {
-	ID           uint64
-	OrderNo      string
-	UserID       uint64
-	UserEmail    *string
-	PlanName     *string
-	ProxySKUName *string
-	OrderType    *string
-	Amount       string // decimal(10,2)
-	Status       string
-	PaymentName  *string
-	TradeNo      *string
-	PaidAt       *time.Time
-	CreatedAt    *time.Time
+	ID            uint64
+	OrderNo       string
+	UserID        uint64
+	UserEmail     *string
+	PlanName      *string
+	ProxySKUName  *string
+	OrderType     *string
+	Amount        string // decimal(10,2)
+	Status        string
+	PaymentName   *string
+	// PaymentDriver 是 orders.payment_driver_type：余额支付单为 'balance'，
+	// 它们没有 payment_config（PaymentName 为空），展示层靠它补「余额支付」。
+	PaymentDriver *string
+	TradeNo       *string
+	PaidAt        *time.Time
+	CreatedAt     *time.Time
 }
 
 // OrderFilter 是列表筛选条件（order_type + search）。
@@ -48,6 +51,21 @@ func presentOrder(o *OrderRow) *jsObj {
 		planName = *o.PlanName
 	} else if o.ProxySKUName != nil {
 		planName = "代理 · " + *o.ProxySKUName
+	} else if o.OrderType != nil && *o.OrderType == "balance" {
+		// 充值订单没有套餐/代理，之前落「-」看不出是什么单。
+		planName = "余额充值"
+	}
+	paymentName := ""
+	if o.PaymentName != nil {
+		paymentName = *o.PaymentName
+	}
+	if paymentName == "" && o.PaymentDriver != nil && *o.PaymentDriver == "balance" {
+		// 余额支付单没有 payment_config 关联，支付方式列按驱动标记补名。
+		paymentName = "余额支付"
+	}
+	var payment any
+	if paymentName != "" {
+		payment = paymentName
 	}
 	orderType := any(nil)
 	if o.OrderType != nil {
@@ -61,7 +79,7 @@ func presentOrder(o *OrderRow) *jsObj {
 		"order_type", orderType,
 		"amount", phpFloatOf(o.Amount),
 		"status", o.Status,
-		"payment_name", nullableStr(o.PaymentName),
+		"payment_name", payment,
 		"trade_no", nullableStr(o.TradeNo),
 		"paid_at", nullableISO(o.PaidAt),
 		"created_at", nullableISO(o.CreatedAt),
