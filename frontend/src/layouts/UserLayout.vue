@@ -48,6 +48,7 @@ const titles = {
   'user-orders': '我的订单',
   'user-tutorials': '使用文档',
   'user-tutorial': '',
+  'user-contact': '反馈与联系',
   'user-invite': '邀请好友',
   'user-balance': '账户余额',
 }
@@ -61,6 +62,7 @@ const isHome = computed(() => route.name === 'user-dashboard')
 const subPageBack = computed(() => ({
   'user-tutorials': { name: 'user-more' },
   'user-tutorial': { name: 'user-tutorials' },
+  'user-contact': { name: 'user-more' },
   'user-announcement': { name: 'user-more' },
   'user-orders': { name: 'user-shop' },
   'user-invite': { name: 'user-more' },
@@ -80,6 +82,7 @@ const activeTab = computed(() => {
     route.name === 'user-announcement' ||
     route.name === 'user-tutorials' ||
     route.name === 'user-tutorial' ||
+    route.name === 'user-contact' ||
     route.name === 'user-invite' ||
     route.name === 'user-balance'
   ) return 'user-more'
@@ -195,7 +198,7 @@ watch(
           </div>
         </header>
 
-        <div class="ul-scroll">
+        <div class="ul-scroll" :class="{ 'ul-scroll--bleed': route.name === 'user-tutorial' }">
           <h1 v-if="pageTitle" class="ul-page-title ul-page-title--mobile">{{ pageTitle }}</h1>
           <RouterView v-slot="{ Component }">
             <Transition name="page-fade" mode="out-in">
@@ -448,7 +451,13 @@ watch(
 }
 .ul-scroll {
   flex: 1;
-  padding: 20px 16px calc(env(safe-area-inset-bottom) + 108px);
+  /* 手机端左右 8px：内部卡片尽量贴边（用户 2026-11-06 定） */
+  padding: 20px 8px calc(env(safe-area-inset-bottom) + 108px);
+}
+/* 教程详情（阅读页）：左右边距归零，正文贴边铺满手机屏（用户 2026-11-06 定） */
+.ul-scroll--bleed {
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .ul-page-title {
@@ -537,6 +546,11 @@ watch(
   }
   .ul-scroll {
     padding: 20px 24px 48px;
+  }
+  /* 教程详情阅读页：桌面端保留边距（只有手机贴边） */
+  .ul-scroll--bleed {
+    padding-left: 24px;
+    padding-right: 24px;
   }
   .ul-tabbar {
     display: none;

@@ -223,9 +223,12 @@ func encodePanelColors(list []panelColor) string {
 // ---- 站点信息 / 订阅格式 ----
 
 // siteSettingKeys 是 SiteSettingController::FIELDS（顺序即输出顺序）。
+// feedback_links 是 Go 侧新增（2026-11-06）：用户端「反馈与联系」二级页的数据，
+// JSON 数组 [{title,type,url}]（type=link 跳转 / qr 二维码图片），复用 key-value 存储。
 var siteSettingKeys = []string{
 	"site_title", "site_subtitle", "site_description", "site_keywords",
 	"site_logo", "site_favicon", "announcement", "feedback_link",
+	"feedback_links",
 }
 
 // subscriptionSettingKeys 是 SubscriptionSettingController::FIELDS。

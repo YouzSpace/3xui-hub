@@ -167,6 +167,8 @@ var siteConfigKeys = []string{
 	"site_title", "site_subtitle", "site_description", "site_keywords",
 	"site_logo", "site_favicon", "register_email_verify", "announcement",
 	"feedback_link", "sub_clash_enabled", "sub_singbox_enabled",
+	// 反馈与联系二级页数据（JSON 数组 [{title,type,url}]，admin 站点设置维护）
+	"feedback_links",
 	"sub_show_flag", "sub_rename_enabled", "sub_rename_regex", "sub_rename_replacement",
 	// 自定义公开首页：前端读到空值就走默认首页，老面板行为不变
 	"home_custom_html", "home_custom_css",

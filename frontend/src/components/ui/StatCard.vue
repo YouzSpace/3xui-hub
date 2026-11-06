@@ -12,6 +12,7 @@
  *   <StatCard label="覆盖地区" :value="3" suffix="个" note="..." />   ← 单位用 suffix
  *   <StatCard ...><template #note>带链接/条件的长说明</template></StatCard>
  *   <StatCard ...>  ← 默认插槽放迷你曲线之类的附加内容
+ *   <StatCard spark ...><svg class="sc-spark-fill">…</svg></StatCard>  ← 曲线铺满整卡背景
  */
 import Card from '@/components/ui/Card.vue'
 
@@ -27,11 +28,13 @@ defineProps({
   health: { type: String, default: '' },
   /** 状态标签配色：healthy | degraded | offline */
   healthState: { type: String, default: '' },
+  /** 曲线铺满整卡模式：默认插槽的 SVG 绝对定位铺满卡片背景，文字浮在上层 */
+  spark: { type: Boolean, default: false },
 })
 </script>
 
 <template>
-  <Card class="sc" :data-health="healthState || undefined">
+  <Card class="sc" :class="{ 'sc--spark': spark }" :data-health="healthState || undefined">
     <div class="sc-head">
       <p class="sc-label">{{ label }}</p>
       <span v-if="health" class="sc-health">{{ health }}</span>
@@ -57,6 +60,26 @@ defineProps({
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
+}
+/* 曲线铺满模式：卡片变定位容器，默认插槽（SVG）绝对定位铺满，文字浮上层 */
+.sc--spark {
+  position: relative;
+  overflow: hidden;
+}
+.sc--spark > :deep(svg) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+/* 文字层级压过曲线，且曲线淡色不干扰阅读 */
+.sc--spark .sc-head,
+.sc--spark .sc-value,
+.sc--spark .sc-note {
+  position: relative;
+  z-index: 1;
 }
 .sc-head {
   display: flex;

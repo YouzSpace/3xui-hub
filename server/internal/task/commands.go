@@ -359,6 +359,15 @@ func (r *commandRunner) runInviteRefresh(ctx context.Context) error {
 }
 
 // refreshOneInvite 在事务内刷新一张邀请码（锁行重读，重复执行只刷一次）。
+//
+// 刷新语义（2026-11-06 用户定稿）：**只在原行上换码文本，绝不新增行**。
+//   - 锁定关系（users.used_invite_code_id）与返佣记录存的都是码的 **id**，
+//     原行 UPDATE 码文本 id 不变 → 用过/锁定的返佣链自动保持，无需留「已刷新」旧行；
+//   - used_count 清零（码文本已换，旧码的使用次数不能算到新码头上）。
+//
+// 用户已注销（users 行不存在）时不发新码：否则每次刷新都会给幽灵用户
+// 再插一张新孤儿码，孤儿自我复制永不收敛。孤儿码只把状态置 refreshed（留证据），
+// 下轮刷新直接跳过（status != active），不会反复产生新行。
 func (r *commandRunner) refreshOneInvite(ctx context.Context, codeID, userID int64) (bool, error) {
 	tx, err := r.deps.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -385,28 +394,27 @@ func (r *commandRunner) refreshOneInvite(ctx context.Context, codeID, userID int
 		return false, nil
 	}
 
-	// 旧码置为 refreshed
 	now := r.now().UTC()
-	if _, err := tx.ExecContext(ctx,
-		"UPDATE discount_codes SET status = 'refreshed', refreshed_at = ?, updated_at = ? WHERE id = ?",
-		now, now, codeID); err != nil {
+
+	// 锁用户行，保证「同一用户最多一张 active 邀请码」；顺带判用户是否还在。
+	var liveUserID int64
+	err = tx.QueryRowContext(ctx, "SELECT id FROM users WHERE id = ? FOR UPDATE", userID).Scan(&liveUserID)
+	if err != nil && err != sql.ErrNoRows {
 		return false, err
+	}
+	if err == sql.ErrNoRows {
+		// 用户已注销：不发新码、不删行（锁定/返佣可能还引用），置 refreshed 后下轮自动跳过。
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE discount_codes SET status = 'refreshed', refreshed_at = ?, updated_at = ? WHERE id = ?",
+			now, now, codeID); err != nil {
+			return false, err
+		}
+		r.logf("  用户 #%d 已注销，邀请码 %d 置为 refreshed，不再刷新", userID, codeID)
+		return tx.Commit() == nil, nil
 	}
 
-	// 锁用户行，保证「同一用户最多一张 active 邀请码」
-	if _, err := tx.ExecContext(ctx,
-		"SELECT id FROM users WHERE id = ? FOR UPDATE", userID); err != nil {
-		return false, err
-	}
-	// 把该用户可能残留的 active 邀请码也置为 refreshed
-	if _, err := tx.ExecContext(ctx,
-		"UPDATE discount_codes SET status = 'refreshed', refreshed_at = ?, updated_at = ? WHERE source = 'invite' AND user_id = ? AND status = 'active'",
-		now, now, userID); err != nil {
-		return false, err
-	}
-
-	// 发新码
-	discount := r.siteConfigFloat(ctx, "invite_discount", 0.90)
+	// 原行刷新：换码文本 + 重置使用计数，id 不变 → 返佣链不断。
+	// 折扣沿用配置（invite_discount）：刷新即按当前配置重定折扣。
 	refreshDays := r.siteConfigInt(ctx, "invite_refresh_days", 30)
 	if refreshDays < 1 {
 		refreshDays = 30
@@ -416,10 +424,17 @@ func (r *commandRunner) refreshOneInvite(ctx context.Context, codeID, userID int
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO discount_codes (code, source, user_id, discount, max_uses, used_count,
-		 max_uses_per_user, expires_at, note, status, refreshed_at, next_refresh_at, created_at, updated_at)
-		 VALUES (?, 'invite', ?, ?, 999999, 0, 1, NULL, NULL, 'active', NULL, ?, ?, ?)`,
-		newCode, userID, discount, now.AddDate(0, 0, refreshDays), now, now); err != nil {
+		`UPDATE discount_codes SET code = ?, used_count = 0, status = 'active',
+		 next_refresh_at = ?, refreshed_at = ?, updated_at = ? WHERE id = ?`,
+		newCode, now.AddDate(0, 0, refreshDays), now, now, codeID); err != nil {
+		return false, err
+	}
+	r.logf("  刷新用户 #%d 的邀请码（原行）→ %s", userID, newCode)
+
+	// 把该用户可能残留的其他 active 邀请码也收拢到本行口径（历史数据兼容，幂等）。
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE discount_codes SET status = 'refreshed', refreshed_at = ?, updated_at = ? WHERE source = 'invite' AND user_id = ? AND status = 'active' AND id <> ?",
+		now, now, userID, codeID); err != nil {
 		return false, err
 	}
 
