@@ -308,11 +308,6 @@ func applyClashTlsAndNetwork(proxy *phpMap, params map[string]string, server str
 				if sid, hasSid := params["sid"]; hasSid {
 					reality.set("short-id", sid)
 				}
-				// ML-KEM 支持（mihomo reality-opts.support-x25519mlkem768）：
-				// 链接带了该参数才输出（服务端 26.7.11+ 内核才有），老内核节点链接无此参数零变化。
-				if phpTruthy(mapOr(params, "support-x25519mlkem768", "0")) {
-					reality.set("support-x25519mlkem768", true)
-				}
 				proxy.set("reality-opts", reality)
 			}
 		}
@@ -502,10 +497,6 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 				reality := obj("public-key", pbk)
 				if sid, hasSid := parsed.Params["sid"]; hasSid {
 					reality.set("short-id", sid)
-				}
-				// ML-KEM 支持：与 vmess/trojan 分支同一口径，链接带了才输出。
-				if phpTruthy(mapOr(parsed.Params, "support-x25519mlkem768", "0")) {
-					reality.set("support-x25519mlkem768", true)
 				}
 				proxy.set("reality-opts", reality)
 			}
