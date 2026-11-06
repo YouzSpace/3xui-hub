@@ -50,7 +50,9 @@ func (d *UserDomain) statsRevenue(c *gin.Context) {
 		loc = time.UTC
 	}
 	now := d.now().In(loc)
-	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	// 「今天 0 点」必须按业务时区构造再换算 UTC：直接用 time.UTC 拼年月日
+	// 等于北京 08:00 才算当天开始，0:00–7:59 的订单全被漏出「今日」。
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).In(time.UTC)
 
 	todayAmount, todayOrders, err := d.stats.RevenueToday(ctxOf(c), &startOfToday)
 	if err != nil {
