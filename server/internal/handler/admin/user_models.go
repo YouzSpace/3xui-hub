@@ -32,6 +32,9 @@ type UserRow struct {
 	ExpiredAt           *time.Time
 	Enabled             bool
 	CreatedAt           *time.Time
+	// Balance 是用户账户余额（分）。管理端余额页按它排序；
+	// 用户列表接口默认不输出该字段（保持原契约），仅 balance_order 生效时回传。
+	Balance int64
 
 	// ProxyActiveCount 只由列表查询填充（对齐 withCount('proxyEntitlements …')）；
 	// 详情/写响应在 PHP 里拿不到该属性，恒为 0。
@@ -128,7 +131,10 @@ type UserPatch struct {
 // 刻意不与 P8d 的 Store 合并：各域在自己文件里声明窄接口，互不牵连，
 // 测试也能只实现自己用到的部分。
 type AdminUserStore interface {
-	UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time) ([]UserRow, int64, error)
+	// UserPage 分页查用户；search 走全表模糊/精确匹配。
+	// cursor > 0 走主键游标；balanceOrder ∈ "asc"/"desc" 时按 users.balance 排序
+	// （空 = 默认 id 倒序，与升级前一致）。
+	UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time, balanceOrder string) ([]UserRow, int64, error)
 	UserByID(ctx context.Context, id uint64) (*UserRow, error)
 	UserExists(ctx context.Context, id uint64) (bool, error)
 	UserProxies(ctx context.Context, userID uint64) ([]UserProxy, error)

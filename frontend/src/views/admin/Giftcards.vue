@@ -442,7 +442,7 @@ onMounted(load)
               <th>兑换码</th>
               <th>名称</th>
               <th class="gc-sortable" :title="`点击切换面值排序（当前：${valueOrder === 'asc' ? '升序' : valueOrder === 'desc' ? '降序' : '默认'}）`" @click="cycleValueOrder">
-                面值<Icon :name="valueOrderIcon" :size="14" class="gc-sort-icon" :class="{ 'is-active': valueOrder }" />
+                <span class="gc-sort-th">面值<Icon :name="valueOrderIcon" :size="14" class="gc-sort-icon" :class="{ 'is-active': valueOrder }" /></span>
               </th>
               <th>状态</th>
               <th>使用人</th>
@@ -816,12 +816,18 @@ onMounted(load)
   user-select: none;
   white-space: nowrap;
 }
+/* 箭头与文字横排：Icon 是内联 SVG，直接与文字混排会被基线挤到下一行、把表头撑高 */
+.gc-sort-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
 .gc-sortable:hover {
   color: var(--text-primary);
 }
 .gc-sort-icon {
-  vertical-align: -2px;
-  margin-left: 2px;
+  flex: none;
   opacity: 0.35;
 }
 .gc-sort-icon.is-active {
@@ -887,6 +893,10 @@ onMounted(load)
 }
 .gc-folder-body {
   padding: 4px 8px 8px;
+  /* 文件夹内的表格有 min-width:820px，窄屏必须能横向滑动；否则右边的
+     「操作」等列会被直接裁掉、看不见也点不到（展开文件夹时踩过）。 */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .gc-folder-tip {
   margin: 12px 8px;

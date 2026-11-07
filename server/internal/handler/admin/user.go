@@ -10,6 +10,7 @@ package admin
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -162,7 +163,18 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 	}
 	page := pageParam(c)
 	cursor := queryInt(c, "cursor", 0)
-	rows, total, err := d.users.UserPage(ctxOf(c), search, page, userPagePerPage, cursor, d.now())
+	// balance_order：余额列点按排序（asc / desc；空=默认 id 倒序）。
+	// 只允许白名单值，非法值直接 400，绝不拼进 SQL。
+	balanceOrder := ""
+	if raw := queryString(c, "balance_order"); raw != nil {
+		v := strings.ToLower(phpTrimSpaceOnly(*raw))
+		if v != "" && v != "asc" && v != "desc" {
+			d.fail(c, "余额排序不合法", 400)
+			return
+		}
+		balanceOrder = v
+	}
+	rows, total, err := d.users.UserPage(ctxOf(c), search, page, userPagePerPage, cursor, d.now(), balanceOrder)
 	if err != nil {
 		d.failServer(c, "查询用户", err)
 		return
@@ -175,7 +187,7 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 		}
 		if page > lastPage {
 			page = lastPage
-			rows, total, err = d.users.UserPage(ctxOf(c), search, page, userPagePerPage, 0, d.now())
+			rows, total, err = d.users.UserPage(ctxOf(c), search, page, userPagePerPage, 0, d.now(), balanceOrder)
 			if err != nil {
 				d.failServer(c, "查询用户", err)
 				return
@@ -184,7 +196,13 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 	}
 	items := make([]any, 0, len(rows))
 	for i := range rows {
-		items = append(items, presentUser(&rows[i], false, nil))
+		item := presentUser(&rows[i], false, nil)
+		// 余额只在按余额排序时回传：默认列表契约保持不变（不强塞新字段），
+		// 而余额页拿到后可直接显示，不必再逐行发 50 个余额请求。
+		if balanceOrder != "" {
+			item.put("balance", rows[i].Balance)
+		}
+		items = append(items, item)
 	}
 	var nextCursor int64
 	// 只有满页才给游标：不满页说明到底了，前端据此停用「下一页」

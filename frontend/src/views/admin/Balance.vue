@@ -40,6 +40,9 @@ const toast = useToast()
 const users = ref([])
 // 初始值取自 URL：直连 / 刷新 ?q=xxx 时搜索词直接进框并随首屏 load 生效
 const searchQuery = ref(String(route.query.q ?? ''))
+// 余额列排序：'' = 默认（按 id 倒序），asc / desc。点表头三次一循环。
+// 排序在后端 SQL 层做（ORDER BY users.balance），整表排序后再分页，不是只排当前页。
+const balanceOrder = ref(String(route.query.balance_order ?? ''))
 
 const { page, loading, loadError, pagination, prev, next, fetchPage } = usePagedList()
 
@@ -52,6 +55,13 @@ let balanceGen = 0
 const balanceOf = (id) => balances.value[id] || null
 
 const fetchBalances = async (rows) => {
+  // 后端按余额排序时已把每行 balance 一并回传，不必再逐行发 50 个请求
+  if (balanceOrder.value && rows.length && rows.every((u) => u.balance !== undefined && u.balance !== null)) {
+    const seed = {}
+    for (const u of rows) seed[u.id] = { loading: false, error: '', balance: Number(u.balance || 0) }
+    balances.value = seed
+    return
+  }
   const gen = ++balanceGen
   const seed = {}
   for (const u of rows) seed[u.id] = { loading: true, error: '', balance: null }
@@ -78,11 +88,28 @@ const fetchBalances = async (rows) => {
 
 const load = async () => {
   const q = searchQuery.value.trim()
-  const res = await fetchPage((params, config) => adminApi.listUsers(params, config), q ? { search: q } : null)
+  const extra = {}
+  if (q) extra.search = q
+  if (balanceOrder.value) extra.balance_order = balanceOrder.value
+  const res = await fetchPage((params, config) => adminApi.listUsers(params, config), extra)
   if (!res) return
   users.value = Array.isArray(res) ? res : []
   await fetchBalances(users.value)
 }
+
+/* ===== 余额列排序（点表头三次一循环：默认 → 升序 → 降序 → 默认）===== */
+const cycleBalanceOrder = () => {
+  balanceOrder.value = balanceOrder.value === '' ? 'asc' : balanceOrder.value === 'asc' ? 'desc' : ''
+  // 排序变了必须回到第 1 页，否则会停在「新排序的第 N 页」，看不到最值
+  const nextQuery = { ...route.query }
+  if (balanceOrder.value) nextQuery.balance_order = balanceOrder.value
+  else delete nextQuery.balance_order
+  delete nextQuery.page
+  router.replace({ query: nextQuery })
+  load()
+}
+
+const balanceOrderIcon = computed(() => (balanceOrder.value === 'asc' ? 'chevron-up' : 'chevron-down'))
 
 // 只刷新当前页余额，不动列表（余额变动频繁时用）
 const refreshingBalances = ref(false)
@@ -241,7 +268,9 @@ onActivated(() => {
             <tr>
               <th>ID</th>
               <th>邮箱</th>
-              <th>余额</th>
+              <th class="ab-sortable" :title="`点击切换余额排序（当前：${balanceOrder === 'asc' ? '升序' : balanceOrder === 'desc' ? '降序' : '默认'}）`" @click="cycleBalanceOrder">
+                <span class="ab-sort-th">余额<Icon :name="balanceOrderIcon" :size="14" class="ab-sort-icon" :class="{ 'is-active': balanceOrder }" /></span>
+              </th>
               <th>操作</th>
             </tr>
           </thead>
@@ -400,6 +429,32 @@ onActivated(() => {
 }
 .ab-balance-cell {
   white-space: nowrap;
+}
+/* 余额列排序：列头可点，箭头提示当前方向。
+ * inline-flex 横排文字+箭头，否则内联 SVG 的基线会把箭头挤到下一行、把表头撑高。
+ * 只给这个可排序列定宽，其余列保持自动布局不变。 */
+.ab-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  width: 130px;
+}
+.ab-sort-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.ab-sortable:hover {
+  color: var(--text-primary);
+}
+.ab-sort-icon {
+  flex: none;
+  opacity: 0.35;
+}
+.ab-sort-icon.is-active {
+  opacity: 1;
+  color: var(--accent);
 }
 .ab-balance-num {
   font-weight: 600;
