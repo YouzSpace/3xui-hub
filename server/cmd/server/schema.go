@@ -69,6 +69,15 @@ func ensureSchema(db *sql.DB) error {
 			KEY giftcards_status_index (status),
 			KEY giftcards_used_by_index (used_by)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 余额兑换码文件夹（对齐优惠码的分组口径）：giftcards.folder_id 指向这里。
+		// 与 discount_code_folders 同一套语义：删除文件夹默认把码退回「未归档」。
+		`CREATE TABLE IF NOT EXISTS giftcard_folders (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			name varchar(60) NOT NULL COMMENT '文件夹名',
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		// 余额流水（#账户余额）：每次变动一条，含变动后余额。
 		`CREATE TABLE IF NOT EXISTS balance_logs (
 			id bigint unsigned NOT NULL AUTO_INCREMENT,
@@ -117,6 +126,8 @@ func ensureSchema(db *sql.DB) error {
 		// 订阅链接里的地址需要按入站覆盖节点地址；空 = 维持原行为。
 		{"xray_inbounds", "client_host", "varchar(255) COLLATE utf8mb4_unicode_ci"},
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
+		// 兑换码归档到文件夹（对齐优惠码分组）：老库升级时补列，null=未归档。
+		{"giftcards", "folder_id", "bigint unsigned DEFAULT NULL COMMENT '所属文件夹 id，null=未归档'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {
@@ -137,6 +148,7 @@ func ensureSchema(db *sql.DB) error {
 	indexes := []struct{ table, name, definition string }{
 		{"mail_logs", "mail_logs_created_at_index", "(`created_at`)"},
 		{"node_api_commands", "node_api_commands_status_updated_at_index", "(`status`,`updated_at`)"},
+		{"giftcards", "giftcards_folder_id_index", "(`folder_id`)"},
 	}
 	for _, idx := range indexes {
 		if err := ensureIndex(db, idx.table, idx.name, idx.definition); err != nil {

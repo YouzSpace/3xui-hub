@@ -6,8 +6,10 @@ package admin
 // 本域是 Go 侧新增功能（没有 PHP 控制器可对拍），文案用中文直给管理员。
 
 import (
+	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -40,6 +42,11 @@ func (d *BalanceDomain) Register(r gin.IRouter) {
 	r.DELETE("/giftcards/:giftcard/delete", d.giftcardDelete)
 	r.POST("/giftcards/batch-delete", d.giftcardBatchDelete)
 
+	// 兑换码文件夹（对齐优惠码 discount-code-folders 的语义与交互）
+	r.POST("/giftcard-folders", d.giftcardFolderCreate)
+	r.PUT("/giftcard-folders/:folder", d.giftcardFolderUpdate)
+	r.DELETE("/giftcard-folders/:folder", d.giftcardFolderDelete)
+
 	r.GET("/users/:user/balance", d.userBalanceShow)
 	r.POST("/users/:user/balance", d.userBalanceAdjust)
 }
@@ -66,10 +73,15 @@ func (d *BalanceDomain) failServer(c *gin.Context, what string, err error) {
 
 // ---- 兑换码 ----
 
-// giftcardIndex 对齐 GET /admin-api/giftcards?status=&page=&per_page=。
+// giftcardIndex 对齐 GET /admin-api/giftcards?status=&folder=&value_order=&page=&per_page=。
 //
-// data = {list, total, page, per_page}（与优惠码列表同形，前端复用同一套分页组件）。
-// 页码越界不夹取，只回空 list（与 DiscountPage 口径一致）。
+// data = {list, total, page, per_page, folders}（folders 始终返回全部文件夹，供前端渲染文件夹行）。
+//
+// 归档口径与优惠码一致：
+//   - 不传 folder → 只出未归档码（folder_id = null）
+//   - 传 folder=id → 只出该文件夹内的码
+//
+// value_order = asc | desc 控制「面值」列排序；不传 = 按 id 倒序（恢复默认）。
 func (d *BalanceDomain) giftcardIndex(c *gin.Context) {
 	var filter GiftcardFilter
 	if status := queryString(c, "status"); status != nil {
@@ -78,6 +90,22 @@ func (d *BalanceDomain) giftcardIndex(c *gin.Context) {
 			return
 		}
 		filter.Status = status
+	}
+	if raw := queryString(c, "folder"); raw != nil && *raw != "" {
+		fid, ok := parseUint(*raw)
+		if !ok {
+			d.fail(c, "文件夹不存在", 400)
+			return
+		}
+		filter.FolderID = &fid
+	}
+	if raw := queryString(c, "value_order"); raw != nil {
+		v := strings.ToLower(strings.TrimSpace(*raw))
+		if v != "" && v != "asc" && v != "desc" {
+			d.fail(c, "面值排序不合法", 400)
+			return
+		}
+		filter.ValueOrder = v
 	}
 	page, perPage := pageParams(c, giftcardPerPage, giftcardMaxPerPage)
 
@@ -90,11 +118,26 @@ func (d *BalanceDomain) giftcardIndex(c *gin.Context) {
 	for i := range rows {
 		list = append(list, presentGiftcard(&rows[i]))
 	}
+	// 文件夹行始终返回全部（与是否传 folder 无关），前端用它渲染上方文件夹列表。
+	folderCounts, err := d.store.GiftcardFolderCounts(ctxOf(c), filter)
+	if err != nil {
+		d.failServer(c, "查询兑换码文件夹", err)
+		return
+	}
+	folders := make(jsArr, 0, len(folderCounts))
+	for _, f := range folderCounts {
+		folders = append(folders, jo(
+			"id", f.ID,
+			"name", f.Name,
+			"code_count", f.CodeCount,
+		))
+	}
 	d.success(c, jo(
 		"list", list,
 		"total", total,
 		"page", page,
 		"per_page", perPage,
+		"folders", folders,
 	))
 }
 
@@ -170,6 +213,12 @@ func (d *BalanceDomain) giftcardStore(c *gin.Context) {
 	}
 
 	operatorID := adminIDOf(c)
+	// 归档文件夹：folder_id 优先；否则按 folder_name 找，不存在就建（与优惠码同一口径）。
+	folderID, err := d.resolveGiftcardFolderID(ctxOf(c), input)
+	if err != nil {
+		d.failServer(c, "解析兑换码文件夹", err)
+		return
+	}
 	var codes []string
 	var lastErr error
 	// 撞唯一键就整批重生成：8 字节随机撞车概率极低，但仍不允许把「生成了 5 个、
@@ -185,6 +234,7 @@ func (d *BalanceDomain) giftcardStore(c *gin.Context) {
 				ExpiresAt: expiresAt,
 				CreatedBy: operatorID,
 				Note:      note,
+				FolderID:  folderID,
 				CreatedAt: now,
 			})
 		}
@@ -273,6 +323,163 @@ func (d *BalanceDomain) giftcardBatchDelete(c *gin.Context) {
 	}
 	d.success(c, jo("deleted", deleted, "failed", failed),
 		"已删除 "+strconv.Itoa(len(deleted))+" 个兑换码")
+}
+
+// ---- 兑换码文件夹 ----
+
+// giftcardFolderCreate 对齐 POST /admin-api/giftcard-folders（body: {name}）。
+func (d *BalanceDomain) giftcardFolderCreate(c *gin.Context) {
+	input := jsonInput(c)
+	name, ok := inputString(input["name"])
+	name = strings.TrimSpace(name)
+	if !ok || name == "" {
+		d.fail(c, "请填写文件夹名", 400)
+		return
+	}
+	if utf8.RuneCountInString(name) > 60 {
+		d.fail(c, "文件夹名不能超过 60 个字符", 400)
+		return
+	}
+	f, err := d.store.GiftcardFolderCreate(ctxOf(c), name)
+	if err != nil {
+		d.failServer(c, "创建兑换码文件夹", err)
+		return
+	}
+	d.success(c, jo("id", f.ID, "name", f.Name, "code_count", 0), "已创建")
+}
+
+// giftcardFolderUpdate 对齐 PUT /admin-api/giftcard-folders/{folder}（改名）。
+func (d *BalanceDomain) giftcardFolderUpdate(c *gin.Context) {
+	folder, ok := d.loadGiftcardFolder(c)
+	if !ok {
+		return
+	}
+	input := jsonInput(c)
+	name, okName := inputString(input["name"])
+	name = strings.TrimSpace(name)
+	if !okName || name == "" {
+		d.fail(c, "请填写文件夹名", 400)
+		return
+	}
+	if utf8.RuneCountInString(name) > 60 {
+		d.fail(c, "文件夹名不能超过 60 个字符", 400)
+		return
+	}
+	if err := d.store.GiftcardFolderUpdate(ctxOf(c), folder.ID, name); err != nil {
+		d.failServer(c, "保存兑换码文件夹", err)
+		return
+	}
+	d.success(c, nil, "保存成功")
+}
+
+// giftcardFolderDelete 对齐 DELETE /admin-api/giftcard-folders/{folder}[?with_codes=1]。
+//
+// 默认（对齐优惠码）：里面所有码退回「未归档」，码一条都不删。
+// with_codes=1：连同文件夹内的码一起删除（需二次确认，前端负责）。
+func (d *BalanceDomain) giftcardFolderDelete(c *gin.Context) {
+	folder, ok := d.loadGiftcardFolder(c)
+	if !ok {
+		return
+	}
+
+	if inputBool(queryRaw(c, "with_codes")) {
+		ids, err := d.store.GiftcardIDsInFolder(ctxOf(c), folder.ID)
+		if err != nil {
+			d.failServer(c, "查询文件夹内兑换码", err)
+			return
+		}
+		deleted := 0
+		failed := make(jsArr, 0)
+		for _, id := range ids {
+			if _, err := d.store.DeleteGiftcard(ctxOf(c), id); err != nil {
+				failed = append(failed, jo("id", id, "reason", err.Error()))
+				continue
+			}
+			deleted++
+		}
+		// 没删掉的不能留成孤儿 folder_id：退回未归档。
+		if len(failed) > 0 {
+			if err := d.store.DetachGiftcardsFromFolder(ctxOf(c), folder.ID); err != nil {
+				d.failServer(c, "摘除文件夹内兑换码", err)
+				return
+			}
+		}
+		if err := d.store.GiftcardFolderDelete(ctxOf(c), folder.ID); err != nil {
+			d.failServer(c, "删除兑换码文件夹", err)
+			return
+		}
+		var msg string
+		if len(failed) == 0 {
+			msg = "已删除文件夹及其中 " + strconv.Itoa(deleted) + " 个兑换码"
+		} else {
+			msg = "已删除文件夹，" + strconv.Itoa(deleted) + " 个码已删，" +
+				strconv.Itoa(len(failed)) + " 个删除失败已转为未归档"
+		}
+		d.success(c, jo("deleted_codes", deleted, "failed", failed), msg)
+		return
+	}
+
+	// 先摘码再删文件夹：删到一半失败时，码只会多出一批「未归档」，
+	// 不会出现指向已删文件夹的孤儿 folder_id。
+	if err := d.store.DetachGiftcardsFromFolder(ctxOf(c), folder.ID); err != nil {
+		d.failServer(c, "摘除文件夹内兑换码", err)
+		return
+	}
+	if err := d.store.GiftcardFolderDelete(ctxOf(c), folder.ID); err != nil {
+		d.failServer(c, "删除兑换码文件夹", err)
+		return
+	}
+	d.success(c, nil, "已删除文件夹，其中兑换码已转为未归档")
+}
+
+// loadGiftcardFolder 解析路径参数 :folder，不存在时回 404。
+func (d *BalanceDomain) loadGiftcardFolder(c *gin.Context) (*GiftcardFolder, bool) {
+	id, ok := parseUint(c.Param("folder"))
+	if !ok {
+		d.fail(c, "文件夹不存在", 404)
+		return nil, false
+	}
+	f, err := d.store.GiftcardFolderByID(ctxOf(c), id)
+	if err != nil {
+		if NoRows(err) {
+			d.fail(c, "文件夹不存在", 404)
+			return nil, false
+		}
+		d.failServer(c, "查询兑换码文件夹", err)
+		return nil, false
+	}
+	return f, true
+}
+
+// resolveGiftcardFolderID 解析生成时指定的归档文件夹：folder_id 优先；
+// 否则按 folder_name 找，不存在就建（与优惠码 resolveFolderID 同一口径）。
+func (d *BalanceDomain) resolveGiftcardFolderID(ctx context.Context, input map[string]any) (*uint64, error) {
+	if val, ok := input["folder_id"]; ok && val != nil {
+		id := uint64(inputInt(val))
+		if id > 0 {
+			return &id, nil
+		}
+	}
+	name := ""
+	if val, ok := input["folder_name"]; ok && val != nil {
+		s, _ := inputString(val)
+		name = strings.TrimSpace(s)
+	}
+	if name == "" {
+		return nil, nil
+	}
+	f, err := d.store.GiftcardFolderByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if f != nil {
+		return &f.ID, nil
+	}
+	created, err := d.store.GiftcardFolderCreate(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &created.ID, nil
 }
 
 // ---- 用户余额 ----
@@ -394,6 +601,7 @@ func presentGiftcard(g *Giftcard) *jsObj {
 		"expires_at", nullableDateTime(g.ExpiresAt),
 		"created_by", nullableUint(g.CreatedBy),
 		"note", nullableStr(g.Note),
+		"folder_id", nullableUint(g.FolderID),
 		"created_at", nullableDateTime(g.CreatedAt),
 	)
 }
