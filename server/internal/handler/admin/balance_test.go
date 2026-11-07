@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ type fakeBalanceStore struct {
 	users          map[uint64]int64
 	logs           map[uint64][]BalanceLog
 
+	nextFolderID uint64
+	folders      map[uint64]string
+
 	insertCalls   int
 	conflictOnce  bool // 第一次 InsertGiftcards 返回 ErrGiftcardCodeTaken（模拟码撞车）
 	lastInserted  []NewGiftcard
@@ -45,6 +49,8 @@ func newFakeBalanceStore() *fakeBalanceStore {
 		giftcards:      map[uint64]*Giftcard{},
 		users:          map[uint64]int64{},
 		logs:           map[uint64][]BalanceLog{},
+		nextFolderID:   1,
+		folders:        map[uint64]string{},
 	}
 }
 
@@ -64,9 +70,34 @@ func (f *fakeBalanceStore) GiftcardPage(_ context.Context, filter GiftcardFilter
 		if filter.Status != nil && g.Status != *filter.Status {
 			continue
 		}
+		// 归档口径：FolderID=nil 只出未归档；指向某 id 只出该文件夹内的码。
+		if filter.FolderID != nil {
+			if g.FolderID == nil || *g.FolderID != *filter.FolderID {
+				continue
+			}
+		} else if g.FolderID != nil {
+			continue
+		}
 		out = append(out, *g)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	switch filter.ValueOrder {
+	case "asc":
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Value != out[j].Value {
+				return out[i].Value < out[j].Value
+			}
+			return out[i].ID > out[j].ID
+		})
+	case "desc":
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Value != out[j].Value {
+				return out[i].Value > out[j].Value
+			}
+			return out[i].ID > out[j].ID
+		})
+	default:
+		sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	}
 	total := int64(len(out))
 	start := (page - 1) * perPage
 	if start < 0 || start >= total {
@@ -110,10 +141,93 @@ func (f *fakeBalanceStore) InsertGiftcards(_ context.Context, rows []NewGiftcard
 			ExpiresAt: r.ExpiresAt,
 			CreatedBy: r.CreatedBy,
 			Note:      r.Note,
+			FolderID:  r.FolderID,
 			CreatedAt: &r.CreatedAt,
 		})
 	}
 	return nil
+}
+
+// —— 兑换码文件夹（测试用内存实现）——
+
+func (f *fakeBalanceStore) GiftcardFolderCounts(_ context.Context, filter GiftcardFilter) ([]GiftcardFolder, error) {
+	counts := map[uint64]int64{}
+	for _, g := range f.giftcards {
+		if filter.Status != nil && g.Status != *filter.Status {
+			continue
+		}
+		if g.FolderID != nil {
+			counts[*g.FolderID]++
+		}
+	}
+	out := []GiftcardFolder{}
+	for id, name := range f.folders {
+		out = append(out, GiftcardFolder{ID: id, Name: name, CodeCount: counts[id]})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (f *fakeBalanceStore) GiftcardFolderByID(_ context.Context, id uint64) (*GiftcardFolder, error) {
+	name, ok := f.folders[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return &GiftcardFolder{ID: id, Name: name}, nil
+}
+
+func (f *fakeBalanceStore) GiftcardFolderByName(_ context.Context, name string) (*GiftcardFolder, error) {
+	for id, n := range f.folders {
+		if n == name {
+			return &GiftcardFolder{ID: id, Name: n}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeBalanceStore) GiftcardFolderCreate(_ context.Context, name string) (*GiftcardFolder, error) {
+	id := f.nextFolderID
+	f.nextFolderID++
+	f.folders[id] = name
+	return &GiftcardFolder{ID: id, Name: name}, nil
+}
+
+func (f *fakeBalanceStore) GiftcardFolderUpdate(_ context.Context, id uint64, name string) error {
+	if _, ok := f.folders[id]; !ok {
+		return sql.ErrNoRows
+	}
+	f.folders[id] = name
+	return nil
+}
+
+func (f *fakeBalanceStore) GiftcardFolderDelete(_ context.Context, id uint64) error {
+	delete(f.folders, id)
+	return nil
+}
+
+func (f *fakeBalanceStore) DetachGiftcardsFromFolder(_ context.Context, folderID uint64) error {
+	for _, g := range f.giftcards {
+		if g.FolderID != nil && *g.FolderID == folderID {
+			g.FolderID = nil
+		}
+	}
+	return nil
+}
+
+func (f *fakeBalanceStore) GiftcardIDsInFolder(_ context.Context, folderID uint64) ([]uint64, error) {
+	out := []uint64{}
+	for id, g := range f.giftcards {
+		if g.FolderID != nil && *g.FolderID == folderID {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] > out[j] })
+	return out, nil
 }
 
 func (f *fakeBalanceStore) DeleteGiftcard(_ context.Context, id uint64) (bool, error) {
@@ -411,6 +525,152 @@ func TestGiftcardIndexFiltersByStatus(t *testing.T) {
 	bad := callBalance(t, r, http.MethodGet, "/admin-api/giftcards?status=nope", "")
 	if code := balanceIntField(t, bad, "code"); code == 0 {
 		t.Fatalf("非法 status 应被拒：%v", bad)
+	}
+}
+
+// ---- 用例：兑换码文件夹与面值排序（HTTP 契约）----
+
+// TestGiftcardIndexReturnsFoldersAndSortsByValue 验列表接口返回 folders + value_order 生效。
+func TestGiftcardIndexReturnsFoldersAndSortsByValue(t *testing.T) {
+	store := newFakeBalanceStore()
+	fid, _ := store.GiftcardFolderCreate(context.Background(), "活动A")
+	f2, _ := store.GiftcardFolderCreate(context.Background(), "活动B")
+	inA := fid.ID
+	inB := f2.ID
+	store.addGiftcard(Giftcard{Code: "A-1", Value: 100, Status: GiftcardStatusActive, FolderID: &inA})
+	store.addGiftcard(Giftcard{Code: "A-2", Value: 900, Status: GiftcardStatusActive, FolderID: &inA})
+	store.addGiftcard(Giftcard{Code: "B-1", Value: 500, Status: GiftcardStatusActive, FolderID: &inB})
+	store.addGiftcard(Giftcard{Code: "U-1", Value: 300, Status: GiftcardStatusActive})
+	store.addGiftcard(Giftcard{Code: "U-2", Value: 200, Status: GiftcardStatusActive})
+	d := NewBalanceDomain(BalanceDeps{Store: store})
+	r := newBalanceTestRouter(d, 0)
+
+	// 1) 默认只出未归档（2 条），folders 始终全量返回 + 计数
+	resp := callBalance(t, r, http.MethodGet, "/admin-api/giftcards", "")
+	data := balanceData(t, resp)
+	list, _ := data["list"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("默认应只回未归档 2 条，实际 %d", len(list))
+	}
+	folders, _ := data["folders"].([]any)
+	if len(folders) != 2 {
+		t.Fatalf("folders 应 2 个，实际 %d", len(folders))
+	}
+	counts := map[string]int64{}
+	for _, f := range folders {
+		fm := f.(map[string]any)
+		counts[balanceStringField(t, fm, "name")] = balanceIntField(t, fm, "code_count")
+	}
+	if counts["活动A"] != 2 || counts["活动B"] != 1 {
+		t.Fatalf("文件夹计数不对: %+v", counts)
+	}
+
+	// 2) value_order=desc 在未归档里应 300 在前
+	resp2 := callBalance(t, r, http.MethodGet, "/admin-api/giftcards?value_order=desc", "")
+	l2 := balanceData(t, resp2)["list"].([]any)
+	if got := balanceIntField(t, l2[0].(map[string]any), "value"); got != 300 {
+		t.Fatalf("value_order=desc 首条应 300，实际 %d", got)
+	}
+	// 3) value_order=asc 应 200 在前
+	resp3 := callBalance(t, r, http.MethodGet, "/admin-api/giftcards?value_order=asc", "")
+	l3 := balanceData(t, resp3)["list"].([]any)
+	if got := balanceIntField(t, l3[0].(map[string]any), "value"); got != 200 {
+		t.Fatalf("value_order=asc 首条应 200，实际 %d", got)
+	}
+	// 4) folder=id 只出该文件夹
+	resp4 := callBalance(t, r, http.MethodGet, "/admin-api/giftcards?folder="+strconv.FormatUint(fid.ID, 10), "")
+	l4 := balanceData(t, resp4)["list"].([]any)
+	if len(l4) != 2 {
+		t.Fatalf("folder 应回 2 条，实际 %d", len(l4))
+	}
+	// 5) 非法排序被拒
+	bad := callBalance(t, r, http.MethodGet, "/admin-api/giftcards?value_order=nope", "")
+	if balanceIntField(t, bad, "code") == 0 {
+		t.Fatalf("非法 value_order 应被拒: %v", bad)
+	}
+}
+
+// TestGiftcardFolderCRUDViaHTTP 验文件夹建/改名/删（含 with_codes 两种语义）。
+func TestGiftcardFolderCRUDViaHTTP(t *testing.T) {
+	store := newFakeBalanceStore()
+	d := NewBalanceDomain(BalanceDeps{Store: store})
+	r := newBalanceTestRouter(d, 1)
+
+	// 建
+	resp := callBalance(t, r, http.MethodPost, "/admin-api/giftcard-folders", `{"name":"活动A"}`)
+	fid := balanceIntField(t, balanceData(t, resp), "id")
+	if fid == 0 {
+		t.Fatalf("建文件夹没回 id: %v", resp)
+	}
+	// 空名被拒
+	if code := balanceIntField(t, callBalance(t, r, http.MethodPost, "/admin-api/giftcard-folders", `{"name":"  "}`), "code"); code == 0 {
+		t.Fatal("空文件夹名应被拒")
+	}
+	// 改名
+	idStr := strconv.FormatInt(fid, 10)
+	callBalance(t, r, http.MethodPut, "/admin-api/giftcard-folders/"+idStr, `{"name":"活动A改"}`)
+	if f, _ := store.GiftcardFolderByID(context.Background(), uint64(fid)); f == nil || f.Name != "活动A改" {
+		t.Fatalf("改名没生效: %+v", f)
+	}
+	// 放一个码进去
+	fidU := uint64(fid)
+	store.addGiftcard(Giftcard{Code: "X-1", Value: 100, Status: GiftcardStatusActive, FolderID: &fidU})
+
+	// 只删文件夹 → 码退回未归档
+	callBalance(t, r, http.MethodDelete, "/admin-api/giftcard-folders/"+idStr, "")
+	if f, _ := store.GiftcardFolderByID(context.Background(), fidU); f != nil {
+		t.Fatal("文件夹应已删除")
+	}
+	if g, _ := store.GiftcardByID(context.Background(), 1); g == nil || g.FolderID != nil {
+		t.Fatalf("码应保留并退回未归档: %+v", g)
+	}
+
+	// 再造一个文件夹 + 码，测 with_codes
+	f2, _ := store.GiftcardFolderCreate(context.Background(), "活动B")
+	f2id := f2.ID
+	store.addGiftcard(Giftcard{Code: "Y-1", Value: 200, Status: GiftcardStatusActive, FolderID: &f2id})
+	callBalance(t, r, http.MethodDelete, "/admin-api/giftcard-folders/"+strconv.FormatUint(f2id, 10)+"?with_codes=1", "")
+	if _, err := store.GiftcardFolderByID(context.Background(), f2id); err == nil {
+		t.Fatal("文件夹B应已删除")
+	}
+	// Y-1 已被一并删除
+	found := false
+	for _, g := range store.giftcards {
+		if g.Code == "Y-1" {
+			found = true
+		}
+	}
+	if found {
+		t.Fatal("with_codes=1 应把文件夹内的码一起删掉")
+	}
+
+	// 不存在的文件夹 → 404
+	nf := callBalance(t, r, http.MethodDelete, "/admin-api/giftcard-folders/99999", "")
+	if balanceIntField(t, nf, "code") != 404 {
+		t.Fatalf("不存在文件夹应回 404: %v", nf)
+	}
+}
+
+// TestGiftcardStoreArchivesToFolder 验生成时带 folder_id / folder_name 会归档。
+func TestGiftcardStoreArchivesToFolder(t *testing.T) {
+	store := newFakeBalanceStore()
+	d := NewBalanceDomain(BalanceDeps{Store: store})
+	r := newBalanceTestRouter(d, 1)
+
+	// folder_name 不存在 → 自动建
+	callBalance(t, r, http.MethodPost, "/admin-api/giftcards",
+		`{"count":2,"value":100,"folder_name":"新建的组"}`)
+	if len(store.lastInserted) != 2 || store.lastInserted[0].FolderID == nil {
+		t.Fatalf("folder_name 应自动建文件夹并归档: %+v", store.lastInserted)
+	}
+	if len(store.folders) != 1 {
+		t.Fatalf("应自动建出 1 个文件夹，实际 %d", len(store.folders))
+	}
+	// 同一 folder_name 再用一次 → 复用，不重复建
+	callBalance(t, r, http.MethodPost, "/admin-api/giftcards",
+		`{"count":1,"value":100,"folder_name":"新建的组"}`)
+	if len(store.folders) != 1 {
+		t.Fatalf("同名 folder_name 应复用文件夹，实际 %d 个", len(store.folders))
 	}
 }
 

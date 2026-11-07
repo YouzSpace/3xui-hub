@@ -871,6 +871,14 @@ CREATE TABLE `xray_routing_rules` (
   CONSTRAINT `xray_routing_rules_node_id_foreign` FOREIGN KEY (`node_id`) REFERENCES `nodes` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `giftcard_folders` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件夹名',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `giftcards` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `code` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '兑换码，格式 XXXX-XXXX-XXXX-XXXX',
@@ -882,12 +890,14 @@ CREATE TABLE `giftcards` (
   `expires_at` datetime DEFAULT NULL COMMENT '过期时间，null=永久',
   `created_by` bigint unsigned DEFAULT NULL COMMENT '创建的管理员 id',
   `note` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '管理员备注',
+  `folder_id` bigint unsigned DEFAULT NULL COMMENT '所属文件夹 id，null=未归档',
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `giftcards_code_unique` (`code`),
   KEY `giftcards_status_index` (`status`),
-  KEY `giftcards_used_by_index` (`used_by`)
+  KEY `giftcards_used_by_index` (`used_by`),
+  KEY `giftcards_folder_id_index` (`folder_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `balance_logs` (

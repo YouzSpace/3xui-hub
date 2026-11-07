@@ -196,16 +196,26 @@ export const adminApi = {
   listAffiliateRebates: (params, config) => client.get('/admin-api/affiliate/rebates', { params, ...config }),
 
   // 余额兑换码（余额域，金额一律「分」）
-  // 列表：params { status?, page?, per_page? }，status ∈ active|used|disabled；
-  //       data = { list:[{id,code,name,value,status,used_by,used_at,expires_at,created_by,note,created_at}], total, page, per_page }
+  // 列表：params { status?, folder?, value_order?, page?, per_page? }
+  //   status ∈ active|used|disabled；不传 folder 只出未归档码，folder=id 只出该文件夹的码；
+  //   value_order ∈ asc|desc（面值排序，不传=按 id 倒序）
+  //   data = { list:[{id,code,name,value,status,used_by,used_at,expires_at,created_by,note,folder_id,created_at}],
+  //            total, page, per_page, folders:[{id,name,code_count}] }
   listGiftcards: (params) => client.get('/admin-api/giftcards', { params }),
-  // 批量生成：{ count(1-100), value(分), name?, note?, expires_at?('YYYY-MM-DD HH:MM:SS'|datetime-local) }
+  // 批量生成：{ count(1-100), value(分), name?, note?, expires_at?, folder_id? | folder_name? }
   // 响应 data = { count, codes:[…] }（codes 是本次真正落库的码）
   createGiftcards: (data) => client.post('/admin-api/giftcards', data),
   // 删除：物理删除（任意状态，含已使用/已作废的码）
   deleteGiftcard: (id) => client.delete(`/admin-api/giftcards/${id}/delete`),
   // 批量删除：{ ids:[…] } → data = { deleted:[…], failed:[{id,reason}] }
   batchDeleteGiftcards: (ids) => client.post('/admin-api/giftcards/batch-delete', { ids }),
+  // 兑换码文件夹（分组展示用；删除默认只把码退回未归档，不删码）
+  createGiftcardFolder: (data) => client.post('/admin-api/giftcard-folders', data),
+  updateGiftcardFolder: (id, data) => client.put(`/admin-api/giftcard-folders/${id}`, data),
+  deleteGiftcardFolder: (id, withCodes = false) =>
+    client.delete(`/admin-api/giftcard-folders/${id}`, {
+      params: withCodes ? { with_codes: 1 } : {},
+    }),
 
   // 用户余额（管理端）：金额一律「分」
   // GET  data = { user_id, balance, logs:[…], total, page, per_page }

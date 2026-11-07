@@ -465,6 +465,7 @@ onUnmounted(stopSyncWatch)
       :page="pagination.current_page"
       :last-page="pagination.last_page"
       :total="pagination.total"
+      :has-next="hasNext"
       :loading="loading"
       @prev="prev"
       @next="next"

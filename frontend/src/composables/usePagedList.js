@@ -31,6 +31,13 @@ export function usePagedList() {
   // 只存在内存里：刷新后缓存丢失，退回 offset 路径，结果仍然正确，只是慢一档。
   const cursorMap = ref({})
 
+  // 游标模式下的总数缓存：第 1 页（offset 路径）后端免费返回过真实 total/last_page，
+  // 翻页时游标响应不再带（total=-1），直接复用缓存值显示「第 2 / 4 页」——
+  // 不用重新 COUNT，也不丢「一共几条」的信息。列表重查（搜索/增删）时清掉。
+  let cachedTotal = null
+  let cachedLastPage = null
+  let lastSearch = null
+
   const page = computed(() => {
     const p = parseInt(route.query.page, 10)
     return Number.isFinite(p) && p >= 1 ? p : 1
@@ -72,14 +79,28 @@ export function usePagedList() {
       const params = { page: requested, ...(extra || {}) }
       const cursor = cursorMap.value[requested]
       if (cursor) params.cursor = cursor
+      // 搜索词变化意味着结果集整个变了，旧总数缓存作废（否则会用旧总数显示新结果）
+      if ((extra?.search ?? '') !== (lastSearch ?? '')) {
+        cachedTotal = null
+        cachedLastPage = null
+      }
+      lastSearch = extra?.search ?? ''
       const res = await fetcher(params, { signal })
       // 请求期间可能已被 keep-alive 退场：响应不落地，更不许改 URL
       if (signal.aborted || !active.value) return null
 
+      const resTotal = res?.pagination?.total ?? (Array.isArray(res) ? res.length : 0)
+      const resLastPage = res?.pagination?.last_page ?? 1
+      if (resTotal >= 0) {
+        // offset 路径：后端给了真实总数，缓存下来供后续游标页复用
+        cachedTotal = resTotal
+        cachedLastPage = resLastPage
+      }
       pagination.value = {
         current_page: res?.pagination?.current_page ?? requested,
-        last_page: res?.pagination?.last_page ?? 1,
-        total: res?.pagination?.total ?? (Array.isArray(res) ? res.length : 0),
+        // 游标响应（total=-1）：复用第 1 页缓存的总数/页数，让「第 2 / 4 页」继续显示
+        last_page: resTotal < 0 && cachedLastPage != null ? cachedLastPage : resLastPage,
+        total: resTotal < 0 && cachedTotal != null ? cachedTotal : resTotal,
         per_page: res?.pagination?.per_page ?? 50,
         next_cursor: res?.pagination?.next_cursor ?? null,
       }

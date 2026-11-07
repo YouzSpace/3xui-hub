@@ -26,7 +26,22 @@ type adminUserSQLStore struct {
 const userSelectColumns = `u.id, u.email, u.token, u.uuid, u.protocol, u.plan_id,
 	p.type, p.name, p.months,
 	u.traffic_limit, u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit,
-	u.next_traffic_reset_at, u.expired_at, u.enabled, u.created_at`
+	u.next_traffic_reset_at, u.expired_at, u.enabled, u.created_at, u.balance`
+
+// userBalanceOrderSQL 把「余额排序」口径转成 ORDER BY 片段（白名单，不拼外部输入）。
+//
+// 余额相同时用 id 倒序兜底，保证分页顺序稳定（否则同余额的行每次查询顺序不同，
+// 翻页会重复或漏行）。
+func userBalanceOrderSQL(order string) string {
+	switch order {
+	case "asc":
+		return "u.balance ASC, u.id DESC"
+	case "desc":
+		return "u.balance DESC, u.id DESC"
+	default:
+		return "u.id DESC"
+	}
+}
 
 // UserPage 对齐 UserController::index 的查询：LEFT JOIN plans + 有效代理权益计数，
 // orderByDesc('id')，50/页。search 全表查（ID 精确 / 邮箱与 Token 模糊）。
@@ -34,7 +49,7 @@ const userSelectColumns = `u.id, u.email, u.token, u.uuid, u.protocol, u.plan_id
 // cursor > 0 时走游标分页：按主键定位（WHERE u.id < cursor），不查 COUNT、不用 OFFSET。
 // 深页（十万页以上）在 offset 模式下要扫过前面所有行，实测 100 万用户翻末页 14 秒、
 // 200 万用户 7~35 秒；游标模式恒定为毫秒级。offset 模式保留给「跳页」和兼容旧客户端。
-func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time) ([]UserRow, int64, error) {
+func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time, balanceOrder string) ([]UserRow, int64, error) {
 	where, args := userSearchWhere(search, now)
 
 	if perPage < 1 {
@@ -42,6 +57,14 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 	}
 	if page < 1 {
 		page = 1
+	}
+
+	// 余额排序与游标分页互斥：游标按主键定位（u.id < cursor），换排序键后
+	// 「上一页最后一条的 id」不再是可靠的起点，会漏行/重行。调用方在带排序时必须
+	// 走 offset 路径；这里再兜一层，避免误用游标。
+	orderBy := userBalanceOrderSQL(balanceOrder)
+	if balanceOrder != "" {
+		cursor = 0
 	}
 
 	// 游标模式：不查总数（100 万行 COUNT 要几百毫秒且随规模线性增长），
@@ -54,8 +77,8 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 		FROM users u
 		LEFT JOIN plans p ON p.id = u.plan_id
 		WHERE 1=1%s AND u.id < ?
-		ORDER BY u.id DESC
-		LIMIT ?`, userSelectColumns, where)
+		ORDER BY %s
+		LIMIT ?`, userSelectColumns, where, orderBy)
 		args2 := append([]any{now}, args...)
 		args2 = append(args2, cursor, perPage)
 		rows, err := s.db.QueryContext(ctx, q, args2...)
@@ -81,8 +104,8 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 		FROM users u
 		LEFT JOIN plans p ON p.id = u.plan_id
 		WHERE 1=1%s
-		ORDER BY u.id DESC
-		LIMIT ? OFFSET ?`, userSelectColumns, where)
+		ORDER BY %s
+		LIMIT ? OFFSET ?`, userSelectColumns, where, orderBy)
 	args2 := append([]any{now}, args...)
 	args2 = append(args2, perPage, offset)
 
@@ -140,12 +163,13 @@ func scanUserRow(row interface{ Scan(...any) error }, withProxyCount bool) (*Use
 		monthlyUsed, monthlyLimit       int64
 		nextReset, expiredAt, createdAt sql.NullTime
 		enabled                         int
+		balance                         int64
 	)
 	dest := []any{
 		&u.ID, &email, &token, &uuid, &protocol, &planID,
 		&planType, &planName, &planMonths,
 		&trafficLimit, &trafficUsed, &monthlyUsed, &monthlyLimit,
-		&nextReset, &expiredAt, &enabled, &createdAt,
+		&nextReset, &expiredAt, &enabled, &createdAt, &balance,
 	}
 	var proxyCount int64
 	if withProxyCount {
@@ -170,6 +194,7 @@ func scanUserRow(row interface{ Scan(...any) error }, withProxyCount bool) (*Use
 	u.ExpiredAt = nullTimePtr(expiredAt)
 	u.Enabled = enabled != 0
 	u.CreatedAt = nullTimePtr(createdAt)
+	u.Balance = balance
 	if withProxyCount {
 		u.ProxyActiveCount = proxyCount
 	}

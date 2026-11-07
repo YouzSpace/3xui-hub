@@ -59,8 +59,17 @@ type Giftcard struct {
 	ExpiresAt *time.Time
 	CreatedBy *uint64
 	Note      *string
+	FolderID  *uint64 // 所属文件夹，nil=未归档
 	CreatedAt *time.Time
 	UpdatedAt *time.Time
+}
+
+// GiftcardFolder 是 giftcard_folders 一行（兑换码分组，对齐优惠码文件夹）。
+type GiftcardFolder struct {
+	ID        uint64
+	Name      string
+	CodeCount int64 // 当前筛选条件下的码数（仅 Counts 接口填）
+	Matched   bool  // 当前筛选是否命中该文件夹（仅 Counts 接口填）
 }
 
 // BalanceLog 是 balance_logs 一行（余额流水，审计用）。
@@ -78,8 +87,28 @@ type BalanceLog struct {
 }
 
 // GiftcardFilter 是兑换码列表的筛选条件（空字段 = 不筛）。
+//
+// FolderID：
+//   - nil          → 只出未归档码（folder_id = null），对齐优惠码列表口径
+//   - 指向某个 id  → 只出该文件夹内的码
+//
+// ValueOrder 是「面值」列的排序：asc / desc；空 = 默认按 id 倒序。
 type GiftcardFilter struct {
-	Status *string
+	Status     *string
+	FolderID   *uint64
+	ValueOrder string
+}
+
+// giftcardValueOrderSQL 把面值排序口径转成 ORDER BY 片段（不信任外部输入，白名单）。
+func giftcardValueOrderSQL(v string) string {
+	switch v {
+	case "asc":
+		return " ORDER BY value ASC, id DESC"
+	case "desc":
+		return " ORDER BY value DESC, id DESC"
+	default:
+		return " ORDER BY id DESC"
+	}
 }
 
 // NewGiftcard 是批量生成时单行的落库字段（status 由 SQL 层固定写 active）。
@@ -90,6 +119,7 @@ type NewGiftcard struct {
 	ExpiresAt *time.Time
 	CreatedBy *uint64
 	Note      *string
+	FolderID  *uint64
 	CreatedAt time.Time
 }
 
@@ -126,6 +156,24 @@ type BalanceStore interface {
 	UserBalanceLogs(ctx context.Context, userID uint64, page, perPage int64) ([]BalanceLog, int64, error)
 	// AdjustUserBalance 事务内加锁改余额并写流水；扣成负数返回 ErrBalanceNotEnough。
 	AdjustUserBalance(ctx context.Context, in BalanceAdjust) (*BalanceAdjustment, error)
+
+	// —— 兑换码文件夹（对齐优惠码分组）——
+	// GiftcardFolderCounts 返回全部文件夹 + 当前筛选条件下各文件夹的码数。
+	GiftcardFolderCounts(ctx context.Context, f GiftcardFilter) ([]GiftcardFolder, error)
+	// GiftcardFolderByID 取单个文件夹；查无此行返回的错误满足 NoRows。
+	GiftcardFolderByID(ctx context.Context, id uint64) (*GiftcardFolder, error)
+	// GiftcardFolderByName 按名字取文件夹（不存在返回 nil, nil）。
+	GiftcardFolderByName(ctx context.Context, name string) (*GiftcardFolder, error)
+	// GiftcardFolderCreate 新建文件夹。
+	GiftcardFolderCreate(ctx context.Context, name string) (*GiftcardFolder, error)
+	// GiftcardFolderUpdate 文件夹改名。
+	GiftcardFolderUpdate(ctx context.Context, id uint64, name string) error
+	// GiftcardFolderDelete 删文件夹本身（调用方负责先摘码）。
+	GiftcardFolderDelete(ctx context.Context, id uint64) error
+	// DetachGiftcardsFromFolder 把该文件夹内的码退回「未归档」（folder_id = null）。
+	DetachGiftcardsFromFolder(ctx context.Context, folderID uint64) error
+	// GiftcardIDsInFolder 取该文件夹内所有码的 id（删文件夹时可选连码一起删）。
+	GiftcardIDsInFolder(ctx context.Context, folderID uint64) ([]uint64, error)
 }
 
 // BalanceDeps 是余额域的依赖清单。
