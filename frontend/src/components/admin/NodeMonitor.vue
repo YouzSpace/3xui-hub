@@ -14,6 +14,7 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref }
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Icon from '@/components/ui/Icon.vue'
 import Select from '@/components/ui/Select.vue'
 import StatCard from '@/components/ui/StatCard.vue'
 import NodeGlobe from '@/components/admin/NodeGlobe.vue'
@@ -45,6 +46,8 @@ const regions = ref([])
 const loading = ref(true)
 const failed = ref(false)
 const lastSuccessAt = ref(0)
+/** 「节点一览」默认折叠（用户定稿）：标题右侧三角按钮展开；只折叠不告警。 */
+const nodesOpen = ref(false)
 const globeRef = ref(null)
 /** 24h 监控汇总（提供「近 24 小时流量」合计与 TOP1 机器） */
 const trafficSummary = ref(null)
@@ -376,15 +379,23 @@ onBeforeUnmount(() => {
       <slot name="observatory-side" />
     </div>
 
-    <!-- 节点卡片 -->
+    <!-- 节点卡片：默认折叠，标题右侧三角按钮（只折叠，不做告警） -->
     <div class="nm-nodes-head">
-      <h2 class="nm-panel-title">节点一览 <span class="nm-count">{{ nodes.length }}</span></h2>
+      <button
+        type="button"
+        class="nm-nodes-toggle"
+        :aria-expanded="nodesOpen"
+        @click="nodesOpen = !nodesOpen"
+      >
+        <h2 class="nm-panel-title">节点一览 <span class="nm-count">{{ nodes.length }}</span></h2>
+        <Icon :name="nodesOpen ? 'chevron-down' : 'chevron-right'" :size="18" />
+      </button>
       <span class="nm-updated">
         {{ lastSuccessAt ? `更新于 ${relativeTime(new Date(lastSuccessAt).toISOString(), now)}` : '尚未更新' }}
       </span>
     </div>
 
-    <div class="nm-nodes">
+    <div v-show="nodesOpen" class="nm-nodes">
       <Card v-for="node in nodes" :key="node.id" class="nm-node">
         <div class="nm-node-head">
           <span class="nm-node-flag" aria-hidden="true">{{ regionFlag(node.region) || '·' }}</span>

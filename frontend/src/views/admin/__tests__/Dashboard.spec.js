@@ -24,6 +24,7 @@ const { adminApi } = vi.hoisted(() => ({ adminApi: {} }))
 vi.mock('@/api/admin', () => ({ adminApi }))
 
 import Dashboard from '@/views/admin/Dashboard.vue'
+import TrafficPanel from '@/components/admin/TrafficPanel.vue'
 
 const nodes = [
   { id: 1, name: 'HK01', status: 'online', inbounds: { vless: [1, 2] } },
@@ -116,6 +117,9 @@ const USER_RANKING = {
   '24h': {
     window: '24h', start: '2026-10-17 12:00:00', end: '2026-10-18 12:00:00', data_start: '2026-10-17',
     total_weighted: 4 * 1024 ** 3,
+    // 原始上下行合计（窗口内全部用户，与上面两行 top50 之和不必相等）
+    total_up: 1024 ** 3,
+    total_down: 1024 ** 3,
     rows: [
       {
         user_id: 1, email: 'alice@example.com', weighted: 3 * 1024 ** 3, up: 1024 ** 3, down: 2 * 1024 ** 3,
@@ -279,14 +283,15 @@ describe('Dashboard.vue 流量消耗 Top 5', () => {
 
   it('TOP 排行按双向合计降序，null 排最后并标「无数据」', async () => {
     const wrapper = await mountDashboard()
-    const names = wrapper.findAll('.dsh-rank-name').map((n) => n.text())
+    // 只取流量卡里的机器榜（页面上 CPU/内存排行也用同一套行类名）
+    const names = wrapper.findAll('.dsh-col--wide .dsh-rank-name').map((n) => n.text())
 
     // HK01 与 JP01 都是 2 GB，US01（null）必须最后
     expect(names[0]).toBe('HK01')
     expect(names[1]).toBe('JP01')
     expect(names[2]).toBe('US01')
 
-    const last = wrapper.findAll('.dsh-rank-item')[2]
+    const last = wrapper.findAll('.dsh-col--wide .dsh-rank-item')[2]
     expect(last.find('.dsh-rank-badge').text()).toBe('无数据')
     // 没有数据不画进度条（不是 0%）
     expect(last.find('.dsh-bar b').attributes('style')).toContain('width: 0%')
@@ -294,7 +299,7 @@ describe('Dashboard.vue 流量消耗 Top 5', () => {
 
   it('排行里不显示 0 冒充流量：无数据节点的三列都是 —', async () => {
     const wrapper = await mountDashboard()
-    const us = wrapper.findAll('.dsh-rank-item')[2]
+    const us = wrapper.findAll('.dsh-col--wide .dsh-rank-item')[2]
 
     expect(us.text()).toContain('↑ —')
     expect(us.text()).toContain('↓ —')
@@ -489,10 +494,10 @@ describe('Dashboard.vue 两栏排行（Top5 / CPU / 内存）', () => {
     expect(wide.exists()).toBe(true)
     expect(narrow.exists()).toBe(true)
 
-    // 左栏上曲线、下 Top5
+    // 左栏：曲线在上，流量卡（机器 Top5 + 用户排行）在下，同一列、同宽
     expect(wide.find('.dsh-section-title').text()).toBe('最近24小时流量')
     const wideTitles = wide.findAll('.dsh-section-title').map((n) => n.text())
-    expect(wideTitles).toEqual(['最近24小时流量', '流量消耗 Top 5'])
+    expect(wideTitles).toEqual(['最近24小时流量', '流量消耗 Top 5', '用户流量排行 · 近 24 小时'])
 
     // 右栏 CPU 在上、内存在下
     expect(narrow.findAll('.dsh-section-title').map((n) => n.text())).toEqual([
@@ -605,7 +610,7 @@ describe('Dashboard.vue 两栏排行（Top5 / CPU / 内存）', () => {
 describe('Dashboard.vue 导出 CSV', () => {
   it('CSV：表头 + 行与排行同序，缺失值是空字段（不是 0，也不是 —）', async () => {
     const wrapper = await mountDashboard()
-    const csv = wrapper.vm.buildCsv()
+    const csv = panelOf(wrapper).vm.buildCsv()
     const lines = csv.split('\n')
 
     expect(lines[0]).toBe('节点,上行(字节),下行(字节),双向(字节),CPU均值(%),内存均值(%)')
@@ -619,7 +624,7 @@ describe('Dashboard.vue 导出 CSV', () => {
 
   it('CSV：文件名带 window 与日期', async () => {
     const wrapper = await mountDashboard()
-    expect(wrapper.vm.csvFilename()).toMatch(/^monitor-24h-\d{4}-\d{2}-\d{2}\.csv$/)
+    expect(panelOf(wrapper).vm.csvFilename()).toMatch(/^monitor-24h-\d{4}-\d{2}-\d{2}\.csv$/)
   })
 
   it('CSV 生成后下载里传入了 blob 与文件名', async () => {
@@ -631,7 +636,7 @@ describe('Dashboard.vue 导出 CSV', () => {
     global.URL.revokeObjectURL = revokeUrl
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
 
-    wrapper.vm.exportCsv()
+    panelOf(wrapper).vm.exportCsv()
     await flushPromises()
 
     expect(createUrl).toHaveBeenCalledTimes(1)
@@ -664,6 +669,59 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     // issue #47：机器流量不再单独占一张常驻卡，改由「流量消耗 Top 5」的「查看全部」弹窗承载
     expect(wrapper.text()).not.toContain('机器流量 · 近 24 小时')
     expect(userCards(wrapper).length).toBe(1)
+  })
+
+  it('顶部对比条：突出两侧总流量 + 「用户套餐 ÷ 服务器」比值', async () => {
+    const wrapper = await mountDashboard()
+    const cmp = wrapper.find('.dsh-cmp')
+
+    expect(cmp.exists()).toBe(true)
+    const items = cmp.findAll('.dsh-cmp-item')
+    expect(items.length).toBe(3)
+
+    // 第 1 格：服务器口径，主数值是**总流量**（上下行只是小字）
+    expect(items[0].find('.dsh-cmp-label').text()).toBe('服务器 · 近 24 小时')
+    expect(items[0].find('.dsh-cmp-total').text()).toBe('4.0 GB') // ↑3.0 + ↓1.0
+    expect(items[0].find('.dsh-cmp-flows').text()).toContain('↑ 3.0 GB')
+    expect(items[0].find('.dsh-cmp-flows').text()).toContain('↓ 1.0 GB')
+
+    // 第 2 格：用户套餐口径，主数值是计费总量（4.0 GB），上下行是原始小字
+    expect(items[1].find('.dsh-cmp-label').text()).toBe('用户套餐 · 近 24 小时')
+    expect(items[1].find('.dsh-cmp-total').text()).toBe('4.0 GB')
+    expect(items[1].find('.dsh-cmp-flows').text()).toContain('↑ 1.0 GB')
+    expect(items[1].find('.dsh-cmp-flows').text()).toContain('↓ 1.0 GB')
+
+    // 第 3 格：用户套餐 ÷ 服务器 = 4.0 / 4.0 = 1.00×
+    expect(items[2].find('.dsh-cmp-label').text()).toContain('用户套餐 ÷ 服务器')
+    expect(items[2].find('.dsh-cmp-total').text()).toBe('1.00×')
+    // ≥1 不告警：没有告警文案、比值也不带告警配色
+    expect(items[2].find('.dsh-cmp-alert').exists()).toBe(false)
+    expect(items[2].find('.dsh-cmp-total').classes()).not.toContain('is-bad')
+
+    // <1 才告警：用户套餐 4.0 ÷ 服务器 8.0 = 0.50× → is-bad + 「偏离过大」
+    const unbalanced = await mountDashboard({
+      monitorSummary: vi.fn((w) => Promise.resolve(
+        w === '24h'
+          ? { ...SUMMARY['24h'], totals: { up: 4 * 1024 ** 3, down: 4 * 1024 ** 3, total: 8 * 1024 ** 3 } }
+          : SUMMARY[w],
+      )),
+    })
+    const ratioCell = unbalanced.findAll('.dsh-cmp-item')[2]
+    expect(ratioCell.find('.dsh-cmp-total').text()).toBe('0.50×')
+    expect(ratioCell.find('.dsh-cmp-total').classes()).toContain('is-bad')
+    expect(ratioCell.find('.dsh-cmp-alert').text()).toContain('明显偏低')
+
+    // 用户套餐 4.0 ÷ 服务器 3.0 = 1.33×（>1）→ 不告警
+    const over = await mountDashboard({
+      monitorSummary: vi.fn((w) => Promise.resolve(
+        w === '24h'
+          ? { ...SUMMARY['24h'], totals: { up: 2 * 1024 ** 3, down: 1024 ** 3, total: 3 * 1024 ** 3 } }
+          : SUMMARY[w],
+      )),
+    })
+    const overCell = over.findAll('.dsh-cmp-item')[2]
+    expect(overCell.find('.dsh-cmp-total').text()).toBe('1.33×')
+    expect(overCell.find('.dsh-cmp-alert').exists()).toBe(false)
   })
 
   it('用户榜卡片：用户 ID / 用量 / 占比 / 原始上下行 / 套餐类型（无 # 序号列，进度条在下方）', async () => {
@@ -702,13 +760,13 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     const wrapper = await mountDashboard()
 
     expect(wrapper.find('.dsh-ut-detail').exists()).toBe(false)
-    expect(wrapper.vm.expandedUserId).toBeNull()
+    expect(panelOf(wrapper).vm.expandedUserId).toBeNull()
 
     await userRowsOf(wrapper)[0].trigger('click')
     await flushPromises()
 
     expect(adminApi.userTrafficNodes).toHaveBeenCalledWith(1, '24h')
-    expect(wrapper.vm.expandedUserId).toBe(1)
+    expect(panelOf(wrapper).vm.expandedUserId).toBe(1)
     const detail = wrapper.find('.dsh-ut-detail')
     expect(detail.exists()).toBe(true)
     // 机器名带倍率标注（设计稿：JP1（1.5×）），加权降序
@@ -720,24 +778,24 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     // 再点同一行 → 收起
     await userRowsOf(wrapper)[0].trigger('click')
     await flushPromises()
-    expect(wrapper.vm.expandedUserId).toBeNull()
+    expect(panelOf(wrapper).vm.expandedUserId).toBeNull()
     expect(wrapper.find('.dsh-ut-detail').exists()).toBe(false)
   })
 
   it('「查看全部」弹窗：全部机器按双向降序，倍率从 node-ranking 借（替代原机器卡）', async () => {
     const wrapper = await mountDashboard()
-    wrapper.vm.allNodesOpen = true
+    panelOf(wrapper).vm.allNodesOpen = true
     await flushPromises()
 
     // summary.nodes 是全部 enabled 节点（含窗口内无采样的那台），不是 Top 5 截断
-    expect(wrapper.vm.allNodes.map((n) => n.name)).toEqual(['HK01', 'JP01', 'US01'])
+    expect(panelOf(wrapper).vm.allNodes.map((n) => n.name)).toEqual(['HK01', 'JP01', 'US01'])
     // 倍率来自 /traffic/node-ranking 的 rows（summary 本身不含倍率）
-    expect(wrapper.vm.nodeMultiplierText(1)).toBe('1.5×')
-    expect(wrapper.vm.nodeMultiplierText(2)).toBe('2×')
+    expect(panelOf(wrapper).vm.nodeMultiplierText(1)).toBe('1.5×')
+    expect(panelOf(wrapper).vm.nodeMultiplierText(2)).toBe('2×')
     // 没有倍率数据的机器不显示倍率标签（不是 0×）
-    expect(wrapper.vm.nodeMultiplierText(3)).toBeNull()
+    expect(panelOf(wrapper).vm.nodeMultiplierText(3)).toBeNull()
     // 进度条分母是全部机器的最大值（2 GB），不是 Top5 的
-    expect(wrapper.vm.maxAllTotal).toBe(2 * 1024 ** 3)
+    expect(panelOf(wrapper).vm.maxAllTotal).toBe(2 * 1024 ** 3)
   })
 
   it('「查看全部」弹窗：窗口内没有采样的机器照样列出并标「无数据」', async () => {
@@ -749,13 +807,13 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
       }],
     }
     const wrapper = await mountDashboard({ nodeTrafficRanking: vi.fn(() => Promise.resolve(idle)) })
-    wrapper.vm.allNodesOpen = true
+    panelOf(wrapper).vm.allNodesOpen = true
     await flushPromises()
 
     // 倍率仍能从 node-ranking 借到（即使这台机器在 summary 里查无数据）
-    expect(wrapper.vm.nodeMultiplierText(9)).toBe('3×')
+    expect(panelOf(wrapper).vm.nodeMultiplierText(9)).toBe('3×')
     // 无采样的那台排在最后，且 total 为 null（不是 0）
-    expect(wrapper.vm.allNodes.at(-1).total).toBeNull()
+    expect(panelOf(wrapper).vm.allNodes.at(-1).total).toBeNull()
   })
 
   it('切换窗口：两个排行榜都重取，展开中的明细按新窗口刷新', async () => {
@@ -763,13 +821,13 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     await userRowsOf(wrapper)[0].trigger('click')
     await flushPromises()
 
-    wrapper.vm.userWindow = '7d'
+    panelOf(wrapper).vm.userWindow = '7d'
     await flushPromises()
 
     expect(adminApi.userTrafficRanking).toHaveBeenLastCalledWith('7d')
     expect(adminApi.nodeTrafficRanking).toHaveBeenLastCalledWith('7d')
     // 7d 里用户 1 不在榜上 → 收起，不再留着一个空展开
-    expect(wrapper.vm.expandedUserId).toBeNull()
+    expect(panelOf(wrapper).vm.expandedUserId).toBeNull()
     expect(wrapper.find('.dsh-ut-detail').exists()).toBe(false)
     // 标题跟着窗口走
     expect(wrapper.text()).toContain('用户流量排行 · 近 7 天')
@@ -779,10 +837,10 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     const wrapper = await mountDashboard({
       monitorSummary: vi.fn(() => Promise.resolve({ totals: {}, nodes: [] })),
     })
-    wrapper.vm.allNodesOpen = true
+    panelOf(wrapper).vm.allNodesOpen = true
     await flushPromises()
 
-    expect(wrapper.vm.allNodes.length).toBe(0)
+    expect(panelOf(wrapper).vm.allNodes.length).toBe(0)
   })
 
   it('新表没有任何数据：提示从上线当天累积，不列出 0 行', async () => {
@@ -803,10 +861,10 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
 
     adminApi.userTrafficRanking = vi.fn(() => Promise.reject({ message: 'boom' }))
     adminApi.nodeTrafficRanking = vi.fn(() => Promise.reject({ message: 'boom' }))
-    await wrapper.vm.loadUserTraffic()
+    await panelOf(wrapper).vm.loadUserTraffic()
     await flushPromises()
 
-    const banner = wrapper.find('.dsh-ut .dsh-banner')
+    const banner = wrapper.find('.dsh-ut-card .dsh-banner')
     expect(banner.exists()).toBe(true)
     expect(banner.text()).toContain('用户流量暂时取不到')
     // 上一次的数据还在（不清成 0 / 空）—— 用户列现在展示 #id
@@ -825,7 +883,7 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
 describe('Dashboard.vue 用户流量 CSV', () => {
   it('用户榜 CSV：表头 + 与榜单同序，完整邮箱，占比为数字', async () => {
     const wrapper = await mountDashboard()
-    const lines = wrapper.vm.buildUserTrafficCsv().split('\n')
+    const lines = panelOf(wrapper).vm.buildUserTrafficCsv().split('\n')
 
     expect(lines[0]).toBe('排名,用户ID,邮箱,套餐用量(字节),占比(%),上行原始(字节),下行原始(字节),套餐类型,套餐名,套餐月数')
     expect(lines.length).toBe(3)
@@ -836,15 +894,15 @@ describe('Dashboard.vue 用户流量 CSV', () => {
 
   it('弹窗 CSV：导出全部用户（不是卡片里的 Top 5），缺数据是空字段', async () => {
     const wrapper = await mountDashboard()
-    await wrapper.vm.openAllUsers()
+    await panelOf(wrapper).vm.openAllUsers()
     await flushPromises()
 
     // 弹窗按需拉全量（limit 500，后端 MAX_LIMIT）
     expect(adminApi.userTrafficRanking).toHaveBeenLastCalledWith('24h', 500)
-    expect(wrapper.vm.allUsers.length).toBe(2)
+    expect(panelOf(wrapper).vm.allUsers.length).toBe(2)
 
-    const lines = wrapper.vm
-      .buildUserTrafficCsv(wrapper.vm.allUsers, wrapper.vm.userTotalWeighted)
+    const lines = panelOf(wrapper).vm
+      .buildUserTrafficCsv(panelOf(wrapper).vm.allUsers, panelOf(wrapper).vm.userTotalWeighted)
       .split('\n')
 
     expect(lines[0]).toBe('排名,用户ID,邮箱,套餐用量(字节),占比(%),上行原始(字节),下行原始(字节),套餐类型,套餐名,套餐月数')
@@ -856,7 +914,7 @@ describe('Dashboard.vue 用户流量 CSV', () => {
   it('CSV 文件名带窗口与日期；下载走 Blob + 触发点击', async () => {
     const wrapper = await mountDashboard()
 
-    expect(wrapper.vm.userTrafficCsvFilename()).toMatch(/^user-traffic-24h-\d{4}-\d{2}-\d{2}\.csv$/)
+    expect(panelOf(wrapper).vm.userTrafficCsvFilename()).toMatch(/^user-traffic-24h-\d{4}-\d{2}-\d{2}\.csv$/)
 
     const createUrl = vi.fn(() => 'blob:mock')
     const revokeUrl = vi.fn()
@@ -866,7 +924,7 @@ describe('Dashboard.vue 用户流量 CSV', () => {
     // 上一个 CSV 用例也挂过同一个 prototype spy，计数要清零后再断言本次
     click.mockClear()
 
-    wrapper.vm.exportUserTrafficCsv()
+    panelOf(wrapper).vm.exportUserTrafficCsv()
     await flushPromises()
 
     expect(createUrl).toHaveBeenCalledTimes(1)
@@ -874,3 +932,6 @@ describe('Dashboard.vue 用户流量 CSV', () => {
     expect(revokeUrl).toHaveBeenCalledTimes(1)
   })
 })
+
+/** 流量卡已拆成子组件：它内部的状态/纯函数从这里取。 */
+const panelOf = (wrapper) => wrapper.findComponent(TrafficPanel)

@@ -159,16 +159,18 @@ func (s *trafficSQLStore) UserRanking(ctx context.Context, w TrafficWindow, limi
 	return out, rows.Err()
 }
 
-// UserWeightedTotal 取该窗口内**全部用户**的加权用量合计（占比分母，不受 limit 影响）。
-func (s *trafficSQLStore) UserWeightedTotal(ctx context.Context, w TrafficWindow) (int64, error) {
-	q := fmt.Sprintf(`SELECT COALESCE(SUM(t.weighted_delta), 0)
+// UserTotals 取该窗口内**全部用户**的合计（加权 / 原始上行 / 原始下行），不受 limit 影响。
+func (s *trafficSQLStore) UserTotals(ctx context.Context, w TrafficWindow) (UserTrafficTotals, error) {
+	q := fmt.Sprintf(`SELECT COALESCE(SUM(t.weighted_delta), 0),
+		COALESCE(SUM(t.up_delta), 0), COALESCE(SUM(t.down_delta), 0)
 		FROM %s t
 		WHERE t.%s BETWEEN ? AND ?`, w.Table, w.Column)
-	var total sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, q, w.Start, w.End).Scan(&total); err != nil {
-		return 0, err
+	var out UserTrafficTotals
+	if err := s.db.QueryRowContext(ctx, q, w.Start, w.End).
+		Scan(&out.Weighted, &out.Up, &out.Down); err != nil {
+		return out, err
 	}
-	return total.Int64, nil
+	return out, nil
 }
 
 // NodeRanking 对齐 UserTrafficService::nodeRanking 的用户腿查询。

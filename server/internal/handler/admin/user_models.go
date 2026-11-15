@@ -305,8 +305,9 @@ type TrafficStore interface {
 	// DataStart 取表里最早那个桶的业务日期（没数据 → nil）。
 	DataStart(ctx context.Context, w TrafficWindow, now time.Time) (*string, error)
 	UserRanking(ctx context.Context, w TrafficWindow, limit int64) ([]UserTrafficRow, error)
-	// UserWeightedTotal 取该窗口内**全部用户**的加权用量合计（占比分母，不受 limit 影响）。
-	UserWeightedTotal(ctx context.Context, w TrafficWindow) (int64, error)
+	// UserTotals 取该窗口内**全部用户**的合计（占比分母 + 顶部「用户口径 vs 服务器」对比条）。
+	// 不受 limit 影响。
+	UserTotals(ctx context.Context, w TrafficWindow) (UserTrafficTotals, error)
 	NodeRanking(ctx context.Context, w TrafficWindow) ([]UserTrafficRow, error)
 	UserNodeBreakdown(ctx context.Context, w TrafficWindow, userID uint64) ([]UserTrafficRow, error)
 	// NodesByID 取节点名与 traffic_multiplier（含停用节点，倍率是配置属性）。
@@ -328,6 +329,17 @@ type NicTraffic struct {
 	Up    int64
 	Down  int64
 	Total int64
+}
+
+// UserTrafficTotals 是该窗口内全部用户的合计（三项都是字节）。
+//
+// Weighted 是**套餐口径**（已乘节点倍率，与 users.traffic_used 同源）＝真正从用户套餐里扣的量；
+// Up/Down 是面板侧原始字节（未乘倍率）。顶部对比条用它和服务器网卡口径并排，好一眼看出
+// 倍率是否合适（加权合计 ≈ 原始合计 × 平均倍率）、两个口径差得是否过大。
+type UserTrafficTotals struct {
+	Weighted int64
+	Up       int64
+	Down     int64
 }
 
 // MultiplierFor 对齐 TrafficSyncService::multiplierFor：节点值非 null 用节点值，

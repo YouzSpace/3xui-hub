@@ -50,8 +50,8 @@ func (d *UserDomain) trafficUserRanking(c *gin.Context) {
 		d.failServer(c, "查询流量数据起始", err)
 		return
 	}
-	// 占比分母：该窗口内**全部用户**的加权合计（不受 limit 影响，前端用它算「占全体」百分比）。
-	totalWeighted, err := d.traffic.UserWeightedTotal(ctxOf(c), w)
+	// 占比分母 + 顶部对比条：该窗口内**全部用户**的合计（不受 limit 影响）。
+	totals, err := d.traffic.UserTotals(ctxOf(c), w)
 	if err != nil {
 		d.failServer(c, "查询用户流量合计", err)
 		return
@@ -71,13 +71,14 @@ func (d *UserDomain) trafficUserRanking(c *gin.Context) {
 			"down", r.Down,
 		))
 	}
-	d.success(c, trafficEnvelope(w, dataStart, out, totalWeighted))
+	d.success(c, trafficEnvelope(w, dataStart, out, totals))
 }
 
-// trafficEnvelope 组装 {window, start, end, data_start, total_weighted, rows}。
+// trafficEnvelope 组装 {window, start, end, data_start, total_*, rows}。
 //
-// total_weighted 只对用户榜有意义（占比分母 = 全部用户加权合计）；机器榜传 0 占位。
-func trafficEnvelope(w TrafficWindow, dataStart *string, rows jsArr, totalWeighted int64) *jsObj {
+// total_weighted / total_up / total_down 只对用户榜有意义（占比分母 + 顶部对比条）；
+// 机器榜与用户明细传零值占位。
+func trafficEnvelope(w TrafficWindow, dataStart *string, rows jsArr, totals UserTrafficTotals) *jsObj {
 	ds := any(nil)
 	if dataStart != nil {
 		ds = *dataStart
@@ -87,7 +88,9 @@ func trafficEnvelope(w TrafficWindow, dataStart *string, rows jsArr, totalWeight
 		"start", w.Start,
 		"end", w.End,
 		"data_start", ds,
-		"total_weighted", totalWeighted,
+		"total_weighted", totals.Weighted,
+		"total_up", totals.Up,
+		"total_down", totals.Down,
 		"rows", rows,
 	)
 }
@@ -139,7 +142,7 @@ func (d *UserDomain) trafficNodeRanking(c *gin.Context) {
 			"nic_total", nullableInt(r.NicTotal),
 		))
 	}
-	d.success(c, trafficEnvelope(w, dataStart, out, 0))
+	d.success(c, trafficEnvelope(w, dataStart, out, UserTrafficTotals{}))
 }
 
 // cmpNilLastDesc 比较两个可空数值：双 nil → 0；nil 垫底（返回 -1/1）；否则降序。
@@ -221,7 +224,7 @@ func (d *UserDomain) trafficUserNodes(c *gin.Context) {
 			"share", share,
 		))
 	}
-	d.success(c, trafficEnvelope(w, dataStart, out, 0))
+	d.success(c, trafficEnvelope(w, dataStart, out, UserTrafficTotals{}))
 }
 
 // attachMachineColumns 给 node-ranking 补网卡口径三列 + 倍率，并按并集扩展节点。

@@ -1,0 +1,505 @@
+/*
+ * TrafficPanel.css — 仪表盘「流量」卡的样式（组件级，scoped）。
+ *
+ * 这一块从 Dashboard.css 整段搬过来（机器榜 + 用户榜 + 两个二级弹窗 + 顶部对比条），
+ * 搬的时候顺手做了一件事：**把只属于本组件的规则搬干净**，页面上剩的（曲线、CPU/内存排行、
+ * 业务概览）留在 Dashboard.css。两边都用到的基础件（分区头、工具条、空态、排行条、
+ * 弹窗条）在各自文件里各留一份 —— scoped 样式不跨组件生效，这是拆组件必须付的成本。
+ *
+ * 类前缀沿用 `dsh-`（与页面同一套命名），不改名是为了让两边的观感与选择器语义保持一致。
+ */
+
+.dsh-ut-card {
+  min-width: 0;
+}
+
+/* ── 顶部对比条：服务器实际总流量 vs 用户套餐计费总流量 + 比值 ──
+   用户定稿：**突出总量**（上下行只作次要小字），三格并列、大字加粗，一眼看清谁多谁少。 */
+.dsh-cmp {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.dsh-cmp-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+/* 标签：正文色 + 中粗 —— 原来用 muted 太浅，读数前先看不清这一格是什么。
+   比值格那一列文字较窄，允许换行（不裁切），字号略大保证可读。 */
+.dsh-cmp-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+/* 主数值（合计 / 计费 / 比值）：20px 加粗，这一格最抢眼 */
+.dsh-cmp-total {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+/* 上下行：次要小字（保留绿/紫区分，但不与主数值抢视线） */
+.dsh-cmp-flows {
+  display: inline-flex;
+  gap: var(--space-3);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+}
+/* 格与格之间一条竖分隔（第 2、3 格） */
+.dsh-cmp-item + .dsh-cmp-item {
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--border-subtle);
+}
+/* 比值格：≈1 平衡用主题色；偏离 1 时按等级换色，一眼能看出哪台/哪段有问题 */
+.dsh-cmp-item--ratio .dsh-cmp-total {
+  color: var(--accent);
+}
+.dsh-cmp-item--ratio .dsh-cmp-total.is-warn {
+  color: hsl(35 90% 45%);
+}
+.dsh-cmp-item--ratio .dsh-cmp-total.is-bad {
+  color: var(--danger);
+}
+/* 比值下方的判定文案（略偏低 / 明显偏低）：14px 半粗，字重与字号都提上来才看得清 */
+.dsh-cmp-alert {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+.dsh-cmp-alert.is-ok {
+  color: var(--success);
+}
+.dsh-cmp-item--ratio .dsh-cmp-alert:not(.is-ok) {
+  color: var(--danger);
+}
+
+/* ── 分区头 + 工具条 ── */
+.dsh-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.dsh-section-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  /* 标题可以收缩，但不许被工具条压成一行一个字 */
+  min-width: 8em;
+}
+.dsh-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+/* 窗口选择器固定宽度：不跟着侧栏折叠去伸缩 */
+.dsh-toolbar :deep(.dsh-window-select) {
+  width: 148px;
+}
+.dsh-toolbar :deep(.dsh-node-select) {
+  width: 168px;
+}
+
+/* ── 空态 / 说明 / 出错横幅 ── */
+.dsh-empty {
+  margin: 0;
+  color: var(--text-muted);
+  text-align: center;
+  padding: var(--space-4);
+}
+.dsh-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.dsh-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--danger-muted);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+.dsh-banner-text {
+  flex: 1;
+}
+
+/* ── 机器榜（本组件第一段：服务器口径 Top5 / 全部） ── */
+.dsh-rank {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.dsh-rank-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: 'head head' 'peak peak' 'bar badge';
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.dsh-rank-head {
+  grid-area: head;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+/* 序号（1. 2. …）：灰色、等宽，不抢节点名 */
+.dsh-rank-seq {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.dsh-rank-name {
+  font-weight: var(--font-medium);
+  /* flex 子项默认 min-width:auto → 长名字不收缩、ellipsis 不生效；
+     显式允许收缩，长名字才会在尾部省略而不是把整行撑出屏幕。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rank-flows {
+  display: flex;
+  gap: var(--space-3);
+  margin-left: auto;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.dsh-up {
+  color: var(--success);
+}
+.dsh-down {
+  color: var(--accent);
+}
+/* 「峰值 X at 今天/昨天 HH:MM」：灰色小字，占整行 */
+.dsh-rank-peak {
+  grid-area: peak;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.dsh-rank-badge {
+  grid-area: badge;
+}
+.dsh-bar {
+  grid-area: bar;
+  display: block;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.dsh-bar b {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+/* 无数据：不画进度，用虚线底表达「没有这根条」 */
+.dsh-bar.is-unknown {
+  background: transparent;
+  border: 1px dashed var(--border-subtle);
+}
+
+/* 两段之间的分隔线（机器口径 / 用户套餐口径） */
+.dsh-ut-split {
+  height: 0;
+  margin: var(--space-5) 0;
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── 用户榜（本组件第二段：套餐口径） ── */
+.dsh-ut-list {
+  display: flex;
+  flex-direction: column;
+}
+/* 行可点（展开明细）：hover 给背景与指针，键盘也能用（按钮语义由行上的 tabindex 承担） */
+.dsh-ut-row {
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+.dsh-ut-row:hover {
+  background: var(--bg-hover);
+}
+.dsh-ut-item {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dsh-ut-item:last-child {
+  border-bottom: none;
+}
+/* 上排：一行 flex。信息项与百分比靠左按内容排列、可换行；「明细」靠 margin-left:auto
+   顶到最右（右侧固定一块），垂直居中，不再被 baseline 提到上面。 */
+.dsh-ut-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+}
+.dsh-ut-strong {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.dsh-ut-plan {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+/* 原始 ↑↓ 并排小字（不乘倍率），放在上排 */
+.dsh-ut-item-flows {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+}
+/* 百分比：紧跟在上排数据后面（不靠右、不放侧栏），等宽灰字 */
+.dsh-ut-pct {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+/* 用户列只展示 ID（邮箱不再显示：拿 ID 就能在用户管理里定位到人） */
+.dsh-ut-uid {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
+}
+.dsh-ut-toggle {
+  width: 76px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  text-align: right;
+}
+/* 本卡片内的「明细」：顶到最右并与信息同一行垂直居中（覆盖上面的列式写法） */
+.dsh-ut-item-head .dsh-ut-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-left: auto;
+  width: auto;
+}
+.dsh-ut-toggle-ico {
+  margin-right: 2px;
+}
+.dsh-ut-toggle.is-open {
+  color: var(--accent);
+}
+/* 下排：整条全宽进度条 */
+.dsh-ut-item-bar {
+  display: block;
+  margin-top: var(--space-2);
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.dsh-ut-item-bar b {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+
+/* 展开的明细：**不再套一层底色块**（方块套方块太废空间，用户定稿）。
+   用左侧一条竖线做缩进指示，与上方用户行在同一张卡片里连续。 */
+.dsh-ut-detail {
+  padding: var(--space-1) var(--space-4) var(--space-4) var(--space-6);
+  border-left: 2px solid var(--accent-muted);
+  margin-left: var(--space-4);
+}
+.dsh-ut-detail-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.dsh-ut-detail-empty {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.dsh-ut-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* 明细一行：机器名（含倍率） | 条 | 用量 | 占该用户百分比 */
+.dsh-ut-node {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) 92px 52px;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+.dsh-ut-node-name {
+  overflow-wrap: anywhere;
+}
+.dsh-ut-node-bar {
+  display: block;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.dsh-ut-node-bar b {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--success);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+.dsh-ut-node-value {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  font-weight: var(--font-semibold);
+}
+.dsh-ut-node-share {
+  text-align: right;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 脚注与「数据起始日」提示 */
+.dsh-ut-note {
+  margin: var(--space-4) 0 0;
+}
+.dsh-ut-start {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* ── 二级弹窗顶部工具条 ── */
+.dsh-modal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.dsh-modal-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* ── 窄屏 ── */
+@media (max-width: 980px) {
+  /* 明细行：窄屏把「机器名 / 条」拆成两行，避免 140px 固定列把表挤爆 */
+  .dsh-ut-node {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: 'name value share' 'bar bar bar';
+    row-gap: var(--space-2);
+  }
+  .dsh-ut-node-name {
+    grid-area: name;
+  }
+  .dsh-ut-node-bar {
+    grid-area: bar;
+  }
+  .dsh-ut-node-value {
+    grid-area: value;
+  }
+  .dsh-ut-node-share {
+    grid-area: share;
+  }
+}
+
+@media (max-width: 767px) {
+  /* 窄屏卡片头：只有**带工具条**的卡才让标题独占一行（is-stack 显式标记） */
+  .dsh-section-head.is-stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+  .dsh-section-title {
+    min-width: 0;
+  }
+  .dsh-toolbar {
+    gap: var(--space-2);
+  }
+  .dsh-toolbar :deep(.dsh-window-select),
+  .dsh-toolbar :deep(.dsh-node-select) {
+    width: 100%;
+  }
+  .dsh-rank-name {
+    white-space: nowrap;
+  }
+  /* 对比条窄屏竖排：三格纵向堆叠，竖分隔改横分隔 */
+  .dsh-cmp {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+  .dsh-cmp-item + .dsh-cmp-item {
+    padding-left: 0;
+    padding-top: var(--space-3);
+    border-left: none;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .dsh-cmp-total {
+    font-size: var(--text-lg);
+  }
+  /* 窄屏用户榜**不再展示上下行原始流量**（用户口径 —— 用户定稿）：宽度让给用量与百分比 */
+  .dsh-ut-col-raw {
+    display: none;
+  }
+  .dsh-ut-pct {
+    font-size: var(--text-xs);
+    line-height: 16px;
+  }
+  /* 窄屏「明细」只留箭头（76px 的「▸ 明细」在 360px 里会被挤到只露出一个「展」字） */
+  .dsh-ut-toggle {
+    width: auto;
+    min-width: 16px;
+  }
+  .dsh-ut-toggle-txt {
+    display: none;
+  }
+  /* 明细区窄屏省左右留白（否则 360px 里可用宽度只剩一半） */
+  .dsh-ut-detail {
+    padding: var(--space-1) var(--space-2) var(--space-3) var(--space-3);
+    margin-left: var(--space-2);
+  }
+}

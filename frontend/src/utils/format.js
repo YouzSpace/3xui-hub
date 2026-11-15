@@ -51,6 +51,31 @@ export function relativeTime(iso, now = Date.now()) {
   return `${Math.floor(diff / 86400000)} 天前`
 }
 
+/**
+ * 「峰值 X at 今天/昨天 HH:MM」里的时间部分（仪表盘流量/资源排行共用）。
+ * 只给「今天 / 昨天」两个相对日（更早的窗口回落到 M/D），因为参考图里就这两种，
+ * 而 7d/30d 窗口的峰值多半在前几天 —— 那时显示绝对日期比「3 天前」更好定位。
+ * 无效输入返回 null（调用方据此省略「at …」这一段）。
+ */
+export function peakTime(iso) {
+  if (!iso) return null
+
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return null
+
+  const pad = (n) => String(n).padStart(2, '0')
+  const hhmm = `${pad(at.getHours())}:${pad(at.getMinutes())}`
+
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const today = dayStart(new Date())
+  const target = dayStart(at)
+
+  if (target === today) return `今天 ${hhmm}`
+  if (target === today - 86400000) return `昨天 ${hhmm}`
+
+  return `${at.getMonth() + 1}/${at.getDate()} ${hhmm}`
+}
+
 /** 资源占用分级：<70 正常 / 70–89 偏高 / ≥90 高占用 / 无数据。 */
 export function usageLevel(value) {
   if (!finite(value) || value < 0) return 'unknown'
