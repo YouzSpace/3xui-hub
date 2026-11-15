@@ -125,6 +125,7 @@ type ReconcileSummary struct {
 	// ProbeFailed 是探测本身失败（超时/5xx/登录态失效）的条数，与 Unknown（探测到了但读不全）分开。
 	ProbeFailed                int
 	Registered, Fixed, Drift   int
+	DriftFixed                 int // 漂移里被自动修复（写回节点并复核一致）的条数
 	DriftSafe, DriftEarlyCut   int
 	DriftLoose                 int
 	Opened, Closed, Unchanged  int
@@ -1775,13 +1776,16 @@ func (r *commandRunner) runUsersReconcileEnable(ctx context.Context, args map[st
 	//   nodes/users 规模 · probed 有结论数 · probe_failed 探测失败 · fixed/skipped(deferred) 动作
 	//   unknown 未知 · drift 三档（safe/early_cut/loose）· ms 墙钟。
 	r.logf("%snodes=%d users=%d probed=%d probe_failed=%d registered=%d fixed=%d attached=%d skipped=%d "+
-		"unknown=%d drift=%d drift_safe=%d drift_early_cut=%d drift_loose=%d "+
+		"unknown=%d drift=%d drift_fixed=%d drift_safe=%d drift_early_cut=%d drift_loose=%d "+
 		"opened=%d closed=%d unchanged=%d foreign=%d snap=%s ms=%d "+
 		"bare_nodes=%d bare_mismatch=%d bare_bumped=%d bare_drift=%d bare_stale=%d",
 		prefix, sum.Nodes, sum.Users, sum.Probed, sum.ProbeFailed, sum.Registered, sum.Fixed, sum.Attached,
-		sum.Deferred, sum.Unknown, sum.Drift, sum.DriftSafe, sum.DriftEarlyCut, sum.DriftLoose,
+		sum.Deferred, sum.Unknown, sum.Drift, sum.DriftFixed, sum.DriftSafe, sum.DriftEarlyCut, sum.DriftLoose,
 		sum.Opened, sum.Closed, sum.Unchanged, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs,
 		sum.BareNodes, sum.BareMismatch, sum.BareBumped, sum.BareDrift, sum.BareStale)
+	if sum.DriftFixed > 0 {
+		r.logf("对账漂移已自动修复：%d 条节点的 total/expiry 按面板值写回并复核一致", sum.DriftFixed)
+	}
 	if sum.BareBumped > 0 {
 		// 裸内核的唯一修复手段是重拉配置（agent 随后会重启内核），这条要留痕好对时间线。
 		r.logf("裸内核重拉：%d 台节点因用户集合/开关与面板不一致而 bump config_version"+

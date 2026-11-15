@@ -27,6 +27,7 @@ func reconcileAdapter(col *collector.Collector) func(context.Context, bool, int)
 			Registered:    rep.Registered,
 			Fixed:         rep.Fixed,
 			Drift:         rep.Drift,
+			DriftFixed:    rep.DriftFixed,
 			DriftSafe:     rep.DriftSafe,
 			DriftEarlyCut: rep.DriftEarlyCut,
 			DriftLoose:    rep.DriftLoose,

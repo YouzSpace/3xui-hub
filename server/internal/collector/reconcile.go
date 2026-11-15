@@ -16,23 +16,30 @@ package collector
 //   - 实测反例：`clients/list` 在本版节点上只回少量非本站 email（自建用户），我们自己的
 //     client 一条都拿不到 → probed=0、130 秒空转。所以它不作为主路径。
 //
-// 报告口径：Drift 是「只看不写」的字段漂移总数，并按**方向**分三档计数 ——
-// DriftSafe / DriftEarlyCut / DriftLoose（三者之和恒等于 Drift）。只有 DriftEarlyCut>0
-// 表示「节点比面板更紧、有人正被提前掐」，调用方据此把日志升到 WARN。
-// ProbeFailed 单独计数：它既不进 Probed 也不进 Unknown，是「本轮什么都没看到」的唯一信号。
+// 报告口径：Drift 是「字段漂移」总数（total/expiry 与面板不一致），并按**方向**分三档计数
+// —— DriftSafe / DriftEarlyCut / DriftLoose（三者之和恒等于 Drift）。DriftFixed 是其中
+// 「已自动修复」的条数。只有 DriftEarlyCut>0 表示「节点比面板更紧、有人正被提前掐」，调用方
+// 据此把日志升到 WARN。ProbeFailed 单独计数：它既不进 Probed 也不进 Unknown，是「本轮什么都
+// 没看到」的唯一信号。
 //
-// 可见性（issue #135）：漂移原先只累加计数 + 打一行 journald WARN，管理端任何页面都看不到；
-// 现在每条漂移另外落一行 operation_logs（type='system'、actor='reconcile'、status=500），
-// action 按方向区分（见 driftClass.action），path='node#<id>/user#<uid>'，同 node+user+action
-// 24 小时内只留一条（与 traffic-sync 的 recordDrift 同一范式）。落库失败只打日志，不中断对账。
-// 3x-ui 写回（UpdateClient）失败同样落一行（action='3x-ui 写回失败'），见 RecordWritebackFailure。
+// ⭐ 字段漂移的修法（用户定稿，2026-11-15）：
+//   - 节点 client 设了**具体额度**（total>0）却与面板不同 → **自动写回面板值**（面板是唯一真源）。
+//     expiry 是否为 0 不参与判定（total 型套餐 expiry 本就是 0）。写回三道闸见 autoFixDrift：
+//     现取完整对象整条替换只覆盖 total/expiry、逐入站+兜底各写一次、写后复核真的相等才算成功。
+//   - 节点是「不限流量」（total==0）→ **只报告、不写回**：total==0 分不清是历史残留还是管理员
+//     在 3x-ui 手工放开，写回会把用户「锁死」在面板额度。见 canAutoFixDrift。
+//
+// 可见性（issue #135）：每条漂移落一行 operation_logs（type='system'、actor='reconcile'、
+// status=500），action 按处置区分（「对账漂移·…」=待人工/已修复），path='node#<id>/user#<uid>'，
+// 同 node+user+action 24 小时内只留一条（与 traffic-sync 的 recordDrift 同一范式）。落库失败只
+// 打日志，不中断对账。3x-ui 写回（UpdateClient）失败落一行（action='3x-ui 写回失败'）。
 //
 // 修法（用户定稿）：
 //   - 节点上没有这个人 + 面板判「该可用」→ **补注册**（AddClient，uuid 由节点生成）；
-//   - 字段对不上（含残留旧记录）→ **先 UpdateClient 保留 uuid**（重建会换 uuid：
-//     手工导入链接的用户当场断、订阅用户还得重拉）；复核仍不符才删除重建兜底；
+//   - 字段漂移 → 见上「⭐ 字段漂移的修法」（可判定→自动修复，不可判定→只报告）；
 //   - enable 该开/该关 → 兜底执行；标记与意图矛盾的人再走 ToggleClient（它覆盖 xray 侧
 //     并写/清 users.traffic_disabled_at）；
+//   - **有在途 user_delivery（下发中）的用户本轮跳过比对**（避免抢跑读到下发中间态→假漂移）；
 //   - 超时 / 5xx / 登录态失效 / 字段读不全 = **UNKNOWN → 本轮不动**；
 //   - **只动我们自己建的 client**：面板上自建的远程用户（其它 email 形态）只报告不删除，
 //     连"孤儿"也不自动清；
@@ -61,7 +68,9 @@ type ReconcileReport struct {
 	Probed     int // 有明确结论的 (节点,用户) 数
 	Registered int // 节点缺人 → 补注册
 	Fixed      int // 开关方向被纠正（该开被关→开 / 该关还开→关）
-	Drift      int // total/expiry 漂移 → **只报告不写**（改错代价大于收益）
+	Drift      int // total/expiry 漂移 → 安全方向只报告；可确定修正为面板值的才自动修复
+	// DriftFixed 是本轮真正写回节点（UpdateClient 成功、字段已与面板一致）的漂移条数。
+	DriftFixed int
 	// DriftSafe / DriftEarlyCut / DriftLoose 是 Drift 的方向分档（三者之和 == Drift）：
 	//   Safe     = 节点不设限，或比面板更宽松（靠面板兜底，用户无感）
 	//   EarlyCut = 节点配额/期限比面板更紧 → **用户会被节点提前掐**（唯一需要人工处理的方向）
@@ -71,7 +80,6 @@ type ReconcileReport struct {
 	DriftSafe     int
 	DriftEarlyCut int
 	DriftLoose    int
-	Rebuilt       int      // 预留：修正后仍不符时的删除重建（默认不启用，需人工确认）
 	Opened        int      // 该开被关 → 打开
 	Closed        int      // 该关还开 → 关闭
 	// Attached 是「节点上已有这个 client，但没挂到该协议的全部入站」→ 补挂的数量
@@ -122,6 +130,9 @@ type reconcileUser struct {
 	// PlanIDValid 区分「有套餐但过期/超量」与「压根没套餐」：后者不参与任何关闭动作
 	// （旧系统从不碰无套餐的人；摘了只会造成"后台建号→被摘→分配套餐又建回来"的抖动）。
 	PlanIDValid bool
+	// SkipReason 非空表示本轮**不比对**这个用户（仍占位，避免被当成漂移/缺人）。
+	// 目前只有 "delivery"：该用户有在途 user_delivery 任务，节点可能处于下发中间态。
+	SkipReason string
 }
 
 // nodeSnapshotEntry 是节点上一条 client 的比对视图。
@@ -164,6 +175,25 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 	users, err := c.reconcileUsers(ctx)
 	if err != nil {
 		return rep, err
+	}
+	// 正在下发中、或**刚下发完**的用户本轮**不比对**：支付完成/后台改套餐会派发 user_delivery
+	// 异步任务（先 ResetClientTraffic → 再 ProvisionUser + SetClientEnabled，约 2~5 秒）。
+	//
+	// 为什么不能只跳过「在途」、还要留一段「刚下发完」的宽限期：
+	//   ① 抢跑：reconcile 若恰好在下发进行中读快照，拿到的是「面板已改、节点没写完」的中间态；
+	//   ② **更隐蔽的一条**：reconcile 读节点走的是 `inbound/list` 的共享快照（TTL 75s，见
+	//      inbound_cache.go），而下发是另一个进程里的 collector 实例直接写节点、**不会清这个缓存**
+	//      —— 所以即使下发已经「完成」，只要那份快照还在 75 秒 TTL 内，reconcile 仍会读到
+	//      下发**之前**的旧值，判成漂移（218 那次就是这么来的）。
+	// 因此对「最近 deliveryGraceSeconds 内完成过下发」的用户，本轮一律跳过：这个宽限期设为
+	// **大于快照 TTL**（默认 120s > 75s），等旧快照自然过期后再比对 —— 那时读到的就是节点的
+	// 真实状态。若过了宽限期**仍在漂移**，才是真漂移 → 交给下面的自动修复。
+	if recent, err := c.pendingOrRecentDeliveryUsers(ctx); err == nil {
+		for i := range users {
+			if recent[users[i].ID] {
+				users[i].SkipReason = "delivery"
+			}
+		}
 	}
 	rep.Users = len(users)
 
@@ -286,6 +316,7 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 		rep.Registered += out.Registered
 		rep.Fixed += out.Fixed
 		rep.Drift += out.Drift
+		rep.DriftFixed += out.DriftFixed
 		rep.DriftSafe += out.DriftSafe
 		rep.DriftEarlyCut += out.DriftEarlyCut
 		rep.DriftLoose += out.DriftLoose
@@ -359,6 +390,7 @@ type nodeOutcome struct {
 	Registered    int
 	Fixed         int
 	Drift         int
+	DriftFixed    int // 漂移里被自动修复（写回节点并复核一致）的条数
 	DriftSafe     int
 	DriftEarlyCut int
 	DriftLoose    int
@@ -424,11 +456,12 @@ func (d driftClass) action() string {
 // classifyDrift 判定一条漂移的方向分档（纯函数，只读三个字段）。
 //
 // 3x-ui 语义（实测）：total==0 = **不限流量**（不是"限额 0"）；expiry==0 = 不过期。
-// 判定顺序（期限优先 —— 期限提前到期是最硬的"提前掐人"）：
-//  1. 两边都有期限、节点更早 → EarlyCut；
-//  2. 面板有限额、节点限额更小 → EarlyCut（0 < 节点 < 面板）；
-//  3. 面板有限额、节点不设限 → Safe；
-//  4. 其余 → Loose（节点比面板宽松）。
+//
+// ⚠️ 归为 Safe 的两档（节点「不限」：total==0 或 expiry==0）**恰恰是不可自动修复、
+// 只报告**的那种（无法区分历史 NULL 残留 vs 管理员手工放开，见 canAutoFixDrift）。
+// 「安全」指的不是「可以随便写回」，而是「节点放得比面板宽，用户不会被提前掐、也没有
+// 安全漏洞」—— 所以既不改也不告警升级。可自动修复的「节点设了具体值但与面板不同」
+// 一律落 Loose（节点比面板宽松），仍属可见但不需人工。
 func classifyDrift(entry nodeSnapshotEntry, u reconcileUser) driftClass {
 	if u.ExpiryMs > 0 && entry.ExpiryMs > 0 && entry.ExpiryMs < u.ExpiryMs {
 		return driftEarlyCut
@@ -485,6 +518,97 @@ func (c *Collector) recordReconcileDrift(ctx context.Context, node nodeRow, u re
 	}
 }
 
+// driftFixedAction 是「漂移已自动修复」写进 operation_logs.action 的固定值。
+const driftFixedAction = "对账漂移·已自动修复"
+
+// recordReconcileDriftFixed 落一条「漂移已自动修复」审计（与待人工的 action 区分开，
+// 同 node+user 24h 内只留一条）。修好是正常收敛，也让运维能追溯「这次是系统自动修的」。
+func (c *Collector) recordReconcileDriftFixed(ctx context.Context, node nodeRow, u reconcileUser, entry nodeSnapshotEntry) {
+	path := fmt.Sprintf("node#%d/user#%d", node.ID, u.ID)
+	msg := fmt.Sprintf("节点 %s(#%d) 上 %s 的配额/期限已按面板值自动修正：%s",
+		node.Name, node.ID, reconcileUserLabel(u), driftFieldSummary(entry, u))
+	if err := c.recordSystemAudit24h(ctx, reconcileDriftActor, driftFixedAction, path, msg); err != nil {
+		c.logf_("[reconcile] 已修复审计落库失败（不影响对账）node=%s user=%d: %v", node.Name, u.ID, err)
+	}
+}
+
+// canAutoFixDrift 判定一条字段漂移能否**安全地**自动修复为面板值（纯函数）。
+//
+// 判定只看一个字段：**节点 total>0（设了具体的字节额度）**。只要节点上有一个具体的流量
+// 额度，就说明这是一条「真实套餐定义」，只是内容与面板不一致 —— 几乎必然是「面板改了套餐、
+// 补下发没写到位」（实测 117/117 本应一致），面板是唯一真源，写回即可。expiry 是否为 0
+// 不参与判定：total 型套餐的 expiry 本来就是 0（不过期），照样要按面板写（218 的旧套餐
+// plan26 就是 total=48GiB/不过期 这种形态，必须能修）。
+//
+// 不修的唯一情况（只报告、交人工）：**total==0**。节点把流量设成 0 在 3x-ui 语义里是
+// 「不限流量」，它可能是历史 NULL 残留（该修），也可能是管理员在 3x-ui 里**手工放开**
+// （该保留）—— 无法区分，写回等于把用户「锁死」在面板额度上，所以宁可不动、等人工确认。
+//
+// 详见文件顶「绝不做的三件事」—— 这是本功能最重要的安全边界，不要再放宽。
+func canAutoFixDrift(entry nodeSnapshotEntry) bool {
+	if entry.Incomplete {
+		return false
+	}
+	return entry.TotalGB > 0
+}
+
+// autoFixDrift 把一条「可判定」的字段漂移按面板值写回节点（3x-ui 整条替换 + 复核）。
+//
+// 安全靠三件事（缺一不可）：
+//   1. **现取完整对象、整条替换、只覆盖三个字段**：先 GetClientStrict 读回节点上的完整
+//      client，NormalizeForUpdate 归一后只覆盖 email/enable/totalGB/expiryTime；uuid/flow/
+//      limitIp/subId 等由原对象原样带回 —— 直接发几个字段会把没带上的按零值写掉
+//      （3x-ui update 是 replace 非 patch）。绝不拿共享快照里的对象当底稿：那份可能只是
+//      clientStats 行（没有 uuid），拿它替换会毁掉凭据。
+//   2. **逐入站 + 兜底各更新一次**：与 applyEnableOnNode 同序，避免漏改某条入站的副本。
+//   3. **写后复核**：GetClientStrict 读回确认 totalGB/expiryTime 已与面板一致才算成功；
+//      不一致/读不到按失败（落「待人工」审计、下轮再来），绝不假成功。
+func (c *Collector) autoFixDrift(ctx context.Context, client *threexui.Client, node nodeRow,
+	u reconcileUser, entry nodeSnapshotEntry) error {
+	email := clientEmail(u.ID)
+	full, err := client.GetClientStrict(ctx, email)
+	if err != nil || full == nil {
+		return fmt.Errorf("修复前读取完整 client 失败: %v", err)
+	}
+	payload := NormalizeForUpdate(full)
+	payload["email"] = email
+	payload["totalGB"] = u.Limit
+	payload["expiryTime"] = u.ExpiryMs
+	// enable 保持节点现状（漂移只涉及 total/expiry，不在这里改开关方向）。
+	payload["enable"] = entry.Enable
+
+	inboundIDs, err := c.inboundIDsFor(ctx, node.ID, u.Protocol)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, inboundID := range inboundIDs {
+		id := inboundID
+		if err := client.UpdateClient(ctx, email, payload, &id); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := client.UpdateClient(ctx, email, payload, nil); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if firstErr != nil {
+		_ = c.RecordWritebackFailure(ctx, node.ID, email, firstErr)
+		return firstErr
+	}
+
+	// 写后复核：确认字段真的落到节点上（不信「HTTP 200 就当成功」）。
+	obj, err := client.GetClientStrict(ctx, email)
+	if err != nil || obj == nil {
+		return fmt.Errorf("修复后复核读取失败: %v", err)
+	}
+	got := entryFromClientObject(obj)
+	if got.Incomplete || got.TotalGB != u.Limit || got.ExpiryMs != u.ExpiryMs {
+		return fmt.Errorf("修复后复核仍不一致：total 节点=%d 面板=%d expiry 节点=%d 面板=%d",
+			got.TotalGB, u.Limit, got.ExpiryMs, u.ExpiryMs)
+	}
+	return nil
+}
+
 // RecordWritebackFailure 记录一次 3x-ui 写回（UpdateClient）失败。
 //
 // 由写回调用方在收到 UpdateClient 错误时调用（驱动层是纯 API 客户端、不碰 DB）。
@@ -500,6 +624,61 @@ func (c *Collector) RecordWritebackFailure(ctx context.Context, nodeID int64, em
 		c.logf_("[reconcile] 写回失败审计落库失败（不影响下发）node=%d email=%s: %v", nodeID, email, err)
 	}
 	return err
+}
+
+// driftReverifyAttempts / driftReverifyGap 是「判定漂移前的直读复核」轮次与间隔。
+//
+// 为什么多轮：下发可能正在收尾，单次直读仍可能撞上最后一步没写完的瞬间。多读几次、
+// 任一次读回「已与面板一致」就判为读取时序假象；几次都还不一致，才是真漂移 → 才修。
+// 默认 3 次、间隔 3 秒（考虑节点网络延迟，留足余量）。只在「快照显示漂移」时才走
+// （正常一轮 drift=0，不触发，零成本）。
+func driftReverifyAttempts() int {
+	if n := envInt("RECONCILE_DRIFT_REVERIFY_ATTEMPTS", 3); n > 0 {
+		return n
+	}
+	return 3
+}
+
+func driftReverifyGap() time.Duration {
+	ms := envInt("RECONCILE_DRIFT_REVERIFY_GAP_MS", 3000)
+	if ms < 0 {
+		ms = 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// verifyDriftAgainstLive 对单个 client 做**多轮不走缓存**的直读（GetClientStrict），判定漂移真伪。
+//
+// 返回：
+//   - consistent=true：某一轮读到「total/expiry 已与面板一致」→ 之前的漂移是读取时序假象；
+//   - consistent=false, ok=true：读到了值，但每一轮都仍与面板不一致 → **真漂移**，entry 是最后一次直读值；
+//   - consistent=false, ok=false：一次都没读全（超时/5xx/字段缺）→ 调用方退回用快照（保守处理）。
+//
+// 轮次/间隔见 driftReverifyAttempts / driftReverifyGap。最后一轮读完立即返回，不额外 sleep。
+func (c *Collector) verifyDriftAgainstLive(ctx context.Context, client *threexui.Client, u reconcileUser) (nodeSnapshotEntry, bool, bool) {
+	var last nodeSnapshotEntry
+	ok := false
+	attempts := driftReverifyAttempts()
+	for i := 0; i < attempts; i++ {
+		obj, err := client.GetClientStrict(ctx, clientEmail(u.ID))
+		if err == nil && obj != nil {
+			e := entryFromClientObject(obj)
+			if !e.Incomplete {
+				last, ok = e, true
+				if e.TotalGB == u.Limit && e.ExpiryMs == u.ExpiryMs {
+					return e, true, true // 已与面板一致 → 假象
+				}
+			}
+		}
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return last, false, ok
+			case <-time.After(driftReverifyGap()):
+			}
+		}
+	}
+	return last, false, ok
 }
 
 // reconcileUserLabel 是审计文案里的人：优先 email，没有就退回 client email（ch_user_<id>）。
@@ -589,6 +768,11 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 	batchWrites := 0
 	for _, u := range users {
 		email := clientEmail(u.ID)
+		if u.SkipReason != "" {
+			// 在途下发（delivery）：本轮不比对，留到下一轮（下发完成后）再核。
+			out.Deferred++
+			continue
+		}
 		if !snap.Probed[email] {
 			out.Deferred++ // 本轮没探测（预算外/轮转未轮到）
 			continue
@@ -709,21 +893,67 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 			continue
 		}
 
-		// enable 一致、只有 total/expiry 对不上 → 只报告，带方向分档（classifyDrift）。
-		// 3x-ui 的语义：total==0 = **不限流量**（不是"限额 0"），所以
-		//   node_total==0          → 节点不设限、靠面板封禁兜底（安全方向）
-		//   0 < node_total < panel → 节点会比面板更早掐人（唯一需人工处理的方向）
-		//   node_total > panel     → 节点更宽松（安全方向）
+		// enable 一致、只有 total/expiry 对不上 → 字段漂移。
+		//
+		// 3x-ui 的语义：total==0 = **不限流量**（不是"限额 0"），expiry==0 = 不过期。
+		//
+		// 处置分两种（关键：**不能无脑写回节点**）：
+		//   - **可自动修复**：节点 client 设了具体额度（total>0），只是与面板不一致。
+		//     这几乎总是「面板改了套餐、下发没写到位」的结果，面板是唯一真源 → 把 totalGB/
+		//     expiryTime 按面板值写回（整条替换、保留 uuid/flow 等其它字段），复核一致即算修复。
+		//     expiry 是否为 0 不参与判定（total 型套餐 expiry 本就是 0）。
+		//   - **只报告**：节点是「不限流量」形态（total==0）却与面板额度冲突。total==0 有两种
+		//     来源，**无法区分**：① 历史 NULL/未设限残留（该修）；② 管理员在 3x-ui 里**故意
+		//     手工**取消限制（则该保留）。分不清就不能猜 —— 见「绝不做的三件事」，只报告等人工。
+		//     ⚠️ 不能拿「面板是唯一真源」一刀切：那会把管理员的手工放开每 5 分钟写回成面板值，
+		//     等于把用户「锁死」在面板额度上。
 		if entry.TotalGB != u.Limit || entry.ExpiryMs != u.ExpiryMs {
+			// ⭐ 根本修复：快照显示不一致，**先别信这份快照**，对这个 client 做**多轮不走缓存的
+			// 直读复核**（GetClientStrict 直连节点当前状态，默认 3 次/间隔 1s）。真正的根因是
+			// 「读太快」——快照可能是下发前采的（TTL 75s、下发不清本进程缓存），下发其实早已完成。
+			// 多轮直读里**任一轮**与面板一致 → 读取时序假象，不记漂移、不修、下轮正常；只有**几轮
+			// 都还不一致**，才是真漂移，才进入下面的报告/自动修复（这样无论怎么抢跑都会收敛到正常）。
+			live, consistent, liveOK := c.verifyDriftAgainstLive(ctx, client, u)
+			if consistent {
+				c.logf_("[reconcile] 疑似读取时序假漂移，多轮直读复核已一致、跳过 node=%s user=%d（快照 total=%d expiry=%d，直读 total=%d expiry=%d）",
+					node.Name, u.ID, entry.TotalGB, entry.ExpiryMs, live.TotalGB, live.ExpiryMs)
+				out.Unchanged++
+				continue
+			}
+			if liveOK {
+				// 多轮直读仍不一致 → 以直读为准（快照可能偏旧）判方向/修复。
+				entry = live
+			}
 			dir := classifyDrift(entry, u)
 			out.recordDrift(dir)
 			if out.Drift <= 3 {
-				c.logf_("[reconcile] 字段漂移（只报告）node=%s user=%d total %d/%d expiry %d/%d %s",
+				c.logf_("[reconcile] 字段漂移（经直读复核）node=%s user=%d total %d/%d expiry %d/%d %s",
 					node.Name, u.ID, entry.TotalGB, u.Limit, entry.ExpiryMs, u.ExpiryMs, dir.label())
 			}
-			// 落库（issue #135）：原先只有计数 + 日志，管理端任何页面都看不到。
-			// 只报告不写回节点的口径不变 —— 这里写的是 operation_logs，不是节点。
-			c.recordReconcileDrift(ctx, node, u, entry, dir)
+			fixable := canAutoFixDrift(entry)
+			switch {
+			case dry && fixable:
+				// 干跑：不改节点，只说明「本来会修」，仍照常落一条漂移审计（干跑=只报告口径）。
+				c.logf_("[reconcile] [dry-run] 本会将漂移修正为面板值 node=%s user=%d", node.Name, u.ID)
+				c.recordReconcileDrift(ctx, node, u, entry, dir)
+			case dry:
+				// 干跑 + 不可判定：只报告。
+				c.recordReconcileDrift(ctx, node, u, entry, dir)
+			case !fixable:
+				// 不可判定方向（节点「不限」）：只报告，不改节点。
+				c.recordReconcileDrift(ctx, node, u, entry, dir)
+			default:
+				// 真写：自动修复并复核。
+				if err := c.autoFixDrift(ctx, client, node, u, entry); err != nil {
+					c.logf_("[reconcile] 漂移自动修复失败 node=%s user=%d: %v", node.Name, u.ID, err)
+					c.recordReconcileDrift(ctx, node, u, entry, dir)
+				} else {
+					out.DriftFixed++
+					writes++ // 计入写入数 → 收尾会作废本节点快照缓存（见下方 invalidateInboundSnapshot）
+					// 修复成功：落一条「已自动修复」审计（与「待人工」同一去重范式，action 不同）。
+					c.recordReconcileDriftFixed(ctx, node, u, entry)
+				}
+			}
 			continue
 		}
 		out.Unchanged++
@@ -1023,10 +1253,10 @@ func allInboundIDs(byProto map[string][]int64) []int64 {
 
 // addClientOnNode 在单台 3x-ui 节点上补注册（按面板意图组负载）。
 //
-// 这是**新建**路径（补注册 / 重建都是这一条），所以要带协议凭据：
+// 这是**新建**路径（补注册用），所以要带协议凭据：
 // vless/vmess→id、trojan/shadowsocks→password、hysteria→auth（取 users.uuid）。
 // 不带的话 hysteria 的 client 会被 3x-ui 拒成 `empty client ID`，补注册等于白跑。
-// 更新路径（updateClientOnNode）相反，见那边的说明。
+// 字段漂移的修正走 autoFixDrift（更新路径，保留 uuid、不传凭据）。
 func (c *Collector) addClientOnNode(ctx context.Context, client *threexui.Client, node nodeRow, u reconcileUser, enable bool) error {
 	inboundIDs, err := c.inboundIDsFor(ctx, node.ID, u.Protocol)
 	if err != nil {
@@ -1040,77 +1270,45 @@ func (c *Collector) addClientOnNode(ctx context.Context, client *threexui.Client
 	return err
 }
 
-// updateClientOnNode 修正字段但**保留 uuid**：get 全量 → NormalizeForUpdate → 覆盖三个字段。
+// deliveryGraceSeconds 是「下发完成后继续跳过比对」的宽限秒数。
 //
-// 刻意**不传协议凭据**：凭据（id/password/auth）已经由 NormalizeForUpdate 从节点上的
-// 完整对象原样带回，节点 uuid 保持不变。若在这里改成显式写 users.uuid，存量用户的 uuid
-// 会被改写 → 订阅链接与客户端配置当场失效。新建（含重建）才该带凭据，见 addClientOnNode。
-//
-// 逐入站 + 兜底各更新一次，与 applyEnableOnNode 同序（3x-ui 的 update 是整条替换语义，
-// 且入站维度也有 client 副本，只更一次可能漏掉某条入站）。
-func (c *Collector) updateClientOnNode(ctx context.Context, client *threexui.Client, node nodeRow, u reconcileUser) error {
-	email := clientEmail(u.ID)
-	full, err := client.GetClientStrict(ctx, email)
-	if err != nil {
-		return err
+// 必须**大于 inbound/list 共享快照的 TTL（75s）**：下发是另一个进程直接写节点，不会清本进程
+// 的快照缓存；只有等那份旧快照自然过期，reconcile 才能读到下发后的真实节点值。取 120s 留足余量。
+// 可用 RECONCILE_DELIVERY_GRACE_SECONDS 覆盖（节点多/慢时可调大）。
+func deliveryGraceSeconds() int {
+	if n := envInt("RECONCILE_DELIVERY_GRACE_SECONDS", 120); n > 0 {
+		return n
 	}
-	if full == nil {
-		return fmt.Errorf("client 不存在，无法更新")
-	}
-	payload := NormalizeForUpdate(full)
-	payload["email"] = email
-	payload["enable"] = u.Intent
-	payload["totalGB"] = u.Limit
-	payload["expiryTime"] = u.ExpiryMs
-	// 刻意不动 limitIp / flow / subId：只改我们负责的三个字段，其它保持节点现状。
+	return 120
+}
 
-	inboundIDs, err := c.inboundIDsFor(ctx, node.ID, u.Protocol)
+// pendingOrRecentDeliveryUsers 返回「当前在途、或最近 deliveryGraceSeconds 秒内刚完成下发」的用户 id。
+//
+// 在途 = pending / running；刚完成 = succeeded / failed 且 finished_at（或 updated_at）在宽限窗口内。
+// 这些用户的节点 client 可能正被重置/改写，或尚未在快照里刷新 —— 本比对一律跳过，等宽限期过了再核。
+//
+// 失败（表不存在/查询错）返回错误，调用方按「没有」处理（不跳过）：宁可多核一轮，也不能因一次
+// 查询失败把整批用户的对账永久挂起。
+func (c *Collector) pendingOrRecentDeliveryUsers(ctx context.Context) (map[int64]bool, error) {
+	rows, err := c.db.QueryContext(ctx,
+		"SELECT DISTINCT subject_id FROM async_tasks "+
+			"WHERE type = 'user_delivery' AND subject_type = 'user' AND subject_id IS NOT NULL "+
+			"AND (status IN ('pending','running') "+
+			"OR COALESCE(finished_at, updated_at) >= ?)",
+		dbDateTime(c.now().Add(-time.Duration(deliveryGraceSeconds())*time.Second)))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var firstErr error
-	for _, inboundID := range inboundIDs {
-		id := inboundID
-		if err := client.UpdateClient(ctx, email, payload, &id); err != nil && firstErr == nil {
-			firstErr = err
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
 		}
+		out[id] = true
 	}
-	if err := client.UpdateClient(ctx, email, payload, nil); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	if firstErr != nil {
-		// 写回失败必须留痕（issue #135）：原先只有一行 journald 日志，事后翻不到。
-		// 落库失败只在 RecordWritebackFailure 内部打日志，不影响这里的返回值。
-		_ = c.RecordWritebackFailure(ctx, node.ID, email, firstErr)
-	}
-	return firstErr
-}
-
-// rebuildClientOnNode 删除重建：DeleteClient(keepTraffic=1) 保住流量统计基线 → 重新 AddClient。
-//
-// ⚠️ 重建会走 addClientOnNode，也就是带上 users.uuid 作凭据：uuid 不再由面板随机生成，
-// 重建后与面板侧 users.uuid 一致（订阅复算得回来）。但重建前节点上的 uuid 若本来就是
-// 面板早期随机生成的、与 users.uuid 不同，这一步仍会换号 —— 手工导入链接的用户要改配置。
-// 因此只在「字段修正后仍对不上」时才用它，并在日志里标出来。
-func (c *Collector) rebuildClientOnNode(ctx context.Context, client *threexui.Client, node nodeRow, u reconcileUser) error {
-	email := clientEmail(u.ID)
-	if err := client.DeleteClient(ctx, email, true); err != nil {
-		return fmt.Errorf("删除失败: %w", err)
-	}
-	return c.addClientOnNode(ctx, client, node, u, u.Intent)
-}
-
-// clientMatches 复核节点上的 client 是否已与面板意图一致（修正后的验收）。
-func (c *Collector) clientMatches(ctx context.Context, client *threexui.Client, u reconcileUser) bool {
-	obj, err := client.GetClientStrict(ctx, clientEmail(u.ID))
-	if err != nil || obj == nil {
-		return false
-	}
-	e := entryFromClientObject(obj)
-	if e.Incomplete {
-		return false // 读不全 → 不算通过
-	}
-	return e.Enable == u.Intent && e.TotalGB == u.Limit && e.ExpiryMs == u.ExpiryMs
+	return out, rows.Err()
 }
 
 // reconcileUsers 一次取齐参与比对的面板用户（意图在 Go 侧算，不再用 SQL 排除带标记的人）。
