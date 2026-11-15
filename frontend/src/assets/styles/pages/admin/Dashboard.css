@@ -415,14 +415,19 @@
 }
 
 /* ── 用户 × 机器流量（issue #43）──
-   区块容器 .dsh-ut 只负责把若干卡片纵排；卡片内部的行列表用 .dsh-ut-list（两者别混）。
-   用户榜与「查看全部」弹窗共用同一套卡片行样式：上排数据一行 + 下方整条全宽进度条。 */
+   区块容器 .dsh-ut 用与上方 .dsh-traffic **同一套栅格**（左 2fr / 右 1fr），
+   用户榜卡只占左列 —— 于是它与上方「流量消耗 Top 5」卡**左右对齐、宽度相等**，
+   右列留空（不硬撑满整行，避免一张卡横跨全屏显得过分宽、占面积）。
+   ≤980px 由下面的媒体查询收成单列，手机端与原来一致。
+   卡片内部的行列表用 .dsh-ut-list（别拿 .dsh-ut 当列表容器，它是区块容器）。 */
 .dsh-ut {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: var(--space-5);
+  align-items: start;
 }
 .dsh-ut-card {
+  grid-column: 1;
   min-width: 0;
 }
 .dsh-ut-note {
@@ -720,16 +725,13 @@
   .dsh-rank-name {
     white-space: nowrap;
   }
-  /* 窄屏只留核心项：原始 ↑↓ 与套餐名折叠掉，把宽度让给「用量 + 百分比 + 明细」。 */
-  .dsh-ut-col-raw,
-  .dsh-ut-col-plan {
-    display: none;
-  }
+  /* 窄屏**保留**「原始 ↑↓」与「套餐」两项（宽度够用，用户要求手机上也要看）：
+     上排本来就 flex-wrap，放不下会自动折到第二行，进度条仍在最下方。 */
   .dsh-ut-pct {
     font-size: var(--text-xs);
     line-height: 16px;
   }
-  /* 窄屏只剩箭头：76px 的「▸ 明细」在 360px 里会被挤到只露出一个「展」字 */
+  /* 窄屏「明细」只留箭头（76px 的「▸ 明细」在 360px 里会被挤到只露出一个「展」字） */
   .dsh-ut-toggle {
     width: auto;
     min-width: 16px;
