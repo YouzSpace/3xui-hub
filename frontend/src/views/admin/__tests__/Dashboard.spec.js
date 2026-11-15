@@ -109,11 +109,13 @@ const SERIES = {
  * 用户×机器流量（issue #43）：
  *  - 用户榜是套餐口径 weighted（乘倍率），up/down 是原始字节；
  *  - data_start 是新表最早有数据的那天（界面必须标出来，否则「还没攒够」会被读成「没人用」）；
+ *  - total_weighted 是该窗口**全部用户**的加权合计，用作占比分母（占全体，不是占第一名）；
  *  - 没有数据的用户/机器不出现在 rows 里。
  */
 const USER_RANKING = {
   '24h': {
     window: '24h', start: '2026-10-17 12:00:00', end: '2026-10-18 12:00:00', data_start: '2026-10-17',
+    total_weighted: 4 * 1024 ** 3,
     rows: [
       {
         user_id: 1, email: 'alice@example.com', weighted: 3 * 1024 ** 3, up: 1024 ** 3, down: 2 * 1024 ** 3,
@@ -127,6 +129,7 @@ const USER_RANKING = {
   },
   '7d': {
     window: '7d', start: '2026-10-12', end: '2026-10-18', data_start: '2026-10-17',
+    total_weighted: 5 * 1024 ** 3,
     rows: [
       {
         user_id: 2, email: 'bob@example.com', weighted: 5 * 1024 ** 3, up: 1024 ** 3, down: 4 * 1024 ** 3,
@@ -136,6 +139,7 @@ const USER_RANKING = {
   },
   '30d': {
     window: '30d', start: '2026-09-19', end: '2026-10-18', data_start: '2026-10-17',
+    total_weighted: 8 * 1024 ** 3,
     rows: [
       {
         user_id: 2, email: 'bob@example.com', weighted: 8 * 1024 ** 3, up: 2 * 1024 ** 3, down: 6 * 1024 ** 3,
@@ -649,7 +653,7 @@ describe('Dashboard.vue 导出 CSV', () => {
 describe('Dashboard.vue 用户 × 机器流量', () => {
   const userCards = (wrapper) => wrapper.findAll('.dsh-ut-card')
   const userTable = (wrapper) => userCards(wrapper).at(0)
-  const userRowsOf = (wrapper) => userTable(wrapper).findAll('tbody .dsh-ut-row')
+  const userRowsOf = (wrapper) => userTable(wrapper).findAll('.dsh-ut-item')
 
   it('挂载时按默认窗口拉取两个排行榜，标题带窗口名', async () => {
     const wrapper = await mountDashboard()
@@ -662,14 +666,12 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     expect(userCards(wrapper).length).toBe(1)
   })
 
-  it('用户榜表格：排名 / 用户 ID / 用量 / 占比 / 原始上下行 / 套餐类型', async () => {
+  it('用户榜卡片：用户 ID / 用量 / 占比 / 原始上下行 / 套餐类型（无 # 序号列，进度条在下方）', async () => {
     const wrapper = await mountDashboard()
     const rows = userRowsOf(wrapper)
 
     expect(rows.length).toBe(2)
-    // 排名
-    expect(rows[0].find('.dsh-ut-seq').text()).toBe('1')
-    // 用户列只展示 #id（不再展示邮箱）
+    // 已去掉 # 序号列：上排第一个元素直接就是用户 ID
     expect(rows[0].find('.dsh-ut-uid').text()).toBe('#1')
     expect(rows[0].find('.dsh-ut-email').exists()).toBe(false)
     // 套餐用量（计费口径 weighted）
@@ -677,14 +679,16 @@ describe('Dashboard.vue 用户 × 机器流量', () => {
     // 原始上下行（不乘倍率）
     expect(rows[0].text()).toContain('↑ 1.0 GB')
     expect(rows[0].text()).toContain('↓ 2.0 GB')
-    // 占比：榜内最大值 3.0 GB → 100%；第二行 1.0/3.0 = 33.3%
-    expect(rows[0].text()).toContain('100%')
-    expect(rows[1].text()).toContain('33.3%')
+    // 占比：分母 = 窗口内全体用户合计 4.0 GB → 3.0/4.0 = 75%；1.0/4.0 = 25%
+    expect(rows[0].text()).toContain('75%')
+    expect(rows[1].text()).toContain('25%')
     // 套餐类型
     expect(rows[0].find('.dsh-ut-plan').text()).toBe('周期·1 个月')
     expect(rows[1].find('.dsh-ut-plan').text()).toBe('总量')
     // 明细入口
     expect(rows[0].find('.dsh-ut-toggle').text()).toContain('明细')
+    // 进度条在下方（独立的整条 bar，而不是表格单元格）
+    expect(rows[0].find('.dsh-ut-item-bar b').exists()).toBe(true)
   })
 
   it('标出数据起始日（24h 当天可用，7d/30d 要等满）', async () => {
@@ -825,9 +829,9 @@ describe('Dashboard.vue 用户流量 CSV', () => {
 
     expect(lines[0]).toBe('排名,用户ID,邮箱,套餐用量(字节),占比(%),上行原始(字节),下行原始(字节),套餐类型,套餐名,套餐月数')
     expect(lines.length).toBe(3)
-    expect(lines[1]).toBe(`1,1,alice@example.com,${3 * 1024 ** 3},100,${1024 ** 3},${2 * 1024 ** 3},period,月付,1`)
-    // 第二名 1/3 → 33.3%（保留 1 位）；总量套餐没有月数 → 空字段
-    expect(lines[2]).toBe(`2,2,bob@example.com,${1024 ** 3},33.3,${512 * 1024 ** 2},${512 * 1024 ** 2},total,年付,`)
+    expect(lines[1]).toBe(`1,1,alice@example.com,${3 * 1024 ** 3},75,${1024 ** 3},${2 * 1024 ** 3},period,月付,1`)
+    // 第二名 1/4 → 25%（占全体合计）；总量套餐没有月数 → 空字段
+    expect(lines[2]).toBe(`2,2,bob@example.com,${1024 ** 3},25,${512 * 1024 ** 2},${512 * 1024 ** 2},total,年付,`)
   })
 
   it('弹窗 CSV：导出全部用户（不是卡片里的 Top 5），缺数据是空字段', async () => {
@@ -840,7 +844,7 @@ describe('Dashboard.vue 用户流量 CSV', () => {
     expect(wrapper.vm.allUsers.length).toBe(2)
 
     const lines = wrapper.vm
-      .buildUserTrafficCsv(wrapper.vm.allUsers, wrapper.vm.maxAllUserWeighted)
+      .buildUserTrafficCsv(wrapper.vm.allUsers, wrapper.vm.userTotalWeighted)
       .split('\n')
 
     expect(lines[0]).toBe('排名,用户ID,邮箱,套餐用量(字节),占比(%),上行原始(字节),下行原始(字节),套餐类型,套餐名,套餐月数')

@@ -206,7 +206,7 @@
 
 @media (max-width: 767px) {
   /* 全局规则给所有 *-table-wrap 都加了「← 左右滑动查看全部列 →」提示；
-     这里四列在 375px 内能放下，别提示用户去滑一张不溢出的表（同 dsh-ut-table-wrap 的处理）。 */
+     这里四列在 375px 内能放下，别提示用户去滑一张不溢出的表。 */
   .admin-table-wrap::before {
     content: none;
   }

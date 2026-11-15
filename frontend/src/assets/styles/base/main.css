@@ -165,9 +165,8 @@ input[type='radio'] {
   }
   /* 表头正上方一行提示：移动浏览器不画滚动条，光靠 16px 渐隐用户仍看不出「右边还有列」。
      必须放表格上方 —— 放底部要滚到最后才看见，那时已经没有意义了。
-     sticky left:0 让这行字在横向滚动时钉在视口左侧，不会被一起拖走。
-     仪表盘那两张表在窄屏已经收成 4 列（不溢出），排除掉避免误导。 */
-  [class*='-table-wrap']:not(.dsh-ut-table-wrap)::before {
+     sticky left:0 让这行字在横向滚动时钉在视口左侧，不会被一起拖走。 */
+  [class*='-table-wrap']::before {
     content: '← 左右滑动查看全部列 →';
     position: sticky;
     left: 0;

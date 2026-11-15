@@ -50,6 +50,12 @@ func (d *UserDomain) trafficUserRanking(c *gin.Context) {
 		d.failServer(c, "查询流量数据起始", err)
 		return
 	}
+	// 占比分母：该窗口内**全部用户**的加权合计（不受 limit 影响，前端用它算「占全体」百分比）。
+	totalWeighted, err := d.traffic.UserWeightedTotal(ctxOf(c), w)
+	if err != nil {
+		d.failServer(c, "查询用户流量合计", err)
+		return
+	}
 
 	out := make(jsArr, 0, len(rows))
 	for i := range rows {
@@ -65,11 +71,13 @@ func (d *UserDomain) trafficUserRanking(c *gin.Context) {
 			"down", r.Down,
 		))
 	}
-	d.success(c, trafficEnvelope(w, dataStart, out))
+	d.success(c, trafficEnvelope(w, dataStart, out, totalWeighted))
 }
 
-// trafficEnvelope 组装 {window, start, end, data_start, rows}。
-func trafficEnvelope(w TrafficWindow, dataStart *string, rows jsArr) *jsObj {
+// trafficEnvelope 组装 {window, start, end, data_start, total_weighted, rows}。
+//
+// total_weighted 只对用户榜有意义（占比分母 = 全部用户加权合计）；机器榜传 0 占位。
+func trafficEnvelope(w TrafficWindow, dataStart *string, rows jsArr, totalWeighted int64) *jsObj {
 	ds := any(nil)
 	if dataStart != nil {
 		ds = *dataStart
@@ -79,6 +87,7 @@ func trafficEnvelope(w TrafficWindow, dataStart *string, rows jsArr) *jsObj {
 		"start", w.Start,
 		"end", w.End,
 		"data_start", ds,
+		"total_weighted", totalWeighted,
 		"rows", rows,
 	)
 }
@@ -130,7 +139,7 @@ func (d *UserDomain) trafficNodeRanking(c *gin.Context) {
 			"nic_total", nullableInt(r.NicTotal),
 		))
 	}
-	d.success(c, trafficEnvelope(w, dataStart, out))
+	d.success(c, trafficEnvelope(w, dataStart, out, 0))
 }
 
 // cmpNilLastDesc 比较两个可空数值：双 nil → 0；nil 垫底（返回 -1/1）；否则降序。
@@ -212,7 +221,7 @@ func (d *UserDomain) trafficUserNodes(c *gin.Context) {
 			"share", share,
 		))
 	}
-	d.success(c, trafficEnvelope(w, dataStart, out))
+	d.success(c, trafficEnvelope(w, dataStart, out, 0))
 }
 
 // attachMachineColumns 给 node-ranking 补网卡口径三列 + 倍率，并按并集扩展节点。

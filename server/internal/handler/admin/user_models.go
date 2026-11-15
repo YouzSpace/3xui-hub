@@ -305,6 +305,8 @@ type TrafficStore interface {
 	// DataStart 取表里最早那个桶的业务日期（没数据 → nil）。
 	DataStart(ctx context.Context, w TrafficWindow, now time.Time) (*string, error)
 	UserRanking(ctx context.Context, w TrafficWindow, limit int64) ([]UserTrafficRow, error)
+	// UserWeightedTotal 取该窗口内**全部用户**的加权用量合计（占比分母，不受 limit 影响）。
+	UserWeightedTotal(ctx context.Context, w TrafficWindow) (int64, error)
 	NodeRanking(ctx context.Context, w TrafficWindow) ([]UserTrafficRow, error)
 	UserNodeBreakdown(ctx context.Context, w TrafficWindow, userID uint64) ([]UserTrafficRow, error)
 	// NodesByID 取节点名与 traffic_multiplier（含停用节点，倍率是配置属性）。

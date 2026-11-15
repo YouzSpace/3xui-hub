@@ -592,15 +592,16 @@ watch(userWindow, () => {
   }
 })
 
-/** 用户榜进度条分母：榜内最大值；没有数据时不画条。 */
-const maxUserWeighted = computed(() => {
-  const values = userRows.value.map((row) => row.weighted).filter(finite)
-  return values.length ? Math.max(...values) : null
-})
-/** 弹窗进度条分母：全量用户里的最大值（与卡片同一口径，范围不同——卡片 50 条，弹窗 500 条）。 */
-const maxAllUserWeighted = computed(() => {
-  const values = allUsers.value.map((row) => row.weighted).filter(finite)
-  return values.length ? Math.max(...values) : null
+/**
+ * 用户榜进度条 / 百分比的分母：该窗口内**全部用户**的加权用量合计（后端 total_weighted）。
+ *
+ * 为什么不用「榜内最大值」：那算出来的是「占第一名的比例」，第一名恒 100%、其余人偏小，
+ * 看着像"比例不对"。用户要的是「这个人占全体用户消耗的份额」——分母必须是全体合计，
+ * 且它是窗口级常量，卡片（Top5）与「查看全部」弹窗用同一个分母，口径一致。
+ */
+const userTotalWeighted = computed(() => {
+  const total = userRanking.value?.total_weighted
+  return finite(total) && total > 0 ? total : null
 })
 /** 机器榜以网卡合计排序；没有网卡数据的机器用用户原始代替做分母（只影响条长，不影响数字）。 */
 
@@ -720,7 +721,7 @@ watch(userWindow, loadUserTraffic)
  * 参数化 rows/max：卡片内导出 Top 50（userRows），弹窗内导出全量（allUsers）——
  * 两处口径一致，只有数据范围不同。
  */
-const buildUserTrafficCsv = (rows = userRows.value, maxWeighted = maxUserWeighted.value) => {
+const buildUserTrafficCsv = (rows = userRows.value, maxWeighted = userTotalWeighted.value) => {
   const header = [
     '排名', '用户ID', '邮箱', '套餐用量(字节)', '占比(%)',
     '上行原始(字节)', '下行原始(字节)', '套餐类型', '套餐名', '套餐月数',
@@ -767,7 +768,7 @@ const exportUserTrafficCsv = () => {
 /** 弹窗内导出：同一套列，数据换成全量（最多 500 位）。 */
 const exportAllUsersCsv = () => {
   downloadCsv(
-    buildUserTrafficCsv(allUsers.value, maxAllUserWeighted.value),
+    buildUserTrafficCsv(allUsers.value, userTotalWeighted.value),
     `user-traffic-all-${userWindow.value}-${dateStamp()}.csv`,
   )
   toast.success(`已导出 ${allUsers.value.length} 位用户的流量 CSV`)
@@ -1124,74 +1125,59 @@ onActivated(load)
 
         <p v-if="userTrafficLoading && !userRanking" class="dsh-empty">正在加载用户流量…</p>
 
-        <div v-else-if="userRows.length" class="dsh-ut-table-wrap">
-          <table class="dsh-ut-table">
-            <thead>
-              <tr>
-                <th class="dsh-ut-seq">#</th>
-                <th>用户 ID</th>
-                <th class="dsh-ut-num">用量</th>
-                <th class="dsh-ut-share">占比</th>
-                <th class="dsh-ut-num dsh-ut-col-raw">原始</th>
-                <th class="dsh-ut-col-plan">套餐</th>
-                <th class="dsh-ut-toggle-head"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="(row, index) in topUserRows" :key="row.user_id">
-                <tr
-                  class="dsh-ut-row"
-                  :aria-expanded="expandedUserId === row.user_id"
-                  @click="toggleUser(row.user_id)"
-                >
-                  <td class="dsh-ut-seq">{{ index + 1 }}</td>
-                  <td class="dsh-ut-user">
-                    <span class="dsh-ut-uid">#{{ row.user_id }}</span>
-                  </td>
-                  <td class="dsh-ut-num dsh-ut-strong">{{ cellBytes(row.weighted) }}</td>
-                  <td class="dsh-ut-share">
-                    <span class="dsh-ut-track" :title="shareText(sharePercent(row.weighted, maxUserWeighted))">
-                      <b :style="{ width: barWidth(row.weighted, maxUserWeighted) }"></b>
-                      <em class="dsh-ut-pct">{{ shareText(sharePercent(row.weighted, maxUserWeighted)) }}</em>
-                    </span>
-                  </td>
-                  <td class="dsh-ut-num dsh-ut-flows dsh-ut-col-raw">
-                    <span class="dsh-up">↑ {{ cellBytes(row.up) }}</span>
-                    <span class="dsh-down">↓ {{ cellBytes(row.down) }}</span>
-                  </td>
-                  <td class="dsh-ut-col-plan"><span class="dsh-ut-plan">{{ planTypeLabel(row) }}</span></td>
-                  <td class="dsh-ut-toggle" :class="{ 'is-open': expandedUserId === row.user_id }">
-                    <Icon class="dsh-ut-toggle-ico" :name="expandedUserId === row.user_id ? 'chevron-down' : 'chevron-right'" :size="16" />
-                    <span class="dsh-ut-toggle-txt">明细</span>
-                  </td>
-                </tr>
+        <div v-else-if="userRows.length" class="dsh-ut-list">
+          <div
+            v-for="row in topUserRows"
+            :key="row.user_id"
+            class="dsh-ut-row dsh-ut-item"
+            :class="{ 'is-open': expandedUserId === row.user_id }"
+            role="button"
+            tabindex="0"
+            :aria-expanded="expandedUserId === row.user_id"
+            @click="toggleUser(row.user_id)"
+            @keydown.enter.prevent="toggleUser(row.user_id)"
+            @keydown.space.prevent="toggleUser(row.user_id)"
+          >
+            <!-- 上排：用户ID/用量/套餐/原始↑↓/百分比（左）+ 明细（右），进度条在下方 -->
+            <div class="dsh-ut-item-head">
+              <span class="dsh-ut-uid">#{{ row.user_id }}</span>
+              <span class="dsh-ut-strong">{{ cellBytes(row.weighted) }}</span>
+              <span class="dsh-ut-plan dsh-ut-col-plan">{{ planTypeLabel(row) }}</span>
+              <span class="dsh-ut-item-flows dsh-ut-col-raw">
+                <span class="dsh-up">↑ {{ cellBytes(row.up) }}</span>
+                <span class="dsh-down">↓ {{ cellBytes(row.down) }}</span>
+              </span>
+              <span class="dsh-ut-pct">{{ shareText(sharePercent(row.weighted, userTotalWeighted)) }}</span>
+              <span class="dsh-ut-toggle" :class="{ 'is-open': expandedUserId === row.user_id }">
+                <Icon class="dsh-ut-toggle-ico" :name="expandedUserId === row.user_id ? 'chevron-down' : 'chevron-right'" :size="16" />
+                <span class="dsh-ut-toggle-txt">明细</span>
+              </span>
+            </div>
+            <!-- 下排：整条进度条（占全体用户合计的比例） -->
+            <i class="dsh-ut-item-bar">
+              <b :style="{ width: barWidth(row.weighted, userTotalWeighted) }"></b>
+            </i>
 
-                <!-- 该用户在各机器上的分布（本次需求的核心视角） -->
-                <tr v-if="expandedUserId === row.user_id" class="dsh-ut-detail-row">
-                  <td colspan="7">
-                    <div class="dsh-ut-detail">
-                      <p class="dsh-ut-detail-title">该用户按机器明细（{{ userWindowLabel }} · 套餐口径）</p>
+            <!-- 该用户在各机器上的分布（本次需求的核心视角） -->
+            <div v-if="expandedUserId === row.user_id" class="dsh-ut-detail" @click.stop>
+              <p class="dsh-ut-detail-title">该用户按机器明细（{{ userWindowLabel }} · 套餐口径）</p>
 
-                      <p v-if="userTrafficLoadingDetail" class="dsh-ut-detail-empty">正在加载机器明细…</p>
-                      <p v-else-if="!nodeDetailRows.length" class="dsh-ut-detail-empty">该窗口内没有按机器的流量记录</p>
-                      <ul v-else class="dsh-ut-node-list">
-                        <li v-for="node in nodeDetailRows" :key="node.node_id" class="dsh-ut-node">
-                          <span class="dsh-ut-node-name">
-                            {{ node.name }}（{{ multiplierText(node.multiplier) }}）
-                          </span>
-                          <span class="dsh-ut-node-bar">
-                            <b :style="{ width: barWidth(node.weighted, nodeDetailMax) }"></b>
-                          </span>
-                          <span class="dsh-ut-node-value">{{ cellBytes(node.weighted) }}</span>
-                          <span class="dsh-ut-node-share">{{ nodeDetailShare(node) }}</span>
-                        </li>
-                      </ul>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
+              <p v-if="userTrafficLoadingDetail" class="dsh-ut-detail-empty">正在加载机器明细…</p>
+              <p v-else-if="!nodeDetailRows.length" class="dsh-ut-detail-empty">该窗口内没有按机器的流量记录</p>
+              <ul v-else class="dsh-ut-node-list">
+                <li v-for="node in nodeDetailRows" :key="node.node_id" class="dsh-ut-node">
+                  <span class="dsh-ut-node-name">
+                    {{ node.name }}（{{ multiplierText(node.multiplier) }}）
+                  </span>
+                  <span class="dsh-ut-node-bar">
+                    <b :style="{ width: barWidth(node.weighted, nodeDetailMax) }"></b>
+                  </span>
+                  <span class="dsh-ut-node-value">{{ cellBytes(node.weighted) }}</span>
+                  <span class="dsh-ut-node-share">{{ nodeDetailShare(node) }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
 
         <p v-else class="dsh-empty">暂无用户流量数据</p>
@@ -1302,74 +1288,58 @@ onActivated(load)
 
       <p v-if="allUsersLoading" class="dsh-empty">正在加载用户流量…</p>
 
-      <div v-else-if="allUsers.length" class="dsh-ut-table-wrap">
-        <table class="dsh-ut-table">
-          <thead>
-            <tr>
-              <th class="dsh-ut-seq">#</th>
-              <th>用户 ID</th>
-              <th class="dsh-ut-num">用量</th>
-              <th class="dsh-ut-share">占比</th>
-              <th class="dsh-ut-num dsh-ut-col-raw">原始</th>
-              <th class="dsh-ut-col-plan">套餐</th>
-              <th class="dsh-ut-toggle-head"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="(row, index) in allUsers" :key="row.user_id">
-              <tr
-                class="dsh-ut-row"
-                :aria-expanded="expandedUserId === row.user_id"
-                @click="toggleUser(row.user_id)"
-              >
-                <td class="dsh-ut-seq">{{ index + 1 }}</td>
-                <td class="dsh-ut-user">
-                  <span class="dsh-ut-uid">#{{ row.user_id }}</span>
-                </td>
-                <td class="dsh-ut-num dsh-ut-strong">{{ cellBytes(row.weighted) }}</td>
-                <td class="dsh-ut-share">
-                  <span class="dsh-ut-track" :title="shareText(sharePercent(row.weighted, maxAllUserWeighted))">
-                    <b :style="{ width: barWidth(row.weighted, maxAllUserWeighted) }"></b>
-                    <em class="dsh-ut-pct">{{ shareText(sharePercent(row.weighted, maxAllUserWeighted)) }}</em>
-                  </span>
-                </td>
-                <td class="dsh-ut-num dsh-ut-flows dsh-ut-col-raw">
-                  <span class="dsh-up">↑ {{ cellBytes(row.up) }}</span>
-                  <span class="dsh-down">↓ {{ cellBytes(row.down) }}</span>
-                </td>
-                <td class="dsh-ut-col-plan"><span class="dsh-ut-plan">{{ planTypeLabel(row) }}</span></td>
-                <td class="dsh-ut-toggle" :class="{ 'is-open': expandedUserId === row.user_id }">
-                  <Icon class="dsh-ut-toggle-ico" :name="expandedUserId === row.user_id ? 'chevron-down' : 'chevron-right'" :size="16" />
-                  <span class="dsh-ut-toggle-txt">明细</span>
-                </td>
-              </tr>
+      <div v-else-if="allUsers.length" class="dsh-ut-list">
+        <div
+          v-for="row in allUsers"
+          :key="row.user_id"
+          class="dsh-ut-row dsh-ut-item"
+          :class="{ 'is-open': expandedUserId === row.user_id }"
+          role="button"
+          tabindex="0"
+          :aria-expanded="expandedUserId === row.user_id"
+          @click="toggleUser(row.user_id)"
+          @keydown.enter.prevent="toggleUser(row.user_id)"
+          @keydown.space.prevent="toggleUser(row.user_id)"
+        >
+          <!-- 与主页用户卡同一套卡片样式（上排数据 + 下方整条进度条） -->
+          <div class="dsh-ut-item-head">
+            <span class="dsh-ut-uid">#{{ row.user_id }}</span>
+            <span class="dsh-ut-strong">{{ cellBytes(row.weighted) }}</span>
+            <span class="dsh-ut-plan dsh-ut-col-plan">{{ planTypeLabel(row) }}</span>
+            <span class="dsh-ut-item-flows dsh-ut-col-raw">
+              <span class="dsh-up">↑ {{ cellBytes(row.up) }}</span>
+              <span class="dsh-down">↓ {{ cellBytes(row.down) }}</span>
+            </span>
+            <span class="dsh-ut-pct">{{ shareText(sharePercent(row.weighted, userTotalWeighted)) }}</span>
+            <span class="dsh-ut-toggle" :class="{ 'is-open': expandedUserId === row.user_id }">
+              <Icon class="dsh-ut-toggle-ico" :name="expandedUserId === row.user_id ? 'chevron-down' : 'chevron-right'" :size="16" />
+              <span class="dsh-ut-toggle-txt">明细</span>
+            </span>
+          </div>
+          <i class="dsh-ut-item-bar">
+            <b :style="{ width: barWidth(row.weighted, userTotalWeighted) }"></b>
+          </i>
 
-              <!-- 弹窗内保留「点用户看按机器明细」（issue #47 明确要求），与卡片内是同一份交互 -->
-              <tr v-if="expandedUserId === row.user_id" class="dsh-ut-detail-row">
-                <td colspan="7">
-                  <div class="dsh-ut-detail">
-                    <p class="dsh-ut-detail-title">该用户按机器明细（{{ userWindowLabel }} · 套餐口径）</p>
+          <!-- 弹窗内保留「点用户看按机器明细」（issue #47 明确要求），与卡片内是同一份交互 -->
+          <div v-if="expandedUserId === row.user_id" class="dsh-ut-detail" @click.stop>
+            <p class="dsh-ut-detail-title">该用户按机器明细（{{ userWindowLabel }} · 套餐口径）</p>
 
-                    <p v-if="userTrafficLoadingDetail" class="dsh-ut-detail-empty">正在加载机器明细…</p>
-                    <p v-else-if="!nodeDetailRows.length" class="dsh-ut-detail-empty">该窗口内没有按机器的流量记录</p>
-                    <ul v-else class="dsh-ut-node-list">
-                      <li v-for="node in nodeDetailRows" :key="node.node_id" class="dsh-ut-node">
-                        <span class="dsh-ut-node-name">
-                          {{ node.name }}（{{ multiplierText(node.multiplier) }}）
-                        </span>
-                        <span class="dsh-ut-node-bar">
-                          <b :style="{ width: barWidth(node.weighted, nodeDetailMax) }"></b>
-                        </span>
-                        <span class="dsh-ut-node-value">{{ cellBytes(node.weighted) }}</span>
-                        <span class="dsh-ut-node-share">{{ nodeDetailShare(node) }}</span>
-                      </li>
-                    </ul>
-                  </div>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
+            <p v-if="userTrafficLoadingDetail" class="dsh-ut-detail-empty">正在加载机器明细…</p>
+            <p v-else-if="!nodeDetailRows.length" class="dsh-ut-detail-empty">该窗口内没有按机器的流量记录</p>
+            <ul v-else class="dsh-ut-node-list">
+              <li v-for="node in nodeDetailRows" :key="node.node_id" class="dsh-ut-node">
+                <span class="dsh-ut-node-name">
+                  {{ node.name }}（{{ multiplierText(node.multiplier) }}）
+                </span>
+                <span class="dsh-ut-node-bar">
+                  <b :style="{ width: barWidth(node.weighted, nodeDetailMax) }"></b>
+                </span>
+                <span class="dsh-ut-node-value">{{ cellBytes(node.weighted) }}</span>
+                <span class="dsh-ut-node-share">{{ nodeDetailShare(node) }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
       </div>
       <p v-else class="dsh-empty">暂无用户流量数据</p>
     </Modal>

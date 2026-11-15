@@ -415,9 +415,8 @@
 }
 
 /* ── 用户 × 机器流量（issue #43）──
-   两张卡上下排列（与设计稿一致）：上「用户流量排行」（表格，点行展开按机器明细），
-   下「机器流量」（网卡口径 / 用户原始 / 倍率并排）。用户榜 7 列，需要整行宽度。
-   用户榜数字是套餐口径（乘倍率）；机器卡的网卡列是另一套口径，两列并排只为对照，不互相换算。 */
+   区块容器 .dsh-ut 只负责把若干卡片纵排；卡片内部的行列表用 .dsh-ut-list（两者别混）。
+   用户榜与「查看全部」弹窗共用同一套卡片行样式：上排数据一行 + 下方整条全宽进度条。 */
 .dsh-ut {
   display: flex;
   flex-direction: column;
@@ -425,10 +424,6 @@
 }
 .dsh-ut-card {
   min-width: 0;
-}
-/* 机器卡列少，给表格一个上限宽度，避免数字被拉得太散 */
-.dsh-ut-card:last-child .dsh-ut-table {
-  max-width: 920px;
 }
 .dsh-ut-note {
   margin: var(--space-4) 0 0;
@@ -465,38 +460,10 @@
   font-weight: var(--font-semibold);
 }
 
-.dsh-ut-table-wrap {
-  overflow-x: auto;
-}
-.dsh-ut-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.dsh-ut-table th,
-.dsh-ut-table td {
-  padding: var(--space-3) var(--space-2);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  vertical-align: middle;
-}
-/* ⚠️ 表头默认左对齐会**压过** `.dsh-ut-num` 的右对齐（同权重、后者更早定义），
-   结果「用量 / 原始」表头贴左、数字贴右，上下完全错位（截图实证）。
-   这里显式把带修饰类的 th 摆回与数据同一条对齐线。 */
-.dsh-ut-table th.dsh-ut-num {
-  text-align: right;
-}
-.dsh-ut-table th.dsh-ut-toggle-head {
-  text-align: right;
-}
-.dsh-ut-table th {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-  white-space: nowrap;
-}
-.dsh-ut-table tbody tr:last-child td {
-  border-bottom: none;
+/* ── 用户榜行列表（卡片式：上排一整排 + 下方全宽进度条）── */
+.dsh-ut-list {
+  display: flex;
+  flex-direction: column;
 }
 /* 行可点（展开明细）：hover 给背景与指针，键盘也能用（按钮语义由行上的 tabindex 承担） */
 .dsh-ut-row {
@@ -506,52 +473,27 @@
 .dsh-ut-row:hover {
   background: var(--bg-hover);
 }
-.dsh-ut-row--static {
-  cursor: default;
+.dsh-ut-item {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
-/* 对齐：数字列右对齐 + 等宽数字 */
-.dsh-ut-num {
-  text-align: right;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+.dsh-ut-item:last-child {
+  border-bottom: none;
 }
-.dsh-ut-strong {
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-.dsh-ut-muted {
-  color: var(--text-secondary);
-}
-.dsh-ut-seq {
-  width: 30px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-/* 用户列只展示 ID（邮箱不再显示：拿 ID 就能在用户管理里定位到人）。
-   ID 用等宽字体、正文色，跟上面的数字列同一套观感。 */
-.dsh-ut-user {
-  white-space: nowrap;
-}
-.dsh-ut-uid {
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+/* 上排：一行 flex。信息项与百分比靠左按内容排列、可换行；「明细」靠 margin-left:auto
+   顶到最右（右侧固定一块），垂直居中，不再被 baseline 提到上面。 */
+.dsh-ut-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
   font-size: var(--text-sm);
 }
-/* 「原始」列是上下两行（↑ / ↓），用 flex 纵向排 + 交叉轴靠右；
-   span 自身的 text-align 在 flex item 上不生效，靠 align-items 才是真正起作用的那条。 */
-.dsh-ut-flows {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  font-size: var(--text-xs);
-}
-.dsh-ut-flows .dsh-up,
-.dsh-ut-flows .dsh-down {
-  text-align: right;
+.dsh-ut-strong {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
 }
 .dsh-ut-plan {
   display: inline-block;
@@ -559,8 +501,31 @@
   font-size: var(--text-xs);
   color: var(--text-secondary);
   background: var(--bg-elevated);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-full);
   white-space: nowrap;
+}
+/* 原始 ↑↓ 并排小字（不乘倍率），放在上排 */
+.dsh-ut-item-flows {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+}
+/* 百分比：紧跟在上排数据后面（不靠右、不放侧栏），等宽灰字 */
+.dsh-ut-pct {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+/* 用户列只展示 ID（邮箱不再显示：拿 ID 就能在用户管理里定位到人） */
+.dsh-ut-uid {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
 }
 .dsh-ut-toggle {
   width: 76px;
@@ -569,64 +534,40 @@
   white-space: nowrap;
   text-align: right;
 }
+/* 本卡片内的「明细」：顶到最右并与信息同一行垂直居中（覆盖上面的列式写法） */
+.dsh-ut-item-head .dsh-ut-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-left: auto;
+  width: auto;
+}
 .dsh-ut-toggle-ico {
   margin-right: 2px;
 }
 .dsh-ut-toggle.is-open {
   color: var(--accent);
 }
-
-/* 占比：百分比**压在进度条上**（用户定稿）。
-   条本身与上方「机器排行」同款（细、圆角、accent 填充），只是拉长到整列宽；
-   百分比用小块底色垫在条右端，压在白条/灰条上都读得清，也不用再单开一列。
-   宽度写 100%：让这一列吃掉表格的剩余宽度（其余列都按内容收紧），
-   条才画得长；写死百分比会让多出来的空间被别的列分走。 */
-.dsh-ut-share {
-  width: 100%;
-  min-width: 150px;
-}
-.dsh-ut-track {
-  position: relative;
+/* 下排：整条全宽进度条 */
+.dsh-ut-item-bar {
   display: block;
+  margin-top: var(--space-2);
   height: 6px;
   border-radius: var(--radius-full);
   background: var(--bg-elevated);
+  overflow: hidden;
 }
-.dsh-ut-track b {
+.dsh-ut-item-bar b {
   display: block;
   height: 100%;
   border-radius: var(--radius-full);
   background: var(--accent);
   transition: width var(--duration-slow) var(--ease-out);
 }
-/* 条上的百分比：竖直居中、贴右端，带一层与卡片同色的底，不叠花 */
-.dsh-ut-pct {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  font-size: var(--text-xs);
-  font-style: normal;
-  line-height: 16px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
-/* 行 hover 时底色变成 --bg-hover，百分比那层小底也要跟着换，否则露出一块卡片色的方块 */
-.dsh-ut-row:hover .dsh-ut-pct {
-  background: var(--bg-hover);
-}
 
-/* 展开的明细行：**不再套一层底色块**（方块套方块太废空间，用户定稿）。
+/* 展开的明细：**不再套一层底色块**（方块套方块太废空间，用户定稿）。
    用左侧一条竖线做缩进指示，与上方用户行在同一张卡片里连续。 */
-.dsh-ut-detail-row td {
-  padding: 0;
-  background: transparent;
-  border-bottom: 1px solid var(--border-subtle);
-}
 .dsh-ut-detail {
   padding: var(--space-1) var(--space-4) var(--space-4) var(--space-6);
   border-left: 2px solid var(--accent-muted);
@@ -776,45 +717,17 @@
   .dsh-toolbar :deep(.dsh-node-select) {
     width: 100%;
   }
-  .dsh-ut-table th,
-  .dsh-ut-table td {
-    white-space: nowrap;
-  }
   .dsh-rank-name {
     white-space: nowrap;
   }
-  /* 窄屏只留核心列：原始 ↑↓ 与套餐名折叠掉，把宽度让给「用量 + 占比」。
-     否则 360px 下 7 列连表头都露不全（issue #47 的核心诉求）。 */
+  /* 窄屏只留核心项：原始 ↑↓ 与套餐名折叠掉，把宽度让给「用量 + 百分比 + 明细」。 */
   .dsh-ut-col-raw,
   .dsh-ut-col-plan {
     display: none;
   }
-  /* 窄屏：表头允许换行（短标题已足够，仍留换行兜底），数据格保持单行 */
-  .dsh-ut-table th {
-    white-space: normal;
-  }
-  .dsh-ut-table th,
-  .dsh-ut-table td {
-    padding: var(--space-2) var(--space-1);
-  }
-  .dsh-ut-num {
-    font-size: 11px;
-  }
-  /* 窄屏：只剩「# / 用户 ID / 用量 / 占比 / 箭头」五列，
-     其余列都按内容收紧，**占比列吃掉全部剩余宽度**（width:100% 让表格把它拉满）。
-     原来写死 30% 时，多出来的空间被前三列平分掉了，条只有一半长、右边空一大片。 */
-  .dsh-ut-share {
-    width: 100%;
-    min-width: 96px;
-  }
   .dsh-ut-pct {
     font-size: var(--text-xs);
     line-height: 16px;
-    padding: 0 2px;
-  }
-  /* 用户列只剩 #ID，窄屏也不用再截断长邮箱 */
-  .dsh-ut-seq {
-    width: 20px;
   }
   /* 窄屏只剩箭头：76px 的「▸ 明细」在 360px 里会被挤到只露出一个「展」字 */
   .dsh-ut-toggle {
