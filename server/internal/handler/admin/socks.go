@@ -49,11 +49,19 @@ func (h *Handler) importSocks(c *gin.Context) {
 	input := jsonInput(c)
 	v := newValidator(ctxOf(c), input)
 	v.field("text", "required", "string", "max:20000")
+	v.field("allocation", "sometimes", "in:shared,exclusive")
 	if !v.passes() {
 		h.failValidation(c, v)
 		return
 	}
 	text, _ := inputString(input["text"])
+	// 这批导入的分配方式（#地区功能-17）：不传 = 共享（老导入行为完全不变）。
+	var allocation *string
+	if val, ok := input["allocation"]; ok && val != nil {
+		if s, isStr := inputString(val); isStr && s != "" {
+			allocation = &s
+		}
+	}
 
 	created, skipped, invalid := 0, 0, 0
 	errs := make(jsArr, 0, 5)
@@ -86,6 +94,7 @@ func (h *Handler) importSocks(c *gin.Context) {
 			skipped++
 			continue
 		}
+		parsed.Allocation = allocation
 		if _, err := h.store.CreateSock(ctxOf(c), parsed); err != nil {
 			h.failServer(c, "导入 socks", err)
 			return
@@ -133,6 +142,7 @@ func (h *Handler) updateSock(c *gin.Context) {
 	v.field("city", "sometimes", "nullable", "string", "max:64")
 	v.field("note", "sometimes", "nullable", "string", "max:255")
 	v.field("is_active", "sometimes", "boolean")
+	v.field("allocation", "sometimes", "in:shared,exclusive")
 	if !v.passes() {
 		h.failValidation(c, v)
 		return
@@ -173,6 +183,10 @@ func (h *Handler) updateSock(c *gin.Context) {
 		b := inputBool(val)
 		upd.IsActive = &b
 	}
+	if val, ok := v.valueOf("allocation"); ok && val != nil {
+		s, _ := inputString(val)
+		upd.Allocation = &s
+	}
 
 	s, err := h.store.UpdateSock(ctxOf(c), id, upd)
 	if err != nil {
@@ -194,7 +208,8 @@ func (h *Handler) deleteSock(c *gin.Context) {
 		h.notFoundRoute(c)
 		return
 	}
-	if _, err := h.store.SockByID(ctxOf(c), id); err != nil {
+	sock, err := h.store.SockByID(ctxOf(c), id)
+	if err != nil {
 		if h.noRowsToNotFound(c, err) {
 			return
 		}
@@ -208,6 +223,13 @@ func (h *Handler) deleteSock(c *gin.Context) {
 	}
 	if used {
 		h.fail(c, "这条 socks 已被某个代理规格使用，请先把规格下线或换货源", 400)
+		return
+	}
+	// 已售出的独占线路（#地区功能-17）不能删：删了用户的凭据就成孤儿
+	// （独占规格的 source_id 是空的，上面的「被规格引用」检查兜不住这种情况）。
+	if sock.SoldTo != nil {
+		h.fail(c, "这条线路已售给用户 #"+strconv.FormatUint(*sock.SoldTo, 10)+
+			"，等它到期释放后才能删", 400)
 		return
 	}
 	if err := h.store.DeleteSock(ctxOf(c), id); err != nil {
@@ -286,6 +308,8 @@ func phpStrToUpper(s string) string {
 }
 
 // presentSock 对齐 present：密码只回 has_password，明文/密文都不出接口。
+// 独占模式（#地区功能-17）额外回 allocation / sold_to / sold_at，前端据此显示
+// 「独占 · 已售给用户 #N」；共享线路这三项是 shared / null / null。
 func presentSock(s *Sock) *jsObj {
 	return jo(
 		"id", s.ID,
@@ -299,5 +323,8 @@ func presentSock(s *Sock) *jsObj {
 		"note", nullableStr(s.Note),
 		"is_active", s.IsActive,
 		"created_at", nullableDateTime(s.CreatedAt),
+		"allocation", s.Allocation,
+		"sold_to", nullableUint(s.SoldTo),
+		"sold_at", nullableDateTime(s.SoldAt),
 	)
 }

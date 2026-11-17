@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/crypto"
+	"controlhub-server/internal/sockpool"
 )
 
 type sqlStore struct {
@@ -344,6 +345,9 @@ func (s *sqlStore) UpdateSKU(ctx context.Context, id uint64, in SKUInput) (*SKU,
 	}
 	if in.SourceID != nil {
 		add("source_id", *in.SourceID)
+	} else if in.ClearSourceID {
+		// 显式传 null（独占池「不指定」）：真的清空，而不是保持原值。
+		sets = append(sets, "source_id = NULL")
 	}
 	if in.Region != nil {
 		add("region", *in.Region)
@@ -387,15 +391,19 @@ func (s *sqlStore) DeleteSKU(ctx context.Context, id uint64) error {
 
 // ---- 手工 socks ----
 
-const sockColumns = `id, name, host, port, username, password, country, city, note, is_active, created_at`
+const sockColumns = `id, name, host, port, username, password, country, city, note, is_active, created_at,
+	allocation, sold_to, sold_at`
 
 func (s *sqlStore) scanSock(row interface{ Scan(...any) error }) (*Sock, error) {
 	var sk Sock
 	var username, password, country, city, note sql.NullString
 	var isActive int
-	var createdAt sql.NullTime
+	var createdAt, soldAt sql.NullTime
+	var allocation sql.NullString
+	var soldTo sql.NullInt64
 	if err := row.Scan(&sk.ID, &sk.Name, &sk.Host, &sk.Port, &username, &password,
-		&country, &city, &note, &isActive, &createdAt); err != nil {
+		&country, &city, &note, &isActive, &createdAt,
+		&allocation, &soldTo, &soldAt); err != nil {
 		return nil, err
 	}
 	sk.Username = nullStrPtr(username)
@@ -405,6 +413,13 @@ func (s *sqlStore) scanSock(row interface{ Scan(...any) error }) (*Sock, error) 
 	sk.Note = nullStrPtr(note)
 	sk.IsActive = isActive != 0
 	sk.CreatedAt = nullTimePtr(createdAt)
+	// 老库补列后默认值是 shared；NULL 也按共享兜底（与下单侧 sockpool.IsExclusive 同口径）。
+	sk.Allocation = "shared"
+	if allocation.Valid && allocation.String != "" {
+		sk.Allocation = allocation.String
+	}
+	sk.SoldTo = nullUintPtr(soldTo)
+	sk.SoldAt = nullTimePtr(soldAt)
 	return &sk, nil
 }
 
@@ -463,10 +478,14 @@ func (s *sqlStore) CreateSock(ctx context.Context, in SockCreate) (*Sock, error)
 	if in.Password != nil && *in.Password != "" {
 		password = enc
 	}
+	allocation := sockpool.Shared
+	if in.Allocation != nil && *in.Allocation == sockpool.Exclusive {
+		allocation = sockpool.Exclusive
+	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO proxy_socks
-		(name, host, port, username, password, country, is_active, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		in.Name, in.Host, in.Port, nullStrValue(in.Username), password, nullStrValue(in.Country), now, now)
+		(name, host, port, username, password, country, allocation, is_active, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		in.Name, in.Host, in.Port, nullStrValue(in.Username), password, nullStrValue(in.Country), allocation, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -515,6 +534,16 @@ func (s *sqlStore) UpdateSock(ctx context.Context, id uint64, in SockUpdate) (*S
 	if in.IsActive != nil {
 		add("is_active", boolToInt(*in.IsActive))
 	}
+	if in.Allocation != nil {
+		// 回到共享 = 这条不再专属任何人：已售记录一并清掉，否则以后切回独占
+		// 会带着一条永远卖不出去的 sold_to（下单侧只挑 sold_to IS NULL）。
+		if *in.Allocation == sockpool.Shared {
+			add("allocation", sockpool.Shared)
+			sets = append(sets, "sold_to = NULL", "sold_at = NULL")
+		} else {
+			add("allocation", *in.Allocation)
+		}
+	}
 	if len(sets) > 0 {
 		add("updated_at", s.now().UTC().Truncate(time.Second))
 		args = append(args, id)
@@ -556,6 +585,18 @@ func (s *sqlStore) ActiveSocksOptions(ctx context.Context) ([]SockOption, error)
 		out = append(out, o)
 	}
 	return out, rows.Err()
+}
+
+// AcquireExclusiveSock 从独占池里给用户拿一条线路（事务 + 行锁在 sockpool 里）。
+func (s *sqlStore) AcquireExclusiveSock(
+	ctx context.Context, renewSockID, sourceID *uint64, userID uint64, now time.Time,
+) (uint64, error) {
+	return sockpool.Acquire(ctx, s.db, renewSockID, sourceID, userID, now)
+}
+
+// ReleaseExclusiveSock 把线路放回池子（共享线路是空操作）。
+func (s *sqlStore) ReleaseExclusiveSock(ctx context.Context, socksID uint64, now time.Time) error {
+	return sockpool.Release(ctx, s.db, socksID, now)
 }
 
 // ---- 站点配置 ----

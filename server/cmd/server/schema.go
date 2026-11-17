@@ -102,6 +102,130 @@ func ensureSchema(db *sql.DB) error {
 			KEY affiliate_rebates_inviter_index (inviter_id),
 			KEY affiliate_rebates_invitee_index (invitee_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 地区（#地区功能）：节点按地区分组，后续按地区决定用户可见节点。
+		// 纯字典表 —— 升级后保持为空，NULL region_id 的节点 = 不参与地区过滤，
+		// 老用户升级后看到的节点、订阅、下发行为与升级前完全一致。
+		`CREATE TABLE IF NOT EXISTS regions (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			sort int NOT NULL DEFAULT 0,
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id),
+			UNIQUE KEY regions_name_unique (name)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 用户 ↔ 节点绑定（#地区功能）：一个用户可绑多个节点。
+		// 升级后保持空表 —— 空表 = 不做任何节点过滤（老用户行为不变）。
+		`CREATE TABLE IF NOT EXISTS user_nodes (
+			user_id bigint unsigned NOT NULL,
+			node_id bigint unsigned NOT NULL,
+			PRIMARY KEY (user_id, node_id),
+			KEY idx_node (node_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 用户换节点历史（#地区功能）：谁在什么时候因为什么从哪个节点换到哪个节点。
+		`CREATE TABLE IF NOT EXISTS user_node_migrations (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			user_id bigint unsigned NOT NULL,
+			from_node_id bigint unsigned DEFAULT NULL,
+			to_node_id bigint unsigned NOT NULL,
+			reason varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+			operator varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			created_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id),
+			KEY idx_user (user_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 节点指标采样（#地区功能）：按时间累积，供负载/容量曲线用。
+		`CREATE TABLE IF NOT EXISTS node_metrics (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			node_id bigint unsigned NOT NULL,
+			ts datetime NOT NULL,
+			users int NOT NULL DEFAULT 0,
+			mem_used int NOT NULL DEFAULT 0,
+			mem_total int NOT NULL DEFAULT 0,
+			cpu decimal(5,2) DEFAULT NULL,
+			conns int NOT NULL DEFAULT 0,
+			PRIMARY KEY (id),
+			KEY idx_node_ts (node_id, ts)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 配置模板（#地区功能-19）：一套标准入站/出站/路由，新节点一键套用。
+		// 三张表都是纯字典表 —— 升级后保持为空，不套用的节点行为完全不变。
+		// 只对 driver_type=xray 的节点生效（3x-ui 节点的配置在面板侧，没有对应表）。
+		// 刻意不含 reality_private_key：私钥必须每个节点单独生成，否则全网共用一把。
+		`CREATE TABLE IF NOT EXISTS xray_template_inbounds (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			sort int NOT NULL DEFAULT 0,
+			tag varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			remark varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			protocol varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
+			port int unsigned NOT NULL,
+			listen varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '0.0.0.0',
+			settings json DEFAULT NULL,
+			stream_settings json DEFAULT NULL,
+			sniffing json DEFAULT NULL,
+			enabled tinyint NOT NULL DEFAULT 1,
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS xray_template_outbounds (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			sort int NOT NULL DEFAULT 0,
+			tag varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			protocol varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
+			settings json DEFAULT NULL,
+			stream_settings json DEFAULT NULL,
+			enabled tinyint NOT NULL DEFAULT 1,
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS xray_template_routing (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			sort int NOT NULL DEFAULT 0,
+			domains json DEFAULT NULL,
+			ips json DEFAULT NULL,
+			port varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			network varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			protocol varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			inbound_tag varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			outbound_tag varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			remark varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+			enabled tinyint NOT NULL DEFAULT 1,
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 静态 IP 出口分类（#静态IP）：一个分类 = 一组前置节点 + 一个 webshare 账号。
+		// 纯字典表 —— 升级后保持为空，plans.exit_type 默认 'direct'，老套餐行为完全不变。
+		// provider_id 指向 proxy_providers（多 webshare 账号已支持），本表不复制任何账号字段；
+		// traffic_gb / duration_days / max_thread_count 是「开号时传给上游」的模板值，
+		// 本任务只存不用（购买流程与出站生成是后续任务）。
+		`CREATE TABLE IF NOT EXISTS exit_profiles (
+			id bigint unsigned NOT NULL AUTO_INCREMENT,
+			name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+			provider_id bigint unsigned NOT NULL COMMENT '用哪个 webshare 账号（proxy_providers.id）',
+			traffic_gb int NOT NULL DEFAULT 0 COMMENT '每个用户分多少 GB（传给 webshare proxy_limit）',
+			duration_days int NOT NULL DEFAULT 30 COMMENT '有效期天数',
+			max_thread_count int NOT NULL DEFAULT 0 COMMENT '并发数，0=上游默认',
+			socks_host varchar(190) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT 'webshare 的 socks 入口，如 p.webshare.io',
+			socks_port int NOT NULL DEFAULT 1080,
+			enabled tinyint NOT NULL DEFAULT 1,
+			created_at timestamp NULL DEFAULT NULL,
+			updated_at timestamp NULL DEFAULT NULL,
+			PRIMARY KEY (id),
+			UNIQUE KEY exit_profiles_name_unique (name)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		// 分类 ↔ 前置节点（多对多）。没有外键：与 nodes/user_nodes 一致，
+		// 节点被删后残留关联由删除接口显式清理，不靠数据库级联（老库升级时加不了外键）。
+		`CREATE TABLE IF NOT EXISTS exit_profile_nodes (
+			profile_id bigint unsigned NOT NULL,
+			node_id bigint unsigned NOT NULL,
+			PRIMARY KEY (profile_id, node_id),
+			KEY idx_exit_profile_node (node_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -117,6 +241,33 @@ func ensureSchema(db *sql.DB) error {
 		// 订阅链接里的地址需要按入站覆盖节点地址；空 = 维持原行为。
 		{"xray_inbounds", "client_host", "varchar(255) COLLATE utf8mb4_unicode_ci"},
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
+		// 地区（#地区功能）：NULL = 该节点不属于任何地区，不做地区过滤（升级默认状态）。
+		{"nodes", "region_id", "bigint unsigned DEFAULT NULL COMMENT '所属地区 id，NULL=不参与地区过滤'"},
+		// 容量（#地区功能）：该节点能承载的用户数上限，NULL = 不限。
+		{"nodes", "capacity", "int DEFAULT NULL COMMENT '承载用户数上限，NULL=不限'"},
+		// 批次号（#地区功能-10）：同一次故障迁移 / 批量均衡产生的记录共用一个 batch_id，
+		// 撤销接口按它整批反向回滚。NULL = 该行不是通过迁移接口产生的（历史数据 / 其他来源）。
+		{"user_node_migrations", "batch_id", "varchar(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '迁移批次号，NULL=非接口产生的记录'"},
+		// 套餐绑定地区（#地区功能-15）：NULL = 不限地区（老套餐行为完全不变），
+		// [1,3] = 买了该套餐的用户只能落在 1、3 号地区。写入侧把「不勾地区」归一成 NULL，不存 []。
+		{"plans", "region_ids", "json DEFAULT NULL COMMENT '允许的地区 id（JSON 数组），NULL=不限地区'"},
+		// 独占 socks 池（#地区功能-17）：三个人共用一条线路的现状保持不变，
+		// 新增 exclusive = 一条只卖一个人。sold_to/sold_at 记录这条卖给了谁、什么时候，
+		// 卖完自动跳到下一条；到期释放（internal/task）把这两列清空，线路重回池子。
+		{"proxy_socks", "allocation", "varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'shared' COMMENT '分配方式：shared=多人共用 / exclusive=一条只卖一人'"},
+		{"proxy_socks", "sold_to", "bigint unsigned DEFAULT NULL COMMENT '独占模式买下这条的用户 id，NULL=还在池子里'"},
+		{"proxy_socks", "sold_at", "timestamp NULL DEFAULT NULL COMMENT '独占模式售出时间'"},
+		// 配置模板（#地区功能-19）：1 = 该节点的入站/出站/路由被单独改过，
+		// 套用模板时默认跳过它（勾「覆盖单独配置」才重写）。套用成功会清回 0。
+		{"nodes", "is_custom_config", "tinyint NOT NULL DEFAULT 0 COMMENT '1=该节点配置已单独改过，不跟随模板'"},
+		// 套餐出口类型（#静态IP）：direct=直连（默认，老套餐就是这个值，行为完全不变）/
+		// static_chain=链式到住宅（节点出站走 webshare socks）/ static_socks=发 socks 凭证。
+		// 用 NOT NULL + 默认值而不是 NULL：读侧不必区分「老行没这列」与「显式 direct」，
+		// 升级后所有老套餐自动是 direct。
+		{"plans", "exit_type", "varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'direct' COMMENT '出口类型：direct/static_chain/static_socks'"},
+		// 套餐绑定的出口分类（#静态IP）：NULL = 不绑（direct/static_socks 套餐就是这样）。
+		// 不建外键：分类被删前由删除接口拒绝（有套餐绑着时不允许删），与地区/套餐的既有做法一致。
+		{"plans", "exit_profile_id", "bigint unsigned DEFAULT NULL COMMENT '出口分类 id（exit_profiles.id），NULL=不绑'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {
@@ -137,6 +288,16 @@ func ensureSchema(db *sql.DB) error {
 	indexes := []struct{ table, name, definition string }{
 		{"mail_logs", "mail_logs_created_at_index", "(`created_at`)"},
 		{"node_api_commands", "node_api_commands_status_updated_at_index", "(`status`,`updated_at`)"},
+		// 地区（#地区功能）：按地区筛节点（节点列表、订阅渲染）不能全表扫。
+		{"nodes", "idx_nodes_region", "(`region_id`)"},
+		// 批次号（#地区功能-10）：撤销按 batch_id 取整批记录，历史列表也可能按它筛。
+		{"user_node_migrations", "idx_batch", "(`batch_id`)"},
+		// 独占 socks 池（#地区功能-17）：每次下单都是「在池子里找一条未售出的」，
+		// 没有这个索引就是全表扫 + 拿不到行锁。
+		{"proxy_socks", "idx_socks_pool", "(`allocation`,`is_active`,`sold_to`)"},
+		// 出口分类（#静态IP）：删除分类前要数「有多少套餐绑着它」，套餐列表也要 JOIN 出分类名，
+		// 没有这个索引就是扫整张 plans 表。
+		{"plans", "idx_plans_exit_profile", "(`exit_profile_id`)"},
 	}
 	for _, idx := range indexes {
 		if err := ensureIndex(db, idx.table, idx.name, idx.definition); err != nil {

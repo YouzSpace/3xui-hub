@@ -21,6 +21,8 @@ import { usePagedList } from '@/composables/usePagedList'
 const toast = useToast()
 const plans = ref([])
 const thirdSubs = ref([]) // 第三方订阅选项（勾选进套餐用）
+const regions = ref([]) // 地区列表（套餐「可用地区」多选用）
+const exitProfiles = ref([]) // 静态 IP 出口分类（套餐「出口类型 = 静态 IP」时选）
 
 const { page, loading, loadError, pagination, hasPrev, hasNext, prev, next, fetchPage } = usePagedList()
 
@@ -39,11 +41,20 @@ const form = ref({
   total_traffic_gb: 0,
   include_local: true,
   third_ids: [],
+  region_ids: [],
+  exit_type: 'direct',
+  exit_profile_id: null,
 })
 const GB = 1024 * 1024 * 1024
 const typeOptions = [
   { label: '周期套餐', value: 'period' },
   { label: '总量套餐', value: 'total' },
+]
+// 出口类型：直连（默认，走节点自身出口）/ 静态 IP（链式到住宅）/ 单独 socks（发 socks 凭证）
+const exitTypeOptions = [
+  { value: 'direct', label: '直连（默认）' },
+  { value: 'static_chain', label: '静态 IP（配置好链式，用户连节点自动走住宅）' },
+  { value: 'static_socks', label: '单独 socks（用户直接拿 socks 凭证，走代理商城）' },
 ]
 
 // 纯第三方套餐（没勾本地节点、勾了第三方线路）：第三方不管流量只管时间
@@ -87,6 +98,47 @@ const loadThirdSubs = async () => {
   }
 }
 
+// 地区列表（套餐「可用地区」多选 + 列表列显示地区名）
+// 后端 GET /admin-api/regions 回 { regions: [...] }，也兼容直接给数组的形态；
+// 地区接口挂了只让多选区空着，不能连累套餐列表。
+const loadRegions = async () => {
+  try {
+    const data = await adminApi.listRegions()
+    regions.value = Array.isArray(data) ? data : (data?.regions ?? [])
+  } catch {
+    regions.value = []
+  }
+}
+
+const regionName = (id) => regions.value.find((r) => r.id === id)?.name || ''
+
+// 静态 IP 出口分类（「出口类型 = 静态 IP」时的下拉）。
+// 后端未合入时 404 —— 下拉为空并提示先去建分类，不影响套餐本身保存（直连套餐完全不受影响）。
+const loadExitProfiles = async () => {
+  try {
+    const data = await adminApi.listExitProfiles()
+    const list = Array.isArray(data) ? data : (data?.items ?? data?.profiles ?? [])
+    exitProfiles.value = list.filter((p) => p.enabled !== false)
+  } catch {
+    exitProfiles.value = []
+  }
+}
+
+const exitProfileOptions = computed(() =>
+  exitProfiles.value.map((p) => ({ value: p.id, label: p.name })),
+)
+
+// 列表列口径：不勾 = 全部；超过 3 个只列前 3 个再补「+N」
+const regionLabel = (p) => {
+  const ids = p?.region_ids ?? []
+  if (!ids.length) return '全部'
+  const names = ids.map(regionName).filter(Boolean)
+  // 地区被删了 / 地区接口没拉到：只报个数，别谎报「全部」
+  if (!names.length) return `已选 ${ids.length} 个地区`
+  if (names.length <= 3) return names.join('、')
+  return `${names.slice(0, 3).join('、')} +${names.length - 3}`
+}
+
 watch(page, load)
 
 const openCreate = () => {
@@ -102,8 +154,13 @@ const openCreate = () => {
     total_traffic_gb: 0,
     include_local: true,
     third_ids: [],
+    region_ids: [],
+    exit_type: 'direct',
+    exit_profile_id: null,
   }
   loadThirdSubs()
+  loadRegions()
+  loadExitProfiles()
   modalOpen.value = true
 }
 
@@ -120,8 +177,14 @@ const openEdit = (p) => {
     total_traffic_gb: p.total_traffic ? Math.round((p.total_traffic / GB) * 100) / 100 : 0,
     include_local: p.include_local !== false,
     third_ids: [...(p.third_party_sub_ids ?? [])],
+    region_ids: [...(p.region_ids ?? [])],
+    // 老套餐没有这两个字段（后端升级前）→ 一律按直连处理
+    exit_type: p.exit_type || 'direct',
+    exit_profile_id: p.exit_profile_id ?? null,
   }
   loadThirdSubs()
+  loadRegions()
+  loadExitProfiles()
   modalOpen.value = true
 }
 
@@ -129,6 +192,12 @@ const save = async () => {
   if (saving.value || saved.value) return
   saving.value = true
   try {
+    // 静态 IP 必须选分类：链式出口靠分类里的前置节点 + webshare 账号生成，
+    // 没分类的静态套餐用户连上也不会有住宅出口
+    if (form.value.exit_type === 'static_chain' && form.value.exit_profile_id == null) {
+      toast.error('出口类型选了静态 IP，请选择出口分类')
+      return
+    }
     const payload = {
       name: form.value.name,
       price: Number(form.value.price),
@@ -136,6 +205,16 @@ const save = async () => {
       type: form.value.type,
       include_local: !!form.value.include_local,
       third_party_sub_ids: [...form.value.third_ids],
+      // 不勾地区 = 不限地区，显式传 null（后端按 null 处理「全部地区」，
+      // 传 [] 在后端会变成「一个地区都不许用」的空集合语义）
+      region_ids: form.value.region_ids.length ? [...form.value.region_ids] : null,
+      // 出口类型：只有「静态 IP」才带分类；直连 / 单独 socks 显式清空分类，
+      // 免得残留的 id 让后端把套餐又链回住宅出口
+      exit_type: form.value.exit_type || 'direct',
+      exit_profile_id:
+        form.value.exit_type === 'static_chain' && form.value.exit_profile_id != null
+          ? form.value.exit_profile_id
+          : null,
     }
     if (form.value.type === 'period') {
       payload.months = Number(form.value.months)
@@ -196,7 +275,10 @@ const activate = async (p) => {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadRegions()
+})
 onActivated(load)
 </script>
 
@@ -215,6 +297,7 @@ onActivated(load)
               <th>名称</th>
               <th>价格</th>
               <th>类型</th>
+              <th>可用地区</th>
               <th>状态</th>
               <th>规则</th>
               <th>操作</th>
@@ -229,6 +312,7 @@ onActivated(load)
                   {{ p.type === 'period' ? '周期' : '总量' }}
                 </Badge>
               </td>
+              <td class="pl-regions-cell" :title="regionLabel(p)">{{ regionLabel(p) }}</td>
               <td>
                 <Badge :variant="p.is_active ? 'success' : 'warning'" dot>
                   {{ p.is_active ? '已上架' : '已下架' }}
@@ -251,13 +335,13 @@ onActivated(load)
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="6" class="pl-empty">
+              <td colspan="7" class="pl-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!plans.length">
-              <td colspan="6" class="pl-empty">
+              <td colspan="7" class="pl-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>暂无套餐</template>
               </td>
@@ -343,6 +427,46 @@ onActivated(load)
           <p v-if="!form.include_local && !form.third_ids.length" class="pl-warn">
             当前该套餐不含任何节点（本地与第三方都没勾）——用户订阅将为空。
           </p>
+        </div>
+
+        <!-- 可用地区：勾了才允许分配到这些地区；一个都不勾 = 不限 -->
+        <div class="pl-regions">
+          <span class="pl-nodes-title">可用地区</span>
+          <p class="pl-sub-label">不勾选 = 所有地区都能用（默认）</p>
+          <div v-if="regions.length" class="pl-region-list">
+            <label v-for="r in regions" :key="r.id" class="pl-nodes-row">
+              <input type="checkbox" :value="r.id" v-model="form.region_ids" />
+              <span>{{ r.name }}</span>
+            </label>
+          </div>
+          <p v-else class="pl-hint">
+            还没有地区，先去
+            <router-link to="/admin/regions" class="pl-link">「地区」页</router-link>
+            建一个（不建也不影响：套餐默认对所有地区可用）。
+          </p>
+        </div>
+
+        <!-- 出口类型：直连（走节点自身出口）/ 静态 IP（链式到住宅）/ 单独 socks（发凭证走代理商城） -->
+        <div class="pl-exit">
+          <span class="pl-nodes-title">出口类型</span>
+          <label v-for="o in exitTypeOptions" :key="o.value" class="pl-nodes-row">
+            <input type="radio" name="exit_type" :value="o.value" v-model="form.exit_type" />
+            <span>{{ o.label }}</span>
+          </label>
+          <!-- 只有「静态 IP」才需要选分类：链式出口按分类里的前置节点 + webshare 账号生成 -->
+          <label v-if="form.exit_type === 'static_chain'" class="pl-field pl-exit-profile">
+            <span>出口分类</span>
+            <Select
+              v-model="form.exit_profile_id"
+              :options="exitProfileOptions"
+              placeholder="选择出口分类"
+            />
+            <span v-if="!exitProfileOptions.length" class="pl-hint">
+              还没有出口分类，先去
+              <router-link to="/admin/exit-profiles" class="pl-link">「静态IP出口」页</router-link>
+              建一个。
+            </span>
+          </label>
         </div>
       </div>
       <template #footer>
@@ -439,6 +563,40 @@ onActivated(load)
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+/* 可用地区：与节点来源同样分区；地区多了折成两列并限制高度内滚 */
+.pl-regions {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.pl-region-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1) var(--space-3);
+  max-height: 180px;
+  overflow-y: auto;
+}
+/* 出口类型：与节点来源/地区同样分区（单选一行一条） */
+.pl-exit {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.pl-exit-profile {
+  margin-top: var(--space-1);
+}
+/* 列表列：地区多了会被截断，完整内容在 title 里 */
+.pl-regions-cell {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pl-nodes-title {
   font-size: var(--text-sm);

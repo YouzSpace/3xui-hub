@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/crypto"
+	"controlhub-server/internal/planregion"
 	"encoding/json"
 )
 
@@ -296,9 +297,20 @@ func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 // enabled=1 且 status='online'，且有可用入站（不按用户协议过滤：用户全协议通用，
 // 节点上只要配了任何入站就该出现在列表里）。
 //
+// userID 决定绑定口径（与 nodeapi / subscription 同语义）：
+//   - 该用户在 user_nodes 里没有任何绑定 → 不做节点过滤（老用户升级后行为不变）；
+//   - 有绑定 → 只返回绑定给他的节点。
+//
+// 套餐地区（#地区功能-15，口径见 internal/planregion）：套餐绑了地区就只看得到这些地区，
+// 但 region_id 为 NULL 的老节点不受限 —— 套餐不限地区时不加任何条件。
+//
 // 排序沿用 Eloquent->get() 的隐式主键顺序，保证输出稳定。
-func (s *sqlStore) OnlineNodesForProtocol(ctx context.Context, protocol string) ([]Node, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeColumns+` FROM nodes AS n
+func (s *sqlStore) OnlineNodesForProtocol(ctx context.Context, protocol string, userID uint64) ([]Node, error) {
+	allowed, restricted, err := planregion.Allowed(ctx, s.db, userID)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT ` + nodeColumns + ` FROM nodes AS n
 		WHERE n.enabled = 1 AND n.status = 'online'
 		  AND (
 		    EXISTS (SELECT 1 FROM node_inbounds ni WHERE ni.node_id = n.id)
@@ -306,7 +318,19 @@ func (s *sqlStore) OnlineNodesForProtocol(ctx context.Context, protocol string) 
 		        AND EXISTS (SELECT 1 FROM xray_inbounds xi
 		                    WHERE xi.node_id = n.id AND xi.enabled = 1))
 		  )
-		ORDER BY n.id`)
+		  AND (
+		    NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)
+		    OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = ? AND un.node_id = n.id)
+		  )`
+	args := []any{userID, userID}
+	if restricted {
+		clause, extra := planregion.NodeFilter(allowed)
+		query += clause
+		args = append(args, extra...)
+	}
+	query += `
+		ORDER BY n.id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

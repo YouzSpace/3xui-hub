@@ -21,6 +21,11 @@ export const adminApi = {
   // 响应 data:{id, token, uuid, sub_path}
   resetUserSubscription: (id) => client.post(`/admin-api/users/${id}/reset-subscription`),
   renewUser: (id) => client.post(`/admin-api/users/${id}/renew`),
+  // 绑定节点（#地区功能-26）
+  // 节点下拉候选：[{ id, name, region_name }]（用户列表筛选 + 改绑弹窗共用，一次给全）
+  listUserNodeOptions: () => client.get('/admin-api/users/nodes-options'),
+  // 单用户改绑：{ from_node_id, to_node_id }；from_node_id 传 null = 只加不减（可绑多节点）
+  changeUserNodes: (id, data) => client.put(`/admin-api/users/${id}/nodes`, data),
 
   // 仪表盘统计：成交额（今日 / 累计，只算已支付订单）
   getRevenueStats: () => client.get('/admin-api/stats/revenue'),
@@ -42,6 +47,39 @@ export const adminApi = {
   // 单节点改倍率走上面的 updateNode，不另开端点。
   setOriginalNodeMultiplier: (multiplier) => client.put('/admin-api/nodes/multiplier/original', { multiplier }),
   setNodeMultiplierDisplay: (showMultiplier) => client.put('/admin-api/nodes/multiplier/display', { show_multiplier: showMultiplier }),
+
+  // 地区与调度（地区 = 一组节点；用户建号时只在「绑定节点」里分配）
+  // 后端尚未合入时这些端点会 404，页面一律降级：字段缺失显示「—」/「不限」，地区下拉只剩「不设置」。
+  // 列表 data = [{ id, name, sort, node_count, user_count, capacity_total, capacity_used }]
+  listRegions: () => client.get('/admin-api/regions'),
+  createRegion: (data) => client.post('/admin-api/regions', data),
+  updateRegion: (id, data) => client.put(`/admin-api/regions/${id}`, data),
+  deleteRegion: (id) => client.delete(`/admin-api/regions/${id}`),
+  // 地区内节点 data = [{ id, name, host, driver_type, status, capacity, bound_users, agree_ratio }]
+  // agree_ratio = bound_users / capacity（capacity 为 null 时后端返回 null）
+  listRegionNodes: (id) => client.get(`/admin-api/regions/${id}/nodes`),
+  // 调度总览 data = { node_total, capacity_total, capacity_used, regions: [...], counts?: {warn, critical} }
+  regionOverview: () => client.get('/admin-api/regions/overview'),
+  // 容量告警（实时算，不落库）：data = { alerts: [{Level, Scope, ID, Name, Used, Capacity, Ratio, Message}],
+  //   counts: { warn, critical } }；>=85% 记 warn、>=95% 记 critical。
+  // 后端未合入时 404 —— 页面按「没有告警」处理，不编造。
+  regionsAlerts: () => client.get('/admin-api/regions/alerts'),
+  // 节点归属（region_id 传 null = 移出地区，回到全量下发）/ 容量上限（null = 不限）
+  setNodeRegion: (id, regionId) => client.put(`/admin-api/nodes/${id}/region`, { region_id: regionId }),
+  setNodeCapacity: (id, capacity) => client.put(`/admin-api/nodes/${id}/capacity`, { capacity }),
+  // 单节点容量推荐（按最近 7 天内存样本反推）：
+  //   data = { NodeID, Suggest, PerUserKB, Basis, Confidence: high|medium|low, Samples, Reason }
+  // 后端未合入 / 节点没有样本时 404 或空：页面不显示建议值（不兜底编数字）。
+  capacityRecommend: (id) => client.get(`/admin-api/nodes/${id}/capacity-recommend`),
+  // 故障迁移 / 地区均衡：都是后台任务，立即返回 { job_id }，进度查 migrationJob
+  // 迁移入参 { to_node_id, count }（count<=0 = 全部）；均衡入参 { dry, limit }
+  // （dry=true 同步返回计划不写库，dry=false 才走后台任务）
+  migrateNode: (id, data) => client.post(`/admin-api/nodes/${id}/migrate`, data),
+  balanceRegion: (id, data) => client.post(`/admin-api/regions/${id}/balance`, data),
+  // 后台任务进度 data = { status, total, done, failed, started_at, finished_at, error }
+  migrationJob: (jobId) => client.get(`/admin-api/migrations/jobs/${jobId}`),
+  // 迁移历史 data = { items, total, page, per_page }
+  listMigrations: (params) => client.get('/admin-api/migrations', { params }),
 
   // 第三方订阅（外部机场线路；链接含机场 token，仅管理端）
   // 列表返回 { items, enabled(总开关) }；新增/编辑会触发一次拉取（失败不阻塞保存），放宽超时
@@ -72,6 +110,14 @@ export const adminApi = {
   // 读取本地保存的子用户凭据（上游没有读密码接口；同步来的记录会 404）
   getWebshareCredential: (id) => client.post(`/admin-api/upstream/webshare/accounts/${id}/credential`),
   pullWebshareUsageBatch: (id) => client.post(`/admin-api/upstream/webshare/providers/${id}/usage`, {}, { timeout: 120000 }),
+
+  // 静态 IP 出口分类（#静态IP）：一个分类 = 一组前置节点 + 一个 webshare 账号。
+  // 列表每项含 node_ids / node_count / provider_name；后端未合入时 404，页面降级为空列表。
+  listExitProfiles: () => client.get('/admin-api/exit-profiles'),
+  createExitProfile: (data) => client.post('/admin-api/exit-profiles', data),
+  updateExitProfile: (id, data) => client.put(`/admin-api/exit-profiles/${id}`, data),
+  // 有套餐绑定时后端拒绝删除，msg 里带套餐数 —— 页面原样展示
+  deleteExitProfile: (id) => client.delete(`/admin-api/exit-profiles/${id}`),
 
   // 代理运营（谁买了、还剩多少、到期没、待补开）
   proxyOpsOverview: () => client.get('/admin-api/proxy-ops/overview'),
@@ -374,6 +420,17 @@ export const adminApi = {
   rotateXrayWarp: (nodeId) => client.post(`/admin-api/nodes/${nodeId}/warp/rotate`, {}, { timeout: 40000 }),
   updateXrayWarp: (nodeId, data) => client.put(`/admin-api/nodes/${nodeId}/warp`, data),
   deleteXrayWarp: (nodeId) => client.delete(`/admin-api/nodes/${nodeId}/warp`),
+
+  // 配置模板（#地区功能-20）：与具体节点无关的标准入站/出站/路由片段，
+  // 一次可套用到多台 xray 节点；3x-ui 节点套用时整台跳过（结果里给原因）。
+  // kind = inbound / outbound / routing
+  listXrayTemplates: () => client.get('/admin-api/xray-templates'),
+  createXrayTemplate: (kind, data) => client.post(`/admin-api/xray-templates/${kind}`, data),
+  updateXrayTemplate: (kind, id, data) => client.put(`/admin-api/xray-templates/${kind}/${id}`, data),
+  deleteXrayTemplate: (kind, id) => client.delete(`/admin-api/xray-templates/${kind}/${id}`),
+  // 套用：{ node_ids: [], overwrite_custom: bool } → { results, applied, skipped, failed }
+  // results 逐节点：[{ node_id, node_name, status: applied|skipped|failed, message, inbound_count, outbound_count, routing_count }]
+  applyXrayTemplates: (data) => client.post('/admin-api/xray-templates/apply', data, { timeout: 120000 }),
 
   // Geo 数据（geoip.dat / geosite.dat 更新与分发，issue #40）
   // 更新要同步从上游下载两个文件，弱网可能 1~2 分钟，单独放宽超时

@@ -62,7 +62,7 @@ func (f *fakeRepo) UserByToken(_ context.Context, token string) (*User, error) {
 }
 
 func (f *fakeRepo) PlanByID(context.Context, int64) (*Plan, error) { return nil, nil }
-func (f *fakeRepo) SubscribableNodes(context.Context, string) ([]Node, error) {
+func (f *fakeRepo) SubscribableNodes(context.Context, string, uint64) ([]Node, error) {
 	return nil, nil
 }
 func (f *fakeRepo) NodeInboundIDs(context.Context, int64, string) ([]int64, error) {

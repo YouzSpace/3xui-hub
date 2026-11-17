@@ -109,7 +109,7 @@ func (h *Handler) handleNodes(c *gin.Context) {
 		}
 	}
 
-	nodes, err := h.store.OnlineNodesForProtocol(ctx, user.Protocol)
+	nodes, err := h.store.OnlineNodesForProtocol(ctx, user.Protocol, uint64(user.ID))
 	if err != nil {
 		h.logger.Printf("/api/nodes 查询节点失败: %v", err)
 		fail(c, "服务器错误", 500)

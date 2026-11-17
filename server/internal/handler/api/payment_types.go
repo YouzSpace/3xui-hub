@@ -68,7 +68,15 @@ type PlanRow struct {
 	Price          string
 	ResetPrice     string
 	IncludeLocal   bool
+	// ExitType 是出口类型（#静态IP）：direct / static_chain / static_socks。
+	// 列是 NOT NULL DEFAULT 'direct'；老套餐（升级前建的行）读出来就是 direct。
+	ExitType string
+	// ExitProfileID 是绑定的出口分类（仅 static_chain 有意义）；NULL = 不绑。
+	ExitProfileID sql.NullInt64
 }
+
+// IsStaticChain 判定「链式静态 IP」套餐（购买流程要开号 + 绑前置节点）。
+func (p *PlanRow) IsStaticChain() bool { return p != nil && p.ExitType == "static_chain" }
 
 // IsPeriod 对齐 Plan::isPeriod()。
 func (p *PlanRow) IsPeriod() bool { return p.Type == "period" }
@@ -278,6 +286,23 @@ type PanelSyncer interface {
 	DeliverUser(ctx context.Context, user *User) error
 }
 
+// UserNodeAssigner 是「套餐生效后把用户分配到地区节点」的接缝（#地区功能-14）。
+//
+// 用函数字段而不是接口：真实实现是 *scheduler.Scheduler.Assign，签名里的返回类型
+// （[]scheduler.Assignment）对支付域没有意义 —— 支付只需要「分配成功/失败」。
+// 接线方（cmd/server/routes.go）负责把返回值压成 error。
+//
+// 语义：幂等。它只给「该用户还没有绑定记录的每一个地区」各插一条 user_nodes，
+// 所以重复购买只多一条 SELECT，不会重复绑定、也不会动已有绑定。
+type UserNodeAssigner func(ctx context.Context, userID uint64) error
+
+// UserNodePruner 是「换套餐后清掉新套餐不允许地区绑定」的接缝（#地区功能-15）。
+//
+// 真实实现是 *scheduler.Scheduler.PrunePlanRegions（返回删除行数）。
+// 语义：只删没有落在套餐允许地区的绑定；套餐不限地区时一条都不删。
+// 换套餐后调用它 + UserNodeAssigner，就能把用户的节点收敛到新套餐的地区范围里。
+type UserNodePruner func(ctx context.Context, userID uint64) (int64, error)
+
 // ProxyOrderCompleter 是代理订单支付成功后的开通接缝（PHP ProxyStoreService::completeOrder）。
 //
 // 代理商城属于 P8d；本阶段为 nil 时只记日志并把订单置 paid —— 与 PHP 里「服务缺失只
@@ -300,6 +325,15 @@ type PaymentServiceOptions struct {
 	Panel PanelSyncer
 	// ProxyOrders 为空时代理订单只置 paid 不开通。
 	ProxyOrders ProxyOrderCompleter
+	// AssignUserNodes 在套餐生效后给用户分配地区节点（#地区功能-14）；为空时跳过。
+	// 失败只记日志 —— 钱已经收了，分配失败不能让订单完成回滚。
+	AssignUserNodes UserNodeAssigner
+	// PruneUserNodes 在换套餐后清掉「新套餐不允许地区」的绑定（#地区功能-15）；为空时跳过。
+	// 排在 AssignUserNodes 之前：先清违规绑定、再按新套餐补齐。失败同样只记日志。
+	PruneUserNodes UserNodePruner
+	// StaticChain 是 static_chain 套餐的开通链路（#静态IP-02）：开 webshare 子账号 + 绑前置节点。
+	// 为空时该类套餐只记日志：**不会**退回地区分配（链式出口的入口必须是分类里的前置节点）。
+	StaticChain StaticChainProvisioner
 	// Cache 用于恢复邮件通知标记（restoreReminders）；为空时跳过。
 	Cache PaymentCache
 	// SiteConfigs 读 site_configs（invite_discount / redeem_discount / invite_enabled 等）。

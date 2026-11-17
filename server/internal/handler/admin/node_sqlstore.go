@@ -109,7 +109,7 @@ func (s *nodeSQLStore) SiteConfigSet(ctx context.Context, key string, value *str
 
 const nodeColumns = `id, name, host, port, scheme, web_base_path, username, password, api_key,
 	enabled, verify_ssl, status, latency, cpu, mem, traffic_multiplier, driver_type, driver_version,
-	driver_config, last_check_at, created_at, updated_at`
+	driver_config, last_check_at, created_at, updated_at, region_id, capacity`
 
 func (s *nodeSQLStore) scanNode(row interface{ Scan(...any) error }) (*NodeRecord, error) {
 	var n NodeRecord
@@ -117,9 +117,11 @@ func (s *nodeSQLStore) scanNode(row interface{ Scan(...any) error }) (*NodeRecor
 	var driverConfig, rawPassword, rawAPIKey sql.NullString
 	var enabled, verifySSL int
 	var lastCheck, createdAt, updatedAt sql.NullTime
+	var regionID, capacity sql.NullInt64
 	if err := row.Scan(&n.ID, &n.Name, &n.Host, &n.Port, &n.Scheme, &n.WebBasePath, &n.Username,
 		&rawPassword, &rawAPIKey, &enabled, &verifySSL, &n.Status, &n.Latency, &cpu, &mem,
-		&multiplier, &n.DriverType, &driverVersion, &driverConfig, &lastCheck, &createdAt, &updatedAt); err != nil {
+		&multiplier, &n.DriverType, &driverVersion, &driverConfig, &lastCheck, &createdAt, &updatedAt,
+		&regionID, &capacity); err != nil {
 		return nil, err
 	}
 	_ = password
@@ -134,6 +136,14 @@ func (s *nodeSQLStore) scanNode(row interface{ Scan(...any) error }) (*NodeRecor
 	n.Mem = nullStrPtr(mem)
 	n.TrafficMultiplier = nullStrPtr(multiplier)
 	n.DriverVersion = nullStrPtr(driverVersion)
+	if regionID.Valid {
+		v := uint64(regionID.Int64)
+		n.RegionID = &v
+	}
+	if capacity.Valid {
+		v := capacity.Int64
+		n.Capacity = &v
+	}
 	if driverConfig.Valid && driverConfig.String != "" {
 		n.DriverConfigRaw = []byte(driverConfig.String)
 	}
@@ -453,9 +463,73 @@ func (s *nodeSQLStore) UpdateNode(ctx context.Context, id uint64, in NodeUpdateI
 	return s.NodeByID(ctx, id)
 }
 
-func (s *nodeSQLStore) DeleteNode(ctx context.Context, id uint64) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM nodes WHERE id = ?", id)
-	return err
+// DeleteNode 删除节点行，替代过去一句 `DELETE FROM nodes` 裸删。
+//
+// 为什么要有护栏：user_nodes 没有外键（见 cmd/server/schema.go），直接删节点会把
+// 绑在上面的用户变成「悬空」—— 订阅里拉不到任何节点，而面板看不出原因。
+//   - Force=false：先数绑定用户，有就返回 *NodeBoundUsersError（HTTP 层回 422）；
+//   - Force=true：同一事务里解绑、清关联表、删节点行，并写一条审计。
+//
+// 关联表显式清理而不是只靠 ON DELETE CASCADE：老库（Laravel 时期一路 migrate 上来的）
+// 不一定还有外键，缺外键时 xray_inbounds 等会留下孤儿行，后续按 node_id 查会读到幽灵入站。
+func (s *nodeSQLStore) DeleteNode(ctx context.Context, in NodeDeleteInput) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 行锁内数绑定：SELECT ... FOR UPDATE 会在 user_nodes 的 idx_node 上取间隙锁，
+	// 挡住「查完是 0、删之前又有人绑进来」的并发窗口。
+	var bound int64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM user_nodes WHERE node_id = ? FOR UPDATE", in.ID).Scan(&bound); err != nil {
+		return err
+	}
+	if bound > 0 && !in.Force {
+		return &NodeBoundUsersError{NodeID: in.ID, Count: bound}
+	}
+
+	// 顺序按「子表 → 父表」：xray_relay_clients 挂在 xray_inbounds 上（级联），先不单独处理。
+	for _, table := range []string{"xray_inbounds", "xray_outbounds", "xray_routing_rules", "node_inbounds"} {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE node_id = ?", in.ID); err != nil {
+			return fmt.Errorf("清理 %s 失败: %w", table, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM user_nodes WHERE node_id = ?", in.ID); err != nil {
+		return fmt.Errorf("解绑用户失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM nodes WHERE id = ?", in.ID); err != nil {
+		return err
+	}
+
+	// 审计与删除同事务：不允许「节点没了但没留痕」，也不允许「留了痕其实没删」。
+	if in.Force {
+		action := fmt.Sprintf("强制删除节点（含 %d 个用户绑定）", bound)
+		var actor any
+		if strings.TrimSpace(in.Actor) != "" {
+			actor = strings.TrimSpace(in.Actor)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO operation_logs (type, actor_name, action, method, path, status, error, created_at) "+
+				"VALUES ('admin', ?, ?, 'DELETE', ?, 200, ?, ?)",
+			actor, action, fmt.Sprintf("/admin-api/nodes/%d", in.ID),
+			fmt.Sprintf("解绑 %d 个用户并清理入站/出站/路由规则/入站挂载", bound), s.now().UTC()); err != nil {
+			return fmt.Errorf("写强制删除审计失败: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// NodeBoundUserCount 数该节点绑定的用户数（删除护栏的预检查）。
+func (s *nodeSQLStore) NodeBoundUserCount(ctx context.Context, nodeID uint64) (int64, error) {
+	var n int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM user_nodes WHERE node_id = ?", nodeID).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ReplaceNodeInbounds 全量替换 node_inbounds，并回报「确实变化的协议 → 新入站集合」。
@@ -690,10 +764,22 @@ func (s *nodeSQLStore) UpdateNodeStatus(ctx context.Context, id uint64, status s
 
 // EligibleProtocolCounts 复刻 XrayConfigService::eligibleUsers() 的协议分布
 // （present 里的 client_count：有套餐 + 启用 + 未被关闭流量）。
-func (s *nodeSQLStore) EligibleProtocolCounts(ctx context.Context) (map[string]int64, error) {
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT protocol, COUNT(*) FROM users WHERE plan_id IS NOT NULL AND enabled = 1 "+
-			"AND traffic_disabled_at IS NULL GROUP BY protocol")
+//
+// nodeID > 0 时按节点统计：user_nodes 里有该节点的绑定 → 只算绑到该节点的用户；
+// 该节点没有任何绑定记录（含老用户升级后的空表）→ 全量，与升级前一致。
+// nodeID <= 0 → 不过滤（全局面板口径）。
+func (s *nodeSQLStore) EligibleProtocolCounts(ctx context.Context, nodeID int64) (map[string]int64, error) {
+	query := "SELECT u.protocol, COUNT(*) FROM users u WHERE u.plan_id IS NOT NULL AND u.enabled = 1 " +
+		"AND u.traffic_disabled_at IS NULL "
+	var args []any
+	if nodeID > 0 {
+		query += "AND (NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.node_id = ?) " +
+			"OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id)) "
+		args = append(args, nodeID, nodeID)
+	}
+	query += "GROUP BY u.protocol"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -36,15 +36,28 @@ func NewQueueProvisioner(db *sql.DB, queue *task.Queue, appKey []byte, logger *l
 	return &queueProvisioner{db: db, queue: queue, appKey: appKey, logger: logger}
 }
 
-// Dispatch 实现 api.Provisioner：为每个 enabled 节点派发 ProvisionClientJob。
+// Dispatch 实现 api.Provisioner：为每个"用户可用"的 enabled 节点派发 ProvisionClientJob。
+//
+// 节点范围（#地区功能）：用户有绑定记录（user_nodes）时只在他绑定的节点上建号；
+// 一条绑定都没有时保持老行为 —— 全部 enabled 节点。
+//
+// 兼容分支写在 SQL 里而不是先查一次绑定：注册/购买这条链路上 Dispatch 是同步调用，
+// 少一次往返就少一段锁窗口，两种情形也天然没有 TOCTOU（同一语句同一快照）。
 func (p *queueProvisioner) Dispatch(ctx context.Context, user *api.User) error {
-	rows, err := p.db.QueryContext(ctx, "SELECT id FROM nodes WHERE enabled = 1")
+	const query = `SELECT id FROM nodes
+WHERE enabled = 1
+  AND (
+    NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)
+    OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = ? AND un.node_id = nodes.id)
+  )`
+
+	uid := int64(user.ID)
+	rows, err := p.db.QueryContext(ctx, query, uid, uid)
 	if err != nil {
 		return fmt.Errorf("查询节点失败: %w", err)
 	}
 	defer rows.Close()
 
-	uid := int64(user.ID)
 	for rows.Next() {
 		var nodeID int64
 		if err := rows.Scan(&nodeID); err != nil {

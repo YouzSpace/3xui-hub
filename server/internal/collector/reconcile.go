@@ -161,31 +161,31 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 	}
 	const probeBudgetPerNode = 60 // 退化路径下每节点每轮最多探测多少个用户
 
-	users, err := c.reconcileUsers(ctx)
-	if err != nil {
-		return rep, err
-	}
-	rep.Users = len(users)
-
-	// 补挂/补建一轮要能补齐整台节点：节点上新加入站时，缺的是「全部有套餐用户」，
-	// 按 50 上限会被切到下一轮，用户看到的就是「入站只补了一半人」。
-	// 用户定稿：一轮就补齐，不设人为上限。
-	if len(users) > maxWritesPerNode {
-		maxWritesPerNode = len(users)
-	}
-
-	// 我们自己建的 client 只认 `ch_user_{id}` 且该 id 在 users 表里存在；
-	// 节点上其它 email（自建的远程用户、历史孤儿）一律不碰，只报告。
-	ourEmails := make(map[string]bool, len(users))
-	for _, u := range users {
-		ourEmails[clientEmail(u.ID)] = true
-	}
-
 	nodes, err := c.enabledNodes(ctx)
 	if err != nil {
 		return rep, err
 	}
 	rep.Nodes = len(nodes)
+
+	// 用户**按节点**取（每个节点一次查询，见 reconcileUsers）：
+	// 绑定过滤后，节点只比对本节点应有的用户，否则「绑到别的节点的用户」会在每台节点上
+	// 都被判成「节点上缺人」→ 反复补挂 → bump config_version → 内核反复重启。
+	//
+	// rep.Users 口径随之变化：从「面板用户总数」改成「本轮参与比对的不同用户数」
+	// （同一用户绑多台节点只记一次；一座节点都没有绑定的人不参与任何节点，不计入）。
+	nodeUsers := make([][]reconcileUser, len(nodes))
+	seenUser := make(map[int64]bool)
+	for i := range nodes {
+		us, err := c.reconcileUsers(ctx, nodes[i].ID)
+		if err != nil {
+			return rep, err
+		}
+		nodeUsers[i] = us
+		for _, u := range us {
+			seenUser[u.ID] = true
+		}
+	}
+	rep.Users = len(seenUser)
 
 	needOpen := map[int64]bool{}
 	needClose := map[int64]bool{}
@@ -218,6 +218,9 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for i, node := range nodes {
+		// 本节点该比对的人（绑定过滤后）。
+		users := nodeUsers[i]
+
 		// 健康检查已判离线的节点：**直接放弃**，不发任何请求（用户定稿：ping 不到就别试）。
 		// 裸内核与 3x-ui 同口径 —— 下一轮再来，绝不把「连不上」当成「节点上没有这个人」。
 		if strings.EqualFold(node.Status, "offline") {
@@ -227,33 +230,51 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 		if node.isXray() {
 			// 裸内核：没有可直连读回的状态，改走指令通道读 client_list（见 reconcile_bare.go）。
 			wg.Add(1)
-			go func(i int, node nodeRow) {
+			go func(i int, node nodeRow, users []reconcileUser) {
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				out, err := c.reconcileBareOnNode(ctx, node, users, dry)
 				results[i] = nodeResult{node: node, out: out, err: err}
-			}(i, node)
+			}(i, node, users)
 			continue
 		}
 		if node.DriverType != "" && node.DriverType != "3x-ui" {
 			results[i] = nodeResult{node: node, skip: true}
 			continue
 		}
+
+		// 补挂/补建一轮要能补齐整台节点：节点上新加入站时，缺的是「全部有套餐用户」，
+		// 按 50 上限会被切到下一轮，用户看到的就是「入站只补了一半人」。
+		// 用户定稿：一轮就补齐，不设人为上限。
+		nodeMaxWrites := maxWritesPerNode
+		if len(users) > nodeMaxWrites {
+			nodeMaxWrites = len(users)
+		}
+
+		// 我们自己建的 client 只认 `ch_user_{id}` 且该 id 在 users 表里存在；
+		// 节点上其它 email（自建的远程用户、历史孤儿）一律不碰，只报告。
+		// 按节点建集合：不在这台节点名单里的人，在这一台上只按「非本站 client」报告。
+		ourEmails := make(map[string]bool, len(users))
+		for _, u := range users {
+			ourEmails[clientEmail(u.ID)] = true
+		}
+
 		wg.Add(1)
-		go func(i int, node nodeRow) {
+		go func(i int, node nodeRow, users []reconcileUser, ourEmails map[string]bool, nodeMaxWrites int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			out, err := c.reconcileOnNode(ctx, node, users, ourEmails, dry,
-				maxWritesPerNode, probeBudgetPerNode, int(round))
+				nodeMaxWrites, probeBudgetPerNode, int(round))
 			results[i] = nodeResult{node: node, out: out, err: err}
-		}(i, node)
+		}(i, node, users, ourEmails, nodeMaxWrites)
 	}
 	wg.Wait()
 
 	// 合并各节点结果（单 goroutine 合并，避免锁竞争）
-	for _, r := range results {
+	for i, r := range results {
+		users := nodeUsers[i]
 		if r.skip {
 			continue
 		}
@@ -1113,12 +1134,28 @@ func (c *Collector) clientMatches(ctx context.Context, client *threexui.Client, 
 	return e.Enable == u.Intent && e.TotalGB == u.Limit && e.ExpiryMs == u.ExpiryMs
 }
 
-// reconcileUsers 一次取齐参与比对的面板用户（意图在 Go 侧算，不再用 SQL 排除带标记的人）。
-func (c *Collector) reconcileUsers(ctx context.Context) ([]reconcileUser, error) {
-	rows, err := c.db.QueryContext(ctx,
-		"SELECT u.id, u.uuid, u.protocol, u.enabled, u.traffic_disabled_at, u.expired_at, u.traffic_limit, "+
-			"u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit, u.plan_id, p.type, u.email "+
-			"FROM users u LEFT JOIN plans p ON p.id = u.plan_id ORDER BY u.id")
+// reconcileUsers 取「参与本节点比对」的面板用户（意图在 Go 侧算，不再用 SQL 排除带标记的人）。
+//
+// nodeID > 0 且 user_nodes 里有该节点的绑定记录 → 只取绑到该节点的用户；
+// 该节点没有任何绑定记录（含老用户升级后的空表）→ 取全量，行为与升级前一致；
+// nodeID <= 0 → 不过滤（全量）。
+//
+// 为什么必须按节点取：全量用户逐节点比对时，「绑到别的节点的用户」在每台节点上都会
+// 被判成「节点上缺人」→ 每轮都补挂 → bump config_version → 内核反复重启。
+func (c *Collector) reconcileUsers(ctx context.Context, nodeID int64) ([]reconcileUser, error) {
+	query := "SELECT u.id, u.uuid, u.protocol, u.enabled, u.traffic_disabled_at, u.expired_at, u.traffic_limit, " +
+		"u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit, u.plan_id, p.type, u.email " +
+		"FROM users u LEFT JOIN plans p ON p.id = u.plan_id "
+	var args []any
+	if nodeID > 0 {
+		// 该节点无绑定 → 全量；有绑定 → 只取绑定的（与订阅/下发同一口径）。
+		query += "WHERE (NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.node_id = ?) " +
+			"OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id)) "
+		args = append(args, nodeID, nodeID)
+	}
+	query += "ORDER BY u.id"
+
+	rows, err := c.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询对账用户失败: %w", err)
 	}

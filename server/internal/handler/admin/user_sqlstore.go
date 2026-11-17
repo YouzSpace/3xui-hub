@@ -34,8 +34,15 @@ const userSelectColumns = `u.id, u.email, u.token, u.uuid, u.protocol, u.plan_id
 // cursor > 0 时走游标分页：按主键定位（WHERE u.id < cursor），不查 COUNT、不用 OFFSET。
 // 深页（十万页以上）在 offset 模式下要扫过前面所有行，实测 100 万用户翻末页 14 秒、
 // 200 万用户 7~35 秒；游标模式恒定为毫秒级。offset 模式保留给「跳页」和兼容旧客户端。
-func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time) ([]UserRow, int64, error) {
+//
+// nodeID > 0 时只保留「绑定了该节点」的用户（#地区功能-26），用 EXISTS 子查询而不是
+// JOIN user_nodes —— 一个用户可绑多节点，JOIN 会把他查出多行、把分页撑歪。
+func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, perPage, cursor, nodeID int64, now time.Time) ([]UserRow, int64, error) {
 	where, args := userSearchWhere(search, now)
+	if nodeID > 0 {
+		where += ` AND EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = u.id AND un.node_id = ?)`
+		args = append(args, nodeID)
+	}
 
 	if perPage < 1 {
 		perPage = 50
@@ -377,4 +384,136 @@ func (s *adminUserSQLStore) DeleteUser(ctx context.Context, id uint64) error {
 func (s *adminUserSQLStore) DeleteAccessTokens(ctx context.Context, userID uint64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM access_tokens WHERE user_id = ?`, userID)
 	return err
+}
+
+// ---- 绑定节点（#地区功能-26）----
+
+// UserNodesBindings 批量取「用户 → 绑定节点」，一次 IN 查询。
+//
+// 为什么批量：用户列表每页 50 行，逐行查 user_nodes 就是 50 次往返（N+1）；
+// 这里用一条 WHERE user_id IN (…) 拿全，再由调用方按 user_id 分组填进响应。
+func (s *adminUserSQLStore) UserNodesBindings(ctx context.Context, userIDs []uint64) (map[uint64][]UserNodeRef, error) {
+	out := make(map[uint64][]UserNodeRef, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	// 占位符按 id 个数拼；参数逐个 append（不能用 …slice 展开，database/sql 不认）。
+	var sb strings.Builder
+	sb.WriteString(`SELECT un.user_id, un.node_id, n.name
+		FROM user_nodes un
+		LEFT JOIN nodes n ON n.id = un.node_id
+		WHERE un.user_id IN (`)
+	args := make([]any, 0, len(userIDs))
+	for i, id := range userIDs {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteByte('?')
+		args = append(args, id)
+	}
+	sb.WriteString(`) ORDER BY un.user_id, un.node_id`)
+
+	rows, err := s.db.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			userID uint64
+			ref    UserNodeRef
+			name   sql.NullString
+		)
+		// 节点被删掉时 LEFT JOIN 出 NULL：照旧返回 id（前端显示节点已不在），
+		// 不能因为名字为空就把这条绑定吞掉 —— 否则改绑会重新加一条重复绑定。
+		if err := rows.Scan(&userID, &ref.NodeID, &name); err != nil {
+			return nil, err
+		}
+		ref.Name = name.String
+		out[userID] = append(out[userID], ref)
+	}
+	return out, rows.Err()
+}
+
+// NodeOptions 全部节点的下拉候选（按 id 升序，含未启用节点）。
+//
+// 不过滤 enabled：停用节点上可能还绑着用户，把它们藏起来会让管理员没法把
+// 那些人改绑出来（筛选也筛不到）。
+func (s *adminUserSQLStore) NodeOptions(ctx context.Context) ([]NodeOption, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT n.id, n.name, r.name
+		FROM nodes n
+		LEFT JOIN regions r ON r.id = n.region_id
+		ORDER BY n.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []NodeOption{}
+	for rows.Next() {
+		var (
+			o      NodeOption
+			region sql.NullString
+		)
+		if err := rows.Scan(&o.ID, &o.Name, &region); err != nil {
+			return nil, err
+		}
+		o.RegionName = nullStrPtr(region)
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// MoveUserNode 单用户改绑：一个事务里换绑定 + 更新指纹 + 记迁移历史。
+//
+// 三件事必须原子：只改 user_nodes 不改 users.updated_at，节点侧看不出配置变了、
+// 不会重新拉用户（新节点上永远不建号）；少记一条 user_node_migrations 就查不到
+// 「谁在什么时候把这台机器上的用户挪走了」。
+//
+// fromNodeID = 0 表示「只加不减」（用户本来没绑定 / 管理员要多挂一台）。
+func (s *adminUserSQLStore) MoveUserNode(ctx context.Context, userID uint64, fromNodeID, toNodeID int64, operator *string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 目标节点必须真实存在：user_nodes 没有外键，不校验就会写出悬空绑定，
+	// 之后订阅渲染查不到节点、调度统计又把它算成一个绑定用户。
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ?`, toNodeID).Scan(&one); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrNodeNotFound
+		}
+		return err
+	}
+
+	if fromNodeID > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM user_nodes WHERE user_id = ? AND node_id = ?`, userID, fromNodeID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT IGNORE INTO user_nodes (user_id, node_id) VALUES (?, ?)`, userID, toNodeID); err != nil {
+		return err
+	}
+	// 指纹：节点侧按 Max(updated_at) 判断自己那份配置是否过期（与 scheduler.moveUser 同口径）。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET updated_at = NOW() WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	// from_node_id 为空时落 NULL（列可空）：区分「从某台搬走」与「直接新增一条」。
+	var from any
+	if fromNodeID > 0 {
+		from = fromNodeID
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO user_node_migrations (user_id, from_node_id, to_node_id, reason, operator, created_at)
+		 VALUES (?, ?, ?, 'manual', ?, NOW())`,
+		userID, from, toNodeID, nullStrValue(operator)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

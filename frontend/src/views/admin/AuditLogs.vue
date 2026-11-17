@@ -33,6 +33,10 @@ const typeOptions = [
   { label: '管理员', value: 'admin' },
   { label: '用户', value: 'user' },
   { label: '系统', value: 'system' },
+  // 地区功能的两个专属类型（后端 operation_logs.type 精确匹配）。
+  // 注意：后端目前还没有地方写这两种 type，选中会返回空列表，等后端落库后自动有数据。
+  { label: '节点迁移', value: 'node_migration' },
+  { label: '模板同步', value: 'template_sync' },
 ]
 const statusOptions = [
   { label: '全部结果', value: '' },
@@ -89,8 +93,10 @@ const { page, loading, loadError, pagination, prev, next, fetchPage } = usePaged
 
 const rows = ref([])
 
-const typeVariant = (t) => ({ admin: 'info', user: 'success', system: 'warning' }[t] || 'info')
-const typeText = (t) => ({ admin: '管理员', user: '用户', system: '系统' }[t] || t)
+const typeVariant = (t) =>
+  ({ admin: 'info', user: 'success', system: 'warning', node_migration: 'vless', template_sync: 'trojan' }[t] || 'info')
+const typeText = (t) =>
+  ({ admin: '管理员', user: '用户', system: '系统', node_migration: '节点迁移', template_sync: '模板同步' }[t] || t)
 
 const fmtTime = (v) => {
   if (!v) return '—'

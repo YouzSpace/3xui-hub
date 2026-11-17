@@ -8,6 +8,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -36,7 +37,31 @@ type UserRow struct {
 	// ProxyActiveCount 只由列表查询填充（对齐 withCount('proxyEntitlements …')）；
 	// 详情/写响应在 PHP 里拿不到该属性，恒为 0。
 	ProxyActiveCount int64
+
+	// NodeIDs / NodeNames 是用户绑定的节点（#地区功能-26）。
+	//
+	// 只由 /users 列表与 /users/:id 详情填充（一次 IN 查询批量取，不做 N+1）；
+	// 其余写响应（改密/重置流量/续费等）不携带绑定信息，两列留空 —— 与
+	// ProxyActiveCount 同口径，前端拿到 null 字段时显示「—」。
+	NodeIDs   []int64
+	NodeNames []string
 }
+
+// UserNodeRef 是一条「用户 → 节点」绑定（带节点名，列表与改绑弹窗用）。
+type UserNodeRef struct {
+	NodeID int64
+	Name   string
+}
+
+// NodeOption 是节点下拉候选（用户列表的「绑定节点」筛选 + 改绑弹窗共用）。
+type NodeOption struct {
+	ID         uint64
+	Name       string
+	RegionName *string // 节点未归属地区时为 nil（前端显示「未归属」）
+}
+
+// ErrNodeNotFound 表示改绑的目标节点不存在（接口映射成 422，不是 500）。
+var ErrNodeNotFound = errors.New("admin: 节点不存在")
 
 // ClientEmail 对齐 User::clientEmail()：3x-ui client 主键。
 func (u *UserRow) ClientEmail() string { return "ch_user_" + itoaUint(u.ID) }
@@ -128,8 +153,17 @@ type UserPatch struct {
 // 刻意不与 P8d 的 Store 合并：各域在自己文件里声明窄接口，互不牵连，
 // 测试也能只实现自己用到的部分。
 type AdminUserStore interface {
-	UserPage(ctx context.Context, search string, page, perPage, cursor int64, now time.Time) ([]UserRow, int64, error)
+	// UserPage 列表分页；nodeID > 0 时只返回「绑定了该节点」的用户（0 = 不筛选）。
+	UserPage(ctx context.Context, search string, page, perPage, cursor, nodeID int64, now time.Time) ([]UserRow, int64, error)
 	UserByID(ctx context.Context, id uint64) (*UserRow, error)
+	// UserNodesBindings 批量取「用户 → 绑定节点」，一次 IN 查询（列表 50 行不能 N+1）。
+	UserNodesBindings(ctx context.Context, userIDs []uint64) (map[uint64][]UserNodeRef, error)
+	// NodeOptions 全部节点（含地区名），给筛选下拉与改绑弹窗用。
+	NodeOptions(ctx context.Context) ([]NodeOption, error)
+	// MoveUserNode 单用户改绑：事务内 DELETE（fromNodeID>0 时）+ INSERT IGNORE
+	// + users.updated_at（节点侧靠它判断配置变了）+ user_node_migrations(reason=manual)。
+	// 目标节点不存在返回 ErrNodeNotFound。
+	MoveUserNode(ctx context.Context, userID uint64, fromNodeID, toNodeID int64, operator *string) error
 	UserExists(ctx context.Context, id uint64) (bool, error)
 	UserProxies(ctx context.Context, userID uint64) ([]UserProxy, error)
 	UserPlanByID(ctx context.Context, id uint64) (*UserPlan, error)

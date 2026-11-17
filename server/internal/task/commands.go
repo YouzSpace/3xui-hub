@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/driver/threexui"
+	"controlhub-server/internal/sockpool"
 	"controlhub-server/internal/tgbot"
 )
 
@@ -836,7 +837,7 @@ func (r *commandRunner) runProxyMaintain(ctx context.Context, args map[string]st
 
 	// 2) 到期权益标记 expired + 停用上游账号
 	rows2, err := r.deps.DB.QueryContext(ctx,
-		`SELECT id, account_id FROM proxy_entitlements
+		`SELECT id, account_id, socks_id FROM proxy_entitlements
 		 WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?`, now)
 	if err != nil {
 		return fmt.Errorf("查询到期权益失败: %w", err)
@@ -844,11 +845,12 @@ func (r *commandRunner) runProxyMaintain(ctx context.Context, args map[string]st
 	type entRow struct {
 		ID        int64
 		AccountID sql.NullInt64
+		SocksID   sql.NullInt64
 	}
 	var ents []entRow
 	for rows2.Next() {
 		var e entRow
-		if err := rows2.Scan(&e.ID, &e.AccountID); err != nil {
+		if err := rows2.Scan(&e.ID, &e.AccountID, &e.SocksID); err != nil {
 			rows2.Close()
 			return err
 		}
@@ -864,6 +866,14 @@ func (r *commandRunner) runProxyMaintain(ctx context.Context, args map[string]st
 			continue
 		}
 		stats.Expired++
+
+		// 独占 socks（#地区功能-17）：到期把线路放回池子，否则这条永远卖不出去。
+		// 共享线路与未售出的线路在 sockpool.Release 里是空操作（不计数，避免虚报）。
+		if e.SocksID.Valid {
+			if err := sockpool.Release(ctx, r.deps.DB, uint64(e.SocksID.Int64), now); err != nil {
+				r.logf("释放独占 socks #%d 失败: %v", e.SocksID.Int64, err)
+			}
+		}
 
 		if e.AccountID.Valid {
 			// 停用上游账号（改随机密码 + 限额压到 0.01GB）

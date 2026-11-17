@@ -8,6 +8,8 @@ package admin
 
 import (
 	"github.com/gin-gonic/gin"
+
+	"controlhub-server/internal/sockpool"
 )
 
 const proxyStoreEnabledKey = "proxy_store_enabled"
@@ -299,7 +301,10 @@ func (h *Handler) validateSKU(c *gin.Context, input map[string]any) (SKUInput, b
 
 	in := skuInputOf(v)
 
-	// socks 货源只能共享，且必须指定具体那条 socks。
+	// socks 货源的业务规则（#地区功能-17 起分两种分配方式）：
+	//   - 共享：必须指定具体那一条 socks（多人共用，现状不变）；
+	//   - 独占：source_id 可以为空，表示「下单时从整个独占池里挑未售出的」；
+	//     非空则只在那一条里挑，且那条本身必须标成独占（否则永远挑不出货）。
 	//
 	// 注意文案与形态：PHP 在这里抛 ValidationException::withMessages(['source_id' => ...])，
 	// 因此走的是与表单校验**同一条**渲染路径（HTTP 200 + code 500 + 单条文案）。
@@ -308,21 +313,34 @@ func (h *Handler) validateSKU(c *gin.Context, input map[string]any) (SKUInput, b
 		sourceType = *in.SourceType
 	}
 	if sourceType == KindSocks {
+		exclusive := sockpool.IsExclusive(in.Allocation)
+		if exclusive {
+			value := sockpool.Exclusive
+			in.Allocation = &value
+		} else {
+			value := sockpool.Shared
+			in.Allocation = &value
+		}
 		if in.SourceID == nil {
-			h.fail(c, "socks 货源必须选择一条已录入的 socks", 500)
-			return SKUInput{}, false
+			if !exclusive {
+				h.fail(c, "socks 货源必须选择一条已录入的 socks", 500)
+				return SKUInput{}, false
+			}
+		} else {
+			sock, err := h.store.SockByID(ctxOf(c), *in.SourceID)
+			if err != nil && !NoRows(err) {
+				h.failServer(c, "查询 socks 货源", err)
+				return SKUInput{}, false
+			}
+			if sock == nil {
+				h.fail(c, "选择的 socks 不存在", 500)
+				return SKUInput{}, false
+			}
+			if exclusive && sock.Allocation != sockpool.Exclusive {
+				h.fail(c, "这条 socks 是共享型，不能挂在独占规格上（请先在 socks 列表把它改成独占）", 500)
+				return SKUInput{}, false
+			}
 		}
-		exists, err := h.store.SockByIDExists(ctxOf(c), *in.SourceID)
-		if err != nil {
-			h.failServer(c, "查询 socks 货源", err)
-			return SKUInput{}, false
-		}
-		if !exists {
-			h.fail(c, "选择的 socks 不存在", 500)
-			return SKUInput{}, false
-		}
-		shared := "shared"
-		in.Allocation = &shared
 	}
 
 	return in, true
@@ -340,9 +358,14 @@ func skuInputOf(v *validator) SKUInput {
 	if val, ok := v.valueOf("allocation"); ok {
 		in.Allocation = ptrStringOrNil(val)
 	}
-	if val, ok := v.valueOf("source_id"); ok && val != nil {
-		n := uint64(inputInt(val))
-		in.SourceID = &n
+	if val, ok := v.valueOf("source_id"); ok {
+		if val == nil {
+			// 显式传 null = 清空（独占池「不指定」/ webshare「自动挑账号」）。
+			in.ClearSourceID = true
+		} else {
+			n := uint64(inputInt(val))
+			in.SourceID = &n
+		}
 	}
 	if val, ok := v.valueOf("region"); ok {
 		in.Region = ptrStringOrNil(val)

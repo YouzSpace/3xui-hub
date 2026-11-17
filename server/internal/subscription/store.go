@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/crypto"
+	"controlhub-server/internal/planregion"
 )
 
 // SQLRepository 是 Repository 的生产实现：直连 MySQL（与 PHP 共享同一库），
@@ -213,15 +214,26 @@ func parseIDList(raw sql.NullString) []int64 {
 //
 //	WHERE enabled = 1 AND status = 'online'
 //	  AND ( EXISTS(node_inbounds § protocol)  OR  (driver_type='xray' AND EXISTS(xray_inbounds § protocol, enabled)) )
+//	  AND ( 用户无任何绑定 OR 节点被绑给该用户 )
+//	  AND ( 套餐不限地区 OR 节点未归属地区 OR 节点地区在套餐允许列表内 )
 //	ORDER BY id
 //
 // map[string]any 的协议参数与 PHP 的 $user->protocol 字符串比较同义。
-func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) ([]Node, error) {
+//
+// userID 的口径与 internal/handler/api 的 OnlineNodesForProtocol 一致：
+// user_nodes 里没有该用户的任何一行 → 不过滤（升级前行为）；有行 → 只留绑定的节点。
+// 套餐地区（#地区功能-15）走同一份口径（internal/planregion）：套餐不限地区时不加任何条件。
+func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string, userID uint64) ([]Node, error) {
 	// api_key 必须一起取：它决定该节点走「并发组」还是「串行组」，
 	// 而 PHP 是先把并发组全部铺完、再跑串行组 —— 分组错了，链接顺序就会变。
 	// driver_config 必须一起取：host_v6 存在里面（nodes 表没有该列，老库也不做 ALTER），
 	// 订阅按入站地址族选地址时要用。
-	const query = `
+	allowed, restricted, err := planregion.Allowed(ctx, r.DB, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
 		SELECT n.id, n.name, n.host, n.port, n.enabled, n.driver_type, n.traffic_multiplier,
 		       n.api_key, n.password, n.scheme, n.web_base_path, n.username, n.verify_ssl, n.driver_config
 		FROM nodes n
@@ -233,9 +245,20 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) 
 				WHERE xi.node_id = n.id AND xi.enabled = 1
 			))
 		  )
+		  AND (
+			NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)
+			OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = ? AND un.node_id = n.id)
+		  )`
+	args := []any{userID, userID}
+	if restricted {
+		clause, extra := planregion.NodeFilter(allowed)
+		query += clause
+		args = append(args, extra...)
+	}
+	query += `
 		ORDER BY n.id`
 
-	rows, err := r.DB.QueryContext(ctx, query)
+	rows, err := r.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询可订阅节点失败: %w", err)
 	}

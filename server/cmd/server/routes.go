@@ -9,6 +9,7 @@ package main
 // 依赖全部从 httpx.App 的 DB/Cfg 构造；store 用各包已有的 New*SQLStore。
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -17,11 +18,13 @@ import (
 	"strings"
 	"time"
 
+	"controlhub-server/internal/cache"
 	"controlhub-server/internal/collector"
 	"controlhub-server/internal/handler/admin"
 	"controlhub-server/internal/handler/api"
 	"controlhub-server/internal/httpx"
 	"controlhub-server/internal/nodeapi"
+	"controlhub-server/internal/scheduler"
 	"controlhub-server/internal/subscription"
 	"controlhub-server/internal/task"
 	"controlhub-server/internal/tgbot"
@@ -31,7 +34,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender) (*ws.Server, *admin.MailDomain) {
+func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender, cacheClient *cache.Client) (*ws.Server, *admin.MailDomain) {
 	logger := log.Default()
 	db := app.DB
 	cfg := app.Cfg
@@ -91,14 +94,56 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 	apiHandler.Register(r)
 
+	// ── 地区调度器（#地区功能-14）──
+	// 一个实例覆盖两处用到的地方：支付成功后的自动分配（下面的 AssignUserNodes）
+	// 与管理端的迁移引擎（NewSchedulerEngine）。两者都不持有状态，可以共享。
+	//
+	// 锁的选择：装了 Redis 就用跨实例分布式锁（cache.Client 的 Lock 与 scheduler.Locker
+	// 签名一致）；没装则退回进程内锁 —— 单实例部署功能不降级，多实例部署必须装 Redis。
+	var assignLocker scheduler.Locker = cacheClient
+	if cacheClient.Disabled() {
+		assignLocker = newLocalLocker()
+	}
+	sched := scheduler.New(db, assignLocker)
+
 	// 支付（P7：独立 RegisterPayment，公开 + 鉴权两段）
 	payStore := api.NewPaymentSQLStore(db)
+
+	// 商城域（P8d）的 store 与上游客户端在这里先建：支付域的静态 IP 开号链路
+	// （#静态IP-02）要复用同一套 webshare 实现，两者都不持有状态，共享实例即可。
+	// 管理端路由仍在下面 Register。
+	adminStore := admin.NewSQLStore(db, cfg.AppKey)
+	webshareClient := admin.NewHTTPWebshareClient(admin.Config{
+		WebshareProxy:    os.Getenv("WEBSHARE_PROXY"),
+		WebshareCABundle: os.Getenv("WEBSHARE_CA_BUNDLE"),
+	})
+	adminHandler := admin.New(admin.Deps{
+		Store:    adminStore,
+		Upstream: webshareClient,
+		Config: admin.Config{
+			WebshareProxy:    os.Getenv("WEBSHARE_PROXY"),
+			WebshareCABundle: os.Getenv("WEBSHARE_CA_BUNDLE"),
+		},
+		Logger: logger,
+	})
+	staticChain := api.NewStaticChainProvisioner(db, adminHandler, sched, nil, logger)
+
 	paySvc := api.NewPaymentService(payStore, api.PaymentServiceOptions{
 		Panel:       NewPaymentPanelSyncer(col, admin.NewAdminUserSQLStore(db), userDelivery, logger),
 		ProxyOrders: api.NewProxyCompleter(db, logger),
 		TGSender:    tgSender,
 		SiteConfigs: apiStore,
 		RateGuard:   api.NewDiscountRateGuard(apiCache, apiStore),
+		// 套餐生效后按地区给用户绑节点。错误在 PaymentService 内部只记日志，
+		// 绝不会把支付回调打回 FAIL（钱已收到）。
+		AssignUserNodes: func(ctx context.Context, userID uint64) error {
+			_, err := sched.Assign(ctx, userID)
+			return err
+		},
+		// 换套餐后先清掉新套餐不允许地区的绑定，再由上面这步按新套餐补齐（#地区功能-15）。
+		PruneUserNodes: sched.PrunePlanRegions,
+		// static_chain 套餐：开 webshare 子账号 + 绑分类前置节点（不走地区分配）。
+		StaticChain: staticChain,
 	}, logger)
 	payHandlers := api.NewPaymentHandlers(apiHandler, payStore, paySvc)
 	payHandlers.RegisterPayment(r)
@@ -152,20 +197,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	adminAuth.RegisterLogin(r) // POST /admin-api/login
 	adminAuth.RegisterAuthed(adminGroup)
 
-	// 商城域（P8d）
-	adminStore := admin.NewSQLStore(db, cfg.AppKey)
-	webshareClient := admin.NewHTTPWebshareClient(admin.Config{
-		WebshareProxy:    os.Getenv("WEBSHARE_PROXY"),
-		WebshareCABundle: os.Getenv("WEBSHARE_CA_BUNDLE"),
-	})
-	adminHandler := admin.New(admin.Deps{
-		Store:    adminStore,
-		Upstream: webshareClient,
-		Config: admin.Config{
-			WebshareProxy:    os.Getenv("WEBSHARE_PROXY"),
-			WebshareCABundle: os.Getenv("WEBSHARE_CA_BUNDLE"),
-		},
-	})
+	// 商城域（P8d）：adminHandler 在上面的支付段已构造（静态 IP 开号复用同一实例），
+	// 这里只把路由挂上。
 	adminHandler.Register(adminGroup)
 
 	// 邮件域：必须在用户域之前构造 —— 续费/重置流量要用它解锁自动通知的防重标记，
@@ -227,6 +260,25 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Logger: logger,
 	})
 	nodeDomain.Register(adminGroup)
+
+	// 地区域（#地区功能）：地区 CRUD + 节点归属/容量 + 调度看板总览。
+	// 只做管理与查询；迁移/均衡/自动分配在各自的域，不在这里。
+	regionDomain := admin.NewRegionDomain(admin.RegionDeps{
+		Store:  admin.NewRegionSQLStore(db),
+		Logger: logger,
+	})
+	regionDomain.Register(adminGroup)
+
+	// 配置模板（#地区功能-19）：标准入站/出站/路由模板 CRUD + 一键套用到 xray 节点。
+	admin.NewXrayTemplateDomain(admin.XrayTemplateDeps{DB: db, AppKey: cfg.AppKey, Logger: logger}).Register(adminGroup)
+
+	// 静态 IP 出口分类（#静态IP）：分类 CRUD + 分类↔前置节点；套餐侧只读写 exit_type/exit_profile_id。
+	admin.NewExitProfileDomain(admin.ExitProfileDeps{Store: admin.NewExitProfileSQLStore(db), Logger: logger}).Register(adminGroup)
+
+	// 迁移与调度（#地区功能-10）：故障迁移 / 批量均衡 / 迁移历史 / 撤销 / 后台任务进度。
+	// locker 与支付分配共用同一个（Redis 有就用 Redis，没有就是进程内锁）；迁移/均衡
+	// 本身不抢分配锁，传进去是为了让 Assign/AssignRegion 在任何入口都能用同一套互斥。
+	admin.NewMigrationDomain(admin.MigrationDeps{DB: db, Engine: admin.NewSchedulerEngine(db, assignLocker), Logger: logger}).Register(adminGroup)
 
 	// 支付配置域
 	paymentDomain := admin.NewPaymentDomain(admin.PaymentDeps{

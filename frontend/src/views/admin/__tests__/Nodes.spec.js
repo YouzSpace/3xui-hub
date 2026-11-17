@@ -139,3 +139,145 @@ describe('Nodes.vue — 行内 agent 角标渲染', () => {
     expect(rowOf(wrapper, '面板节点').find('.an-agent-ver').exists()).toBe(false)
   })
 })
+
+/**
+ * 地区功能-13：节点列表新增「地区 / 绑定用户·容量 / 配置来源」三列。
+ *
+ * 这三列的数据来自后端新增字段（region_id / bound_users / capacity），
+ * 后端还没合入时字段整体缺失 —— 那里必须显示「—」而不是把 undefined/null 印在页面上。
+ * 所以这组用例同时钉两件事：字段在时的渲染口径，字段不在时的兜底。
+ */
+const REGION_NODES = [
+  // 容量为 null = 不限（这就是变异测试要打的地方）
+  { ...nodeBase, id: 21, name: '港A', driver_type: '3x-ui', host: 'hk1.example.com', region_id: 7, bound_users: 3, capacity: null },
+  // 容量有值：原样显示数字
+  { ...nodeBase, id: 22, name: '港B', driver_type: '3x-ui', host: 'hk2.example.com', region_id: 7, bound_users: 2, capacity: 50 },
+  // 明确未归属（region_id = null）：全量下发
+  { ...nodeBase, id: 23, name: '无地区', driver_type: 'xray', host: 'n9.example.com', region_id: null, bound_users: 0, capacity: null },
+  // 老接口：三个字段全缺，一律「—」，不能崩也不能编
+  { ...nodeBase, id: 24, name: '老字段', driver_type: 'xray', host: 'old.example.com' },
+  // 连 driver_type 都没有的异常行：配置来源同样不能印 undefined
+  { ...nodeBase, id: 25, name: '无来源', host: 'x.example.com' },
+]
+
+describe('Nodes.vue — 地区 / 绑定容量 / 配置来源', () => {
+  beforeEach(() => {
+    adminApi.listRegions = vi.fn(() => Promise.resolve([{ id: 7, name: '香港' }, { id: 8, name: '日本' }]))
+    adminApi.listNodes = vi.fn(() => Promise.resolve(REGION_NODES))
+  })
+
+  it('表头多出「地区 / 绑定用户 / 容量 / 配置来源」三列', async () => {
+    const wrapper = await mountPage()
+    const heads = wrapper.findAll('thead th').map((th) => th.text())
+    expect(heads).toContain('地区')
+    expect(heads).toContain('绑定用户 / 容量')
+    expect(heads).toContain('配置来源')
+  })
+
+  it('地区列：有归属显示地区名，null 显示「未归属（全量）」，字段缺失显示「—」', async () => {
+    const wrapper = await mountPage()
+    expect(rowOf(wrapper, '港A').find('.an-region').text()).toBe('香港')
+    expect(rowOf(wrapper, '无地区').find('.an-region').text()).toBe('未归属（全量）')
+    expect(rowOf(wrapper, '老字段').find('.an-region').text()).toBe('—')
+  })
+
+  it('绑定用户/容量：capacity 为空显示「不限」，有值原样显示', async () => {
+    const wrapper = await mountPage()
+    // 3 个绑定 + 不限容量
+    expect(rowOf(wrapper, '港A').find('.an-binding').text()).toBe('3 / 不限')
+    // 容量有上限就是数字，不能因为走了同一条格式化就变成「不限」
+    expect(rowOf(wrapper, '港B').find('.an-binding').text()).toBe('2 / 50')
+  })
+
+  it('绑定用户/容量：bound_users 字段缺失显示「—」，不显示 undefined', async () => {
+    const wrapper = await mountPage()
+    const cell = rowOf(wrapper, '老字段').find('.an-binding').text()
+    expect(cell).toBe('—')
+    expect(cell).not.toContain('undefined')
+  })
+
+  it('配置来源：3x-ui 与 xray 各自文案，字段缺失「—」', async () => {
+    const wrapper = await mountPage()
+    expect(rowOf(wrapper, '港A').find('.an-source').text()).toBe('3x-ui（手动配置）')
+    expect(rowOf(wrapper, '无地区').find('.an-source').text()).toBe('模板 / 自定义')
+    expect(rowOf(wrapper, '无来源').find('.an-source').text()).toBe('—')
+  })
+
+  it('地区字典拉不到时（后端未合入）地区名退回 #id，页面照常渲染', async () => {
+    adminApi.listRegions = vi.fn(() => Promise.reject({ message: '404' }))
+    const wrapper = await mountPage()
+    expect(rowOf(wrapper, '港A').find('.an-region').text()).toBe('#7')
+    expect(rowOf(wrapper, '无地区').find('.an-region').text()).toBe('未归属（全量）')
+  })
+
+  it('地区字典是 data:{regions:[...]} 包裹形状时也要认（后端列表口径）', async () => {
+    adminApi.listRegions = vi.fn(() => Promise.resolve({ regions: [{ id: 7, name: '香港' }] }))
+    const wrapper = await mountPage()
+    expect(rowOf(wrapper, '港A').find('.an-region').text()).toBe('香港')
+  })
+})
+
+/**
+ * 地区功能-22：编辑弹窗里容量框下方的「系统建议」一行。
+ *
+ * 数据来自 GET /nodes/:id/capacity-recommend（后端按最近 7 天内存样本反推）。
+ * 两件事必须守住：
+ *  1. 有推荐时显示「💡 系统建议 X 万（置信度 Y）」，「采用」只是把数字填进容量框（不直接提交）；
+ *  2. 接口不存在（404 / 方法都没有）时整行不渲染，也不弹错误 —— 保存节点的链路不能受影响。
+ */
+describe('Nodes.vue — 容量建议', () => {
+  const openEditOf = async (wrapper, name) => {
+    // 行内三个按钮：测试 / 编辑 / 删除
+    await rowOf(wrapper, name).findAll('button')[1].trigger('click')
+    await flushPromises()
+  }
+
+  beforeEach(() => {
+    adminApi.listRegions = vi.fn(() => Promise.resolve([{ id: 7, name: '香港' }]))
+    adminApi.listNodes = vi.fn(() => Promise.resolve(REGION_NODES))
+    adminApi.getNode = vi.fn((id) => Promise.resolve(REGION_NODES.find((n) => n.id === id)))
+    adminApi.setNodeCapacity = vi.fn(() => Promise.resolve({}))
+    adminApi.capacityRecommend = vi.fn(() =>
+      Promise.resolve({ NodeID: 21, Suggest: 342000, PerUserKB: 0, Basis: 'percent', Confidence: 'high', Samples: 42, Reason: '按占用百分比斜率推算' }),
+    )
+  })
+
+  it('弹窗里按 万 显示建议容量 + 置信度，「采用」把值填进容量框', async () => {
+    const wrapper = await mountPage()
+    await openEditOf(wrapper, '港A')
+
+    const line = document.body.querySelector('[data-test="capacity-rec"]')
+    expect(line).toBeTruthy()
+    expect(line.textContent).toContain('系统建议 34.2 万')
+    expect(line.textContent).toContain('置信度 高')
+
+    const adoptBtn = [...line.querySelectorAll('button')].find((b) => b.textContent.trim() === '采用')
+    expect(adoptBtn).toBeTruthy()
+    adoptBtn.click()
+    await flushPromises()
+
+    // 采用 = 填进容量框（走原来的保存流程才落库，可反悔）
+    expect(wrapper.vm.form.capacity).toBe('342000')
+    expect(adminApi.setNodeCapacity).not.toHaveBeenCalled()
+  })
+
+  it('推荐接口不存在时不渲染这一行，也不弹错误，弹窗照常打开', async () => {
+    adminApi.capacityRecommend = undefined
+    const wrapper = await mountPage()
+    await openEditOf(wrapper, '港A')
+
+    expect(document.body.querySelector('[data-test="capacity-rec"]')).toBeNull()
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(wrapper.vm.modalOpen).toBe(true)
+    expect(wrapper.vm.form.capacity).toBe('')
+  })
+
+  it('接口报错（节点没有样本 / 404）同样静默：不渲染、不弹错误', async () => {
+    adminApi.capacityRecommend = vi.fn(() => Promise.reject({ message: '404 page not found' }))
+    const wrapper = await mountPage()
+    await openEditOf(wrapper, '港A')
+
+    expect(document.body.querySelector('[data-test="capacity-rec"]')).toBeNull()
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+})

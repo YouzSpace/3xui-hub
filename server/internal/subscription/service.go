@@ -160,7 +160,7 @@ func (s *Service) getLinks(ctx context.Context, user *User, plan *Plan, cfg *sit
 	email := clientEmail(user.ID)
 
 	if plan == nil || plan.IncludesLocal() {
-		nodes, err := s.repo.SubscribableNodes(ctx, user.Protocol)
+		nodes, err := s.repo.SubscribableNodes(ctx, user.Protocol, uint64(user.ID))
 		if err != nil {
 			return nil, err
 		}

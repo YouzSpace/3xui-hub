@@ -15,6 +15,7 @@ import XrayInbounds from './XrayInbounds.vue'
 import XrayOutbounds from './XrayOutbounds.vue'
 import XrayRouting from './XrayRouting.vue'
 import XrayWarp from './XrayWarp.vue'
+import TemplatePanel from './xray/TemplatePanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +25,8 @@ const tabs = [
   { key: 'outbounds', label: '出站', comp: XrayOutbounds },
   { key: 'routing', label: '路由', comp: XrayRouting },
   { key: 'warp', label: 'WARP', comp: XrayWarp },
+  // 配置模板：与节点无关的标准入站/出站/路由，一次套用到多台 xray 节点（#地区功能-20）
+  { key: 'templates', label: '配置模板', comp: TemplatePanel },
 ]
 
 const active = computed(() => {

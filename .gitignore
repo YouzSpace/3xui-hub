@@ -21,3 +21,6 @@ server/internal/web/dist/*
 frontend/dist/
 # 前端依赖（npm install 产出，不入 Git）
 frontend/node_modules/
+
+# 误建的空目录
+server/node_modules/

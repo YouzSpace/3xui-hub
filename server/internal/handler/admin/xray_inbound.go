@@ -34,7 +34,7 @@ func (d *NodeDomain) xrayInboundIndex(c *gin.Context) {
 		d.failServer(c, "查询入站", err)
 		return
 	}
-	counts, err := d.store.EligibleProtocolCounts(ctxOf(c))
+	counts, err := d.store.EligibleProtocolCounts(ctxOf(c), int64(node.ID))
 	if err != nil {
 		d.failServer(c, "统计可用用户", err)
 		return
@@ -81,13 +81,14 @@ func (d *NodeDomain) xrayInboundStore(c *gin.Context) {
 		d.failServer(c, "创建入站", err)
 		return
 	}
+	d.markNodeCustomConfig(ctxOf(c), node.ID)
 	version, err := d.store.BumpConfigVersion(ctxOf(c), node.ID)
 	if err != nil {
 		d.failServer(c, "递增配置版本", err)
 		return
 	}
 
-	counts, err := d.store.EligibleProtocolCounts(ctxOf(c))
+	counts, err := d.store.EligibleProtocolCounts(ctxOf(c), int64(node.ID))
 	if err != nil {
 		d.failServer(c, "统计可用用户", err)
 		return
@@ -134,13 +135,14 @@ func (d *NodeDomain) xrayInboundUpdate(c *gin.Context) {
 		d.failServer(c, "保存入站", err)
 		return
 	}
+	d.markNodeCustomConfig(ctxOf(c), node.ID)
 	version, err := d.store.BumpConfigVersion(ctxOf(c), node.ID)
 	if err != nil {
 		d.failServer(c, "递增配置版本", err)
 		return
 	}
 
-	counts, err := d.store.EligibleProtocolCounts(ctxOf(c))
+	counts, err := d.store.EligibleProtocolCounts(ctxOf(c), int64(node.ID))
 	if err != nil {
 		d.failServer(c, "统计可用用户", err)
 		return
@@ -170,6 +172,7 @@ func (d *NodeDomain) xrayInboundDestroy(c *gin.Context) {
 		d.failServer(c, "删除入站", err)
 		return
 	}
+	d.markNodeCustomConfig(ctxOf(c), node.ID)
 	// 入站删了，节点上属于它的 HY2 跳跃链也要跟着删（只入队，不影响删除结果）。
 	d.removeHysteriaHopAfterDelete(ctxOf(c), node, existing)
 	version, err := d.store.BumpConfigVersion(ctxOf(c), node.ID)
@@ -235,6 +238,7 @@ func (d *NodeDomain) xrayInboundBatchDestroy(c *gin.Context) {
 	}
 
 	if anyDeleted {
+		d.markNodeCustomConfig(ctxOf(c), node.ID)
 		if _, err := d.store.BumpConfigVersion(ctxOf(c), node.ID); err != nil {
 			d.failServer(c, "递增配置版本", err)
 			return

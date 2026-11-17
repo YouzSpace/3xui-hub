@@ -201,3 +201,51 @@ describe('AuditLogs.vue — 漂移行标记与 error 折叠', () => {
     expect(emptyCell.text()).toBe('—')
   })
 })
+
+/**
+ * 地区功能-13：类型筛选新增「节点迁移 / 模板同步」。
+ *
+ * 后端 operation_logs.type 是精确匹配（system_sqlstore.go OperationLogPage 的 type = ?），
+ * 所以这两个选项的 value 必须原样带到请求里 —— 拼错一个字就是永远空列表。
+ */
+describe('AuditLogs.vue — 地区功能的两个新类型', () => {
+  it('类型下拉里有「节点迁移 / 模板同步」，值分别是 node_migration / template_sync', async () => {
+    const wrapper = await mountPage()
+    const opts = wrapper.vm.typeOptions
+
+    expect(opts).toContainEqual({ label: '节点迁移', value: 'node_migration' })
+    expect(opts).toContainEqual({ label: '模板同步', value: 'template_sync' })
+    // 原有的四个选项不能被顶掉
+    expect(opts.map((o) => o.value)).toEqual(['', 'admin', 'user', 'system', 'node_migration', 'template_sync'])
+  })
+
+  it('选中「节点迁移」→ 请求带 type=node_migration，不误加 search', async () => {
+    const wrapper = await mountPage()
+
+    wrapper.vm.typeFilter = 'node_migration'
+    await flushPromises()
+
+    expect(lastParams()).toMatchObject({ type: 'node_migration' })
+    expect(lastParams().search).toBeUndefined()
+    // 不是「系统」类型，二级筛选不该出现
+    expect(wrapper.find('.al-sel-action').exists()).toBe(false)
+  })
+
+  it('列表里出现这两种 type 时，类型角标写中文而不是原始值', async () => {
+    adminApi.auditLogs = vi.fn(() =>
+      Promise.resolve(Object.assign([
+        {
+          id: 9, type: 'node_migration', actor_name: 'admin', action: '节点迁移 用户 12 港A→港B',
+          method: 'POST', path: '/admin-api/nodes/2/migrate', status: 200, error: null, ip: '10.0.0.1',
+          created_at: '2026-11-07T03:00:00.000000Z',
+        },
+      ], { pagination: { current_page: 1, last_page: 1, total: 1, per_page: 50 } })),
+    )
+    const wrapper = await mountPage()
+
+    const row = wrapper.find('tbody tr')
+    expect(row.text()).toContain('节点迁移')
+    expect(row.text()).not.toContain('node_migration')
+    expect(wrapper.vm.typeText('template_sync')).toBe('模板同步')
+  })
+})
