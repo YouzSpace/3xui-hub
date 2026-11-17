@@ -165,6 +165,14 @@ const socksOptions = computed(() => [
 const statusLabel = (s) => ({ active: '生效中', disabled: '已停用', expired: '已到期' }[s] || s)
 const statusVariant = (s) => ({ active: 'success', disabled: 'warning', expired: 'warning' }[s] || 'default')
 
+// 分配方式：独占是「这条线路只属于这个用户」，共享是多人共用。
+// 后端还没返回 allocation 的旧数据按 — 显示，不猜。
+const allocLabel = (u) => {
+  if (u?.allocation === 'exclusive') return `独占 · 用户 #${u.user_id ?? '—'}`
+  if (u?.allocation === 'shared') return '共享'
+  return '—'
+}
+
 const run = async (id, fn, okMsg) => {
   busyId.value = id
   try {
@@ -425,6 +433,7 @@ onMounted(() => {
               <tr>
                 <th>用户</th>
                 <th>规格</th>
+                <th>分配方式</th>
                 <th>到期</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -437,6 +446,7 @@ onMounted(() => {
                   <div class="po-dim">#{{ u.user_id }}</div>
                 </td>
                 <td class="po-dim">{{ u.sku_name || '—' }}</td>
+                <td class="po-dim">{{ allocLabel(u) }}</td>
                 <td>
                   {{ fmtDate(u.expires_at) }}
                   <div v-if="daysLeft(u.expires_at) !== null" class="po-dim">

@@ -12,6 +12,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -42,6 +43,11 @@ type NodeRecord struct {
 	LastCheckAt       *time.Time
 	CreatedAt         *time.Time
 	UpdatedAt         *time.Time
+
+	// 地区分片（#地区功能）：RegionID 为 nil = 未归属地区（全量下发）；
+	// Capacity 为 nil = 不限用户数。
+	RegionID *uint64
+	Capacity *int64
 
 	// PasswordEnc / APIKeyEnc 是**密文原文**（删除节点时写进清理任务的快照，
 	// 与 PHP 的 getRawOriginal() 口径一致：快照里存密文，任务内按正常路径解密）。
@@ -113,6 +119,27 @@ type NodeUpdateInput struct {
 	// HostV6 传了才改（null/空串 = 清空 driver_config.host_v6）。
 	HostV6    *string
 	HostV6Set bool
+}
+
+// NodeDeleteInput 是删除节点的入参。
+type NodeDeleteInput struct {
+	ID uint64
+	// Force=false：还有用户绑定就拒绝（返回 *NodeBoundUsersError），节点原样保留。
+	// Force=true：同一事务里先解绑 user_nodes，再清关联表、删节点行，并记一条审计。
+	Force bool
+	// Actor 是强制删除审计里的操作人（operation_logs.actor_name，取管理端账号名）。
+	Actor string
+}
+
+// NodeBoundUsersError 表示删除被「还有用户绑定」护栏拦下。
+// 单独成类型是为了让 HTTP 层把它映射成 422 业务错误，而不是笼统的 500。
+type NodeBoundUsersError struct {
+	NodeID uint64
+	Count  int64
+}
+
+func (e *NodeBoundUsersError) Error() string {
+	return fmt.Sprintf("节点 %d 还有 %d 个用户绑定", e.NodeID, e.Count)
 }
 
 // NodeTaskRecord 是 async_tasks 一行（节点域只看这些列）。
@@ -457,7 +484,12 @@ type NodeStore interface {
 	NodeByID(ctx context.Context, id uint64) (*NodeRecord, error)
 	CreateNode(ctx context.Context, in NodeCreateInput) (*NodeRecord, error)
 	UpdateNode(ctx context.Context, id uint64, in NodeUpdateInput) (*NodeRecord, error)
-	DeleteNode(ctx context.Context, id uint64) error
+	// DeleteNode 删除节点行（细节见 NodeDeleteInput）。
+	// 还有用户绑定且 Force=false 时返回 *NodeBoundUsersError，节点与绑定都不动。
+	DeleteNode(ctx context.Context, in NodeDeleteInput) error
+	// NodeBoundUserCount 数该节点绑定的用户数（删除护栏的预检查：
+	// 先问一句再派发清理任务，避免「任务已建好、节点却被拒删」留下悬空任务）。
+	NodeBoundUserCount(ctx context.Context, nodeID uint64) (int64, error)
 	// ReplaceNodeInbounds 全量替换入站挂载，返回「确实变化的协议 → 新入站集合」。
 	// 入参是「协议 → 入站 id」全集（含 hysteria / vmess / shadowsocks），不只 vless/trojan。
 	ReplaceNodeInbounds(ctx context.Context, nodeID uint64, inbounds map[string][]int64) (map[string][]int64, error)
@@ -471,7 +503,7 @@ type NodeStore interface {
 	UpdateNodeStatus(ctx context.Context, id uint64, status string, latency int64, touchCheckAt bool) error
 
 	// 用户口径
-	EligibleProtocolCounts(ctx context.Context) (map[string]int64, error)
+	EligibleProtocolCounts(ctx context.Context, nodeID int64) (map[string]int64, error)
 	AllUserIDs(ctx context.Context) ([]uint64, error)
 	UserIDsWithPlanByProtocols(ctx context.Context, protocols []string) ([]uint64, error)
 

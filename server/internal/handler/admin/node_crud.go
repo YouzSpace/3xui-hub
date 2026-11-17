@@ -4,8 +4,12 @@ package admin
 // 逐条对齐 backend/app/Http/Controllers/Admin/NodeController.php。
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
+
+	"controlhub-server/internal/httpx"
 
 	"github.com/gin-gonic/gin"
 )
@@ -340,9 +344,25 @@ func (d *NodeDomain) nodeUpdate(c *gin.Context) {
 }
 
 // nodeDestroy 对齐 destroy()：本地行立刻删，远端 client 清理交给后台任务。
+//
+// 护栏：节点上还绑着用户时拒绝删除（?force=1 才强行删）。直接删会让这些用户
+// 「悬空」—— user_nodes 没有外键，订阅侧拉不到节点又说不清原因。
+// 预检查放在派发任务之前：否则节点被拒删、清理任务却已经建好了。
 func (d *NodeDomain) nodeDestroy(c *gin.Context) {
 	node, ok := d.loadNode(c)
 	if !ok {
+		return
+	}
+
+	force := inputBool(c.Query("force"))
+	bound, err := d.store.NodeBoundUserCount(ctxOf(c), node.ID)
+	if err != nil {
+		d.failServer(c, "统计节点绑定用户", err)
+		return
+	}
+	if bound > 0 && !force {
+		// 422（业务错误）不是 500：前端删除按钮直接把 msg 弹出来当提示。
+		d.fail(c, nodeBoundUsersMessage(bound), 422)
 		return
 	}
 
@@ -373,7 +393,18 @@ func (d *NodeDomain) nodeDestroy(c *gin.Context) {
 		return
 	}
 
-	if err := d.store.DeleteNode(ctxOf(c), node.ID); err != nil {
+	// 审计的操作人取当前登录账号（强制删除那条 operation_logs 由 store 与删除同事务写入）。
+	actor := ""
+	if admin := httpx.AdminFromContext(c); admin != nil {
+		actor = admin.Username
+	}
+	if err := d.store.DeleteNode(ctxOf(c), NodeDeleteInput{ID: node.ID, Force: force, Actor: actor}); err != nil {
+		// 预检查到删之间有人绑上来了：store 里的行锁复核会在这里返回同样的护栏错误。
+		var guard *NodeBoundUsersError
+		if errors.As(err, &guard) {
+			d.fail(c, nodeBoundUsersMessage(guard.Count), 422)
+			return
+		}
 		d.failServer(c, "删除节点", err)
 		return
 	}
@@ -383,7 +414,15 @@ func (d *NodeDomain) nodeDestroy(c *gin.Context) {
 	d.dispatchNodeTask(ctxOf(c), task.ID)
 
 	message := "已删除，正在后台清理远端客户端（日志页可看进度）"
+	if force && bound > 0 {
+		message = fmt.Sprintf("已强制删除，同时解绑 %d 个用户，正在后台清理远端客户端（日志页可看进度）", bound)
+	}
 	d.success(c, jo("cleanup_task_id", task.ID, "message", message), message)
+}
+
+// nodeBoundUsersMessage 是删除护栏对外的统一文案（预检查与事务内复核共用）。
+func nodeBoundUsersMessage(bound int64) string {
+	return fmt.Sprintf("该节点还有 %d 个用户绑定，不能直接删除（可先迁移或改绑，或使用强制删除）", bound)
 }
 
 // nodeTest 对齐 test()：healthCheck 并更新节点状态/延迟。

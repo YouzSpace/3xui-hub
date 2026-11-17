@@ -48,6 +48,9 @@ type RenderData struct {
 	// Certificates 是 TLS 证书库（id → 已解密材料），供入站按 tlsSettings.tlsCertId 引用。
 	// 私钥只在这里出现，绝不落进 xray_inbounds.stream_settings。
 	Certificates map[int64]Certificate
+	// StaticChains 是「买了静态 IP 套餐」的用户在本节点要走的专属 socks 出站。
+	// 渲染时现算（每次拉配置都按 proxy_accounts 的最新状态重取），不落 xray_outbounds。
+	StaticChains []RenderStaticChain
 }
 
 // RenderNode 是渲染用到的节点字段。
@@ -144,6 +147,25 @@ type Certificate struct {
 	CertPEM string
 	KeyEnc  string
 }
+
+// RenderStaticChain 是一个静态 IP 套餐用户在渲染时专属的 socks 出站。
+//
+// 出站 tag（ch-chain-<uid>）与路由用的 email（ch_user_<uid>）都由 user_id 派生，
+// 和入站里下发的 client email 同一个口径 —— 路由规则靠 email 认人。
+type RenderStaticChain struct {
+	UserID   int64
+	Username string
+	// Password 保持库里的密文（与 secret_key 同口径），渲染时才用 APP_KEY 解。
+	Password *string
+	Host     string
+	Port     int64
+}
+
+// outboundTag 是这条专属出站的 tag。
+func (sc RenderStaticChain) outboundTag() string { return "ch-chain-" + itoa(sc.UserID) }
+
+// clientEmail 是该用户在入站里下发的 email，也就是路由规则 user 字段要匹配的值。
+func (sc RenderStaticChain) clientEmail() string { return "ch_user_" + itoa(sc.UserID) }
 
 // realitySettings 的高级字段缺省语（对齐 3x-ui reality.ts 与内核默认值）。
 var realityAdvDefaults = Object{
@@ -770,7 +792,60 @@ func renderOutbounds(d *RenderData, key []byte) (Array, error) {
 		appendList = append(appendList, ob)
 	}
 
-	return append(append(append(system, prepend...), custom...), appendList...), nil
+	// 静态 IP 用户专属出站排在最后：这是运行时按账号状态现算的，
+	// 不占管理员配的出站位；tag 撞了就以管理员配的为准（跳过）。
+	chains := Array{}
+	for _, ob := range renderStaticChainOutbounds(d, key) {
+		tag := outboundTag(ob.(Object))
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		chains = append(chains, ob)
+	}
+
+	return append(append(append(append(system, prepend...), custom...), appendList...), chains...), nil
+}
+
+// renderStaticChainOutbounds 为每个静态 IP 用户生成一条专属 socks 出站。
+//
+// 形状固定（对齐 xray 的 socks 出站 schema）：
+//
+//	{"tag":"ch-chain-<uid>","protocol":"socks","settings":{"servers":[{
+//	    "address":"<socks_host>","port":<socks_port>,
+//	    "users":[{"user":"<username>","pass":"<password>"}]}]}}
+func renderStaticChainOutbounds(d *RenderData, key []byte) Array {
+	out := Array{}
+	for _, sc := range d.StaticChains {
+		user := Object{{Key: "user", Value: sc.Username}}
+		if pass := staticChainPassword(sc, key); pass != "" {
+			user = append(user, Member{Key: "pass", Value: pass})
+		}
+		out = append(out, Object{
+			{Key: "tag", Value: sc.outboundTag()},
+			{Key: "protocol", Value: "socks"},
+			{Key: "settings", Value: Object{{Key: "servers", Value: Array{
+				Object{
+					{Key: "address", Value: sc.Host},
+					{Key: "port", Value: sc.Port},
+					{Key: "users", Value: Array{user}},
+				},
+			}}}},
+		})
+	}
+	return out
+}
+
+// staticChainPassword 解密 proxy_accounts.password；解密失败退回原始值（兼容明文存量）。
+func staticChainPassword(sc RenderStaticChain, key []byte) string {
+	if sc.Password == nil || *sc.Password == "" {
+		return ""
+	}
+	plain, err := crypto.DecryptString(*sc.Password, key)
+	if err != nil {
+		return *sc.Password
+	}
+	return plain
 }
 
 func renderOutbound(ob RenderOutbound, key []byte) (Object, error) {
@@ -889,6 +964,12 @@ func renderRouting(d *RenderData) (Object, error) {
 		},
 	}
 
+	// 静态 IP 用户的路由必须排在**所有**规则之前（含上面两条内置的 blocked 规则）：
+	// 它按 email 指定出站，只要被任何一条规则先命中，这个人的流量就不走专属线路了。
+	if chainRules := renderStaticChainRules(d); len(chainRules) > 0 {
+		rules = append(chainRules, rules...)
+	}
+
 	balancerTags := map[string]bool{}
 	for _, b := range d.Balancers {
 		if !hasUsableSelectors(b) {
@@ -967,6 +1048,25 @@ func renderRouting(d *RenderData) (Object, error) {
 
 	routing = append(routing, Member{Key: "rules", Value: rules})
 	return routing, nil
+}
+
+// renderStaticChainRules 生成静态 IP 用户的路由规则（一人一条）。
+//
+//	{"type":"field","user":["ch_user_<uid>"],"outboundTag":"ch-chain-<uid>"}
+//
+// xray 的 routing rule 支持用 inbound client 的 email 匹配（user 字段），
+// 这是「同节点上按人分流」的唯一手段 —— 分流按的是入站里的 email，不是 IP，
+// 所以只能挂在路由上。
+func renderStaticChainRules(d *RenderData) Array {
+	out := Array{}
+	for _, sc := range d.StaticChains {
+		out = append(out, Object{
+			{Key: "type", Value: "field"},
+			{Key: "user", Value: Array{sc.clientEmail()}},
+			{Key: "outboundTag", Value: sc.outboundTag()},
+		})
+	}
+	return out
 }
 
 // stringArray 复刻 cast 'array' + array_filter(is_string) + array_values。

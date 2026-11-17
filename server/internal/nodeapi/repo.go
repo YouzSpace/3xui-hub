@@ -6,8 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // 数据访问：与 Laravel 侧（Eloquent / Query Builder）逐条 SQL 对齐。
@@ -287,7 +293,7 @@ func (r *Repo) LoadRenderData(ctx context.Context, node Node) (*RenderData, erro
 		},
 	}
 
-	users, err := r.eligibleUsers(ctx)
+	users, err := r.eligibleUsers(ctx, node.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +341,119 @@ func (r *Repo) LoadRenderData(ctx context.Context, node Node) (*RenderData, erro
 	}
 	d.Certificates = certs
 
+	chains, err := r.staticChainUsers(ctx, node.ID)
+	if err != nil {
+		return nil, err
+	}
+	d.StaticChains = chains
+
 	return d, nil
+}
+
+// ── 静态 IP 套餐：按用户单独走 socks 出口 ─────────────────────
+
+// DefaultStaticChainMaxUsers 是单节点动态生成专属 socks 出站的上限。
+//
+// 每个静态用户会多出一条出站 + 一条路由规则，全是实时算出来的、不落库；
+// 没有上限的话一个节点几千个静态用户就能把 config 撑到几 MB，
+// 节点每次拉配置都要多传几十 KB，xray 加载也变慢。
+const DefaultStaticChainMaxUsers = 500
+
+// staticChainMaxUsers 读 STATIC_CHAIN_MAX_USERS（缺省 500；空/非数字/<=0 也用 500）。
+func staticChainMaxUsers() int {
+	if v := strings.TrimSpace(os.Getenv("STATIC_CHAIN_MAX_USERS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultStaticChainMaxUsers
+}
+
+// staticChainSQL 取本节点上「买了 static_chain 套餐」的用户及其 socks 凭证。
+//
+// 判据全部落在 SQL 里（不在 Go 侧过滤），与任务书口径一致：
+//   - 套餐 exit_type = 'static_chain' 且绑了出口分类（plans.exit_profile_id → exit_profiles）
+//   - 分类 enabled = 1（管理员停用分类 = 该分类的用户立刻恢复走默认出站）
+//   - 账号 status = 'active' 且 expires_at 未到（TIMESTAMP 列，与 NOW() 比较不受会话时区影响）
+//   - user_nodes 里绑到**本节点**（静态用户只在被分配的那台前置节点上生效）
+//
+// ORDER BY pa.user_id 不是装饰：超过上限时靠它保证「取前 N 个」是稳定的，
+// 否则 MySQL 换执行计划就可能换人，节点会莫名其妙地渲染出不同的配置。
+const staticChainSQL = "SELECT pa.user_id, pa.username, pa.password, ep.socks_host, ep.socks_port " +
+	"FROM proxy_accounts pa " +
+	"JOIN users u ON u.id = pa.user_id " +
+	"JOIN plans p ON p.id = u.plan_id " +
+	"JOIN exit_profiles ep ON ep.id = p.exit_profile_id " +
+	"JOIN user_nodes un ON un.user_id = pa.user_id AND un.node_id = ? " +
+	"WHERE p.exit_type = 'static_chain' " +
+	"AND pa.status = 'active' " +
+	"AND pa.expires_at > NOW() " +
+	"AND ep.enabled = 1 " +
+	"ORDER BY pa.user_id LIMIT ?"
+
+// staticChainSchemaWarn 只告警一次：节点每 pull_interval（默认 30 秒）拉一次配置，
+// 每轮都打一条会把日志刷满。
+var staticChainSchemaWarn sync.Once
+
+// isMissingSchemaErr 判断错误是不是「表/列还不存在」（静态 IP 依赖的表由其它模块建）。
+func isMissingSchemaErr(err error) bool {
+	var me *mysql.MySQLError
+	if errors.As(err, &me) {
+		return me.Number == 1146 || me.Number == 1054
+	}
+	return false
+}
+
+// staticChainUsers 返回本节点要动态生成专属 socks 出站的用户。
+//
+// 表/列缺失时（静态 IP 的迁移还没落地）不能拖死整份配置下发：
+// 告警一次后当作「没有静态用户」，节点照常拿到普通配置。
+func (r *Repo) staticChainUsers(ctx context.Context, nodeID int64) ([]RenderStaticChain, error) {
+	max := staticChainMaxUsers()
+
+	// 多取一条只为判断「是否超限」，不为了日志里报总数（那要多扫一遍全表）。
+	rows, err := r.DB.QueryContext(ctx, staticChainSQL, nodeID, max+1)
+	if err != nil {
+		if isMissingSchemaErr(err) {
+			staticChainSchemaWarn.Do(func() {
+				log.Printf("[静态IP] 专属出站所需的表/列还不存在，暂不生成专属出站: %v", err)
+			})
+			return nil, nil
+		}
+		return nil, fmt.Errorf("查询静态 IP 用户失败: %w", err)
+	}
+	defer rows.Close()
+
+	out := []RenderStaticChain{}
+	for rows.Next() {
+		var (
+			sc   RenderStaticChain
+			pass sql.NullString
+		)
+		if err := rows.Scan(&sc.UserID, &sc.Username, &pass, &sc.Host, &sc.Port); err != nil {
+			return nil, fmt.Errorf("读取静态 IP 用户失败: %w", err)
+		}
+		// 地址为空的分类没法用：宁可让这个用户走默认出站，也不能下发一条
+		// address 为 "" 的 socks 出站 —— xray 会直接拒绝启动，整个节点全挂。
+		if sc.Host == "" {
+			continue
+		}
+		if pass.Valid {
+			v := pass.String
+			sc.Password = &v
+		}
+		out = append(out, sc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("读取静态 IP 用户失败: %w", err)
+	}
+
+	if len(out) > max {
+		log.Printf("[静态IP] 节点 #%d 静态用户超过上限 %d，本轮只生成前 %d 条专属出站（STATIC_CHAIN_MAX_USERS 可调）",
+			nodeID, max, max)
+		out = out[:max]
+	}
+	return out, nil
 }
 
 // enabledCertificates 读 TLS 证书库并按 id 索引（私钥解密）。
@@ -375,10 +493,26 @@ func inboundIDs(inbounds []RenderInbound) []int64 {
 	return ids
 }
 
-func (r *Repo) eligibleUsers(ctx context.Context) ([]RenderUser, error) {
+// eligibleUsers 取当前节点要注入 xray 配置的用户。
+//
+// 判据与 PHP 侧 eligibleUserRows() 一致：plan_id 非空 + enabled + traffic_disabled_at 为空，
+// **无 ORDER BY**（渲染顺序由调用方 payload 决定，不能在这里引入排序）。
+//
+// 地区分片（只在 nodeapi 侧过滤，不影响订阅/对账的判据）：
+//   - user_nodes 里本节点**没有任何绑定记录** → 全量下发（老行为，region_id/user_nodes
+//     都为空的老部署升级后行为不变）；
+//   - 本节点**有绑定记录** → 只下发绑到本节点的人。
+//
+// 有绑定但某个用户没绑到本节点时该用户不出现 —— 这是分片的本意，不是漏人。
+func (r *Repo) eligibleUsers(ctx context.Context, nodeID int64) ([]RenderUser, error) {
 	rows, err := r.DB.QueryContext(ctx,
-		"SELECT id, uuid, protocol, traffic_limit, expired_at FROM users "+
-			"WHERE plan_id IS NOT NULL AND enabled = 1 AND traffic_disabled_at IS NULL")
+		"SELECT u.id, u.uuid, u.protocol, u.traffic_limit, u.expired_at FROM users u "+
+			"WHERE u.plan_id IS NOT NULL AND u.enabled = 1 AND u.traffic_disabled_at IS NULL "+
+			"AND ("+
+			"EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ?) "+
+			"AND EXISTS (SELECT 1 FROM user_nodes un2 WHERE un2.node_id = ? AND un2.user_id = u.id) "+
+			"OR NOT EXISTS (SELECT 1 FROM user_nodes un3 WHERE un3.node_id = ?)"+
+			")", nodeID, nodeID, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("查询渲染用户失败: %w", err)
 	}

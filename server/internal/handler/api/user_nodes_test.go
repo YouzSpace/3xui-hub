@@ -20,17 +20,19 @@ import (
 type nodesStore struct {
 	Store
 
-	onlineCalls int
-	onlineNodes []Node
-	planCalls   int
-	plan        *Plan
-	subsCalls   int
-	subs        []ThirdPartySub
-	configs     map[string]string
+	onlineCalls   int
+	onlineUserIDs []uint64
+	onlineNodes   []Node
+	planCalls     int
+	plan          *Plan
+	subsCalls     int
+	subs          []ThirdPartySub
+	configs       map[string]string
 }
 
-func (s *nodesStore) OnlineNodesForProtocol(ctx context.Context, protocol string) ([]Node, error) {
+func (s *nodesStore) OnlineNodesForProtocol(ctx context.Context, protocol string, userID uint64) ([]Node, error) {
 	s.onlineCalls++
+	s.onlineUserIDs = append(s.onlineUserIDs, userID)
 	return s.onlineNodes, nil
 }
 
@@ -148,6 +150,10 @@ func TestNodesWithPlanUnchanged(t *testing.T) {
 	}
 	if st.onlineCalls != 1 {
 		t.Fatalf("OnlineNodesForProtocol 调用次数 = %d, 期望 1", st.onlineCalls)
+	}
+	// 绑定过滤要靠用户 id：handler 必须把当前登录用户传下去（0 会被当成「无绑定」）。
+	if len(st.onlineUserIDs) != 1 || st.onlineUserIDs[0] != uint64(user.ID) {
+		t.Fatalf("OnlineNodesForProtocol 收到 userID = %v, 期望 [%d]", st.onlineUserIDs, user.ID)
 	}
 	if st.planCalls != 2 {
 		// 2 次是既有行为（HEAD 即如此）：handleNodes 判 IncludeLocal 一次，

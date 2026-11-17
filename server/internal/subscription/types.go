@@ -132,7 +132,11 @@ type Repository interface {
 	// 对齐 SubscriptionService::getLinks() 的 where 子句：
 	//   - 3x-ui 节点：node_inbounds 里存在 protocol 匹配的记录；
 	//   - xray 节点：xray_inbounds 里存在 protocol 匹配且 enabled 的记录。
-	SubscribableNodes(ctx context.Context, protocol string) ([]Node, error)
+	//
+	// userID 决定绑定口径（与 nodeapi / handler/api 同语义）：
+	//   - 该用户在 user_nodes 里没有任何绑定 → 不做节点过滤（老用户升级后行为不变）；
+	//   - 有绑定 → 只返回绑定给他的节点。
+	SubscribableNodes(ctx context.Context, protocol string, userID uint64) ([]Node, error)
 
 	// NodeInboundIDs 返回该节点上协议匹配的 3x-ui 入站 id（按 id 升序）。
 	NodeInboundIDs(ctx context.Context, nodeID int64, protocol string) ([]int64, error)

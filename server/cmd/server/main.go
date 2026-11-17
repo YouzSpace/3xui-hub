@@ -15,13 +15,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"controlhub-server/internal/cache"
 	"controlhub-server/internal/collector"
 	"controlhub-server/internal/config"
 	"controlhub-server/internal/handler/admin"
 	"controlhub-server/internal/httpx"
+	"controlhub-server/internal/metrics"
 	"controlhub-server/internal/store"
 	"controlhub-server/internal/task"
 	"controlhub-server/internal/tgbot"
@@ -65,11 +68,30 @@ func main() {
 		log.Fatalf("初始化 collector 失败: %v", colErr)
 	}
 
+	// Redis（#地区功能-14 接线）：地区调度的分配锁、节点实时负载都走它。
+	//
+	// **连不上不阻断启动**：Redis 是可选增强，面板其余功能（订阅/节点/支付/对账）一律不依赖它。
+	// NewFromEnv 探测失败会返回 (nil, nil) —— 只有配置本身非法（REDIS_DB=-1 之类）才返回 error，
+	// 那种情况也只降级不退出，把原因打进日志让部署方自己发现。
+	// 降级后分配锁退回进程内锁（见 newLocalLocker），单实例部署的功能不受影响；
+	// 多实例部署必须装 Redis，否则两个进程的分配互斥会退化成「只在各自进程内互斥」。
+	cacheClient, cacheErr := cache.NewFromEnv()
+	if cacheErr != nil {
+		log.Printf("[cache] Redis 配置非法（检查 REDIS_ADDR / REDIS_DB / REDIS_PASSWORD）: %v", cacheErr)
+	}
+	if cacheClient.Disabled() {
+		log.Printf("[cache] Redis 不可用，调度功能降级（改用进程内锁；多面板实例部署请装 Redis 并配 REDIS_ADDR）")
+	} else {
+		log.Printf("[cache] Redis 已连接（%s），地区调度使用跨实例分布式锁", envOr("REDIS_ADDR", cache.DefaultAddr))
+	}
+	// Close 对未启用的 client 是 no-op（nil 接收者安全），无需判空。
+	defer func() { _ = cacheClient.Close() }()
+
 	// 默认只听本机：对外必须显式 LISTEN_ADDR=0.0.0.0:8080（或域名/IP）。
 	// 部署形态是 nginx 从本机反代到 127.0.0.1:8080，直接暴露 8080 到公网等于
 	// 给攻击者一条绕过 nginx、自己填 X-Forwarded-For 的旁路。
 	addr := envOr("LISTEN_ADDR", "127.0.0.1:8080")
-	router, wsServer, mailDomain := newRouter(app, col, tgSender)
+	router, wsServer, mailDomain := newRouter(app, col, tgSender, cacheClient)
 	srv := &http.Server{
 		Handler:           router,
 		Addr:              addr,
@@ -85,6 +107,13 @@ func main() {
 
 	// 启动调度器（P9 常驻 goroutine，随服务启动/优雅退出一起关闭）
 	startScheduler(ctx, app, db, col, mailDomain, tgSender)
+
+	// 节点指标采集（#地区功能-14）：每 METRICS_INTERVAL_MIN 分钟给每个启用节点写一条
+	// node_metrics，作为容量推荐（metrics.Recommend）的历史样本。
+	// 为什么单独一个 ticker 而不挂进 P9 调度器：调度器的任务存在 task 表里（要迁移），
+	// 而指标采集是纯新增、升级到即生效的常驻逻辑，与 runAgentUpgradeReconciler 同一套做法；
+	// 采不到的节点只记日志，绝不影响进程。
+	go runMetricsSampler(ctx, col, metrics.NewStore(db), envInt("METRICS_INTERVAL_MIN", 10), log.Default())
 
 	// 启动节点 WS 通道（轮询/心跳节拍；握手由 /node-ws 路由 ServeHTTP 处理）
 	if wsServer != nil {
@@ -131,7 +160,7 @@ func bootstrap() (*httpx.App, *sql.DB, error) {
 
 // newRouter 构建 gin 引擎并注册路由。单独拆出来便于单测/健康检查复用。
 // 返回 gin 引擎 + 节点 WS 服务（WS 的 Run 需由 main 用 ctx 启动）。
-func newRouter(app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender) (*gin.Engine, *ws.Server, *admin.MailDomain) {
+func newRouter(app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender, cacheClient *cache.Client) (*gin.Engine, *ws.Server, *admin.MailDomain) {
 	if app.Cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -145,7 +174,7 @@ func newRouter(app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender)
 
 	// 路由注册随迁移阶段逐步接入（handler/api、handler/admin）。
 	// /api/ping 由 api.Handler.Register 注册（对齐 PHP 契约）。
-	wsServer, mailDomain := registerRoutes(r, app, col, tgSender)
+	wsServer, mailDomain := registerRoutes(r, app, col, tgSender, cacheClient)
 
 	return r, wsServer, mailDomain
 }
@@ -485,6 +514,98 @@ func runAgentUpgradeReconciler(ctx context.Context, d *admin.NodeDomain, logger 
 			case res.Dispatched > 0 || res.Failed > 0:
 				logger.Printf("[agent] 自动补跑：检查=%d 已下发=%d 失败=%d 跳过=%d（目标 %s）",
 					res.Total, res.Dispatched, res.Failed, res.Skipped, res.Latest)
+			}
+			timer.Reset(interval)
+		}
+	}
+}
+
+// localLocker 是 Redis 不可用时的进程内分配锁（scheduler.Locker 的兜底实现）。
+//
+// 为什么要有它：scheduler 的 Assign 必须抢到地区锁才肯写绑定，Redis 没装时
+// cache.Client 的 Lock 返回 ErrDisabled —— 如果就这样把 nil/降级的 client 传进去，
+// 单实例部署的「按地区自动分配」会 100% 失败（日志里刷「获取地区分配锁失败」）。
+// 面板的实际部署形态就是一个进程 + 本机 MySQL，进程内互斥已经够用；装上 Redis 后
+// 自动改用跨实例的分布式锁（routes.go 里按 cacheClient.Disabled() 二选一）。
+//
+// 语义刻意与 cache.Client.Lock 对齐：拿不到锁返回 (nil, false, nil)（不算错误），
+// 拿到返回幂等的释放函数，只释放自己持有的那一把（比对 token，防止超时后误删别人的锁）。
+type localLocker struct {
+	mu      sync.Mutex
+	held    map[string]localLockEntry
+	lastTok uint64
+}
+
+type localLockEntry struct {
+	expires time.Time
+	token   uint64
+}
+
+func newLocalLocker() *localLocker {
+	return &localLocker{held: make(map[string]localLockEntry, 8)}
+}
+
+// Lock 实现 scheduler.Locker。
+func (l *localLocker) Lock(ctx context.Context, key string, ttl time.Duration) (func(), bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if ttl <= 0 {
+		ttl = cache.DefaultLockTTL
+	}
+
+	now := time.Now()
+	l.mu.Lock()
+	if cur, ok := l.held[key]; ok && cur.expires.After(now) {
+		l.mu.Unlock()
+		return nil, false, nil // 被占用：与 Redis 的 SET NX 失败同语义
+	}
+	l.lastTok++
+	token := l.lastTok
+	l.held[key] = localLockEntry{expires: now.Add(ttl), token: token}
+	l.mu.Unlock()
+
+	var once sync.Once
+	unlock := func() {
+		once.Do(func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			// 只删自己的：临界区超过 ttl 后锁可能已被别人接管。
+			if cur, ok := l.held[key]; ok && cur.token == token {
+				delete(l.held, key)
+			}
+		})
+	}
+	return unlock, true, nil
+}
+
+// runMetricsSampler 周期采集节点指标写入 node_metrics（#地区功能-14）。
+//
+// 首轮在启动 15 秒后跑（等心跳/节点状态就位，也让升级完立刻有第一条样本），
+// 之后每 intervalMin 分钟一轮。单轮的超时上限就等于间隔 —— 一轮拖过一个周期时
+// 宁可让这轮失败重来，也不要两轮叠在一起抢数据库连接。
+func runMetricsSampler(ctx context.Context, col *collector.Collector, rec *metrics.Store, intervalMin int, logger *log.Logger) {
+	if intervalMin <= 0 {
+		intervalMin = 10
+	}
+	if col == nil || rec == nil {
+		return
+	}
+	interval := time.Duration(intervalMin) * time.Minute
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			roundCtx, cancel := context.WithTimeout(ctx, interval)
+			res := col.SampleMetrics(roundCtx, rec)
+			cancel()
+			if res.Sampled > 0 || res.Failed > 0 {
+				logger.Printf("[metrics] 节点指标采集：成功=%d 失败=%d（间隔 %d 分钟）",
+					res.Sampled, res.Failed, intervalMin)
 			}
 			timer.Reset(interval)
 		}

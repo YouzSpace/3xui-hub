@@ -26,6 +26,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+
+	"controlhub-server/internal/httpx"
 )
 
 // randRead 是 crypto/rand.Read 的薄包装（便于测试替换）。
@@ -114,8 +116,13 @@ func (d *UserDomain) Register(r gin.IRouter) {
 	// ── 用户 ──
 	r.GET("/users", d.userIndex)
 	r.POST("/users", d.userStore)
+	// 绑定节点候选（#地区功能-26）：静态段必须排在 /users/:user 之前，
+	// 否则 "nodes-options" 会被当成用户 id。
+	r.GET("/users/nodes-options", d.userNodeOptions)
 	r.GET("/users/:user", d.userShow)
 	r.PUT("/users/:user", d.userUpdate)
+	// 单用户改绑（#地区功能-26）：{from_node_id, to_node_id}，from 为空 = 只加不减。
+	r.PUT("/users/:user/nodes", d.userNodesUpdate)
 	r.DELETE("/users/:user", d.userDestroy)
 	r.POST("/users/:user/reset-traffic", d.userResetTraffic)
 	r.POST("/users/:user/reset-password", d.userResetPassword)
@@ -430,6 +437,104 @@ func itoaInt64(v int64) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// ---- 绑定节点（#地区功能-26）----
+
+// userNodeOptions GET /admin-api/users/nodes-options：节点下拉候选。
+//
+// 用户列表的「绑定节点」筛选与「改绑」弹窗共用这一份（一次给全，不分页）：
+// 节点是运营自己加的，量级是几十台，分页只会让下拉漏项。
+func (d *UserDomain) userNodeOptions(c *gin.Context) {
+	list, err := d.users.NodeOptions(ctxOf(c))
+	if err != nil {
+		d.failServer(c, "查询节点候选", err)
+		return
+	}
+	items := make(jsArr, 0, len(list))
+	for i := range list {
+		items = append(items, jo(
+			"id", list[i].ID,
+			"name", list[i].Name,
+			"region_name", nullableStr(list[i].RegionName),
+		))
+	}
+	d.success(c, items)
+}
+
+// userNodesUpdate PUT /admin-api/users/:user/nodes：单用户改绑。
+//
+// 入参 {from_node_id, to_node_id}：from 为空 = 只加不减（用户可绑多节点）；
+// from 非空 = 把这条绑定从 from 换到 to。历史记 user_node_migrations(reason=manual)。
+func (d *UserDomain) userNodesUpdate(c *gin.Context) {
+	u, ok := d.loadUser(c)
+	if !ok {
+		return
+	}
+	input := jsonInput(c)
+	toNodeID := inputInt(input["to_node_id"])
+	if toNodeID <= 0 {
+		d.fail(c, "目标节点不能为空", 422)
+		return
+	}
+	var fromNodeID int64
+	if v, exists := input["from_node_id"]; exists && v != nil {
+		fromNodeID = inputInt(v)
+	}
+	// 同一台机器没有「搬」可言：放行会白写一条迁移历史，还会让节点重拉一遍配置。
+	if fromNodeID == toNodeID {
+		d.fail(c, "目标节点与当前节点相同", 422)
+		return
+	}
+
+	if err := d.users.MoveUserNode(ctxOf(c), u.ID, fromNodeID, toNodeID, adminNameOf(c)); err != nil {
+		if errors.Is(err, ErrNodeNotFound) {
+			d.fail(c, "目标节点不存在", 422)
+			return
+		}
+		d.failServer(c, "改绑节点", err)
+		return
+	}
+	d.success(c, jo("ok", true), "已改绑")
+}
+
+// fillUserNodes 给列表/详情补「绑定节点」两列（一次 IN 查询，不做 N+1）。
+//
+// 查失败只记日志、不把整个用户列表打成 500：这只是附加列，前端会显示「—」。
+func (d *UserDomain) fillUserNodes(ctx context.Context, rows []UserRow) {
+	if len(rows) == 0 {
+		return
+	}
+	ids := make([]uint64, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].ID)
+	}
+	bindings, err := d.users.UserNodesBindings(ctx, ids)
+	if err != nil {
+		d.logger.Printf("admin 查询用户绑定节点失败（列表附加列跳过）: %v", err)
+		return
+	}
+	for i := range rows {
+		list := bindings[rows[i].ID]
+		if len(list) == 0 {
+			continue
+		}
+		rows[i].NodeIDs = make([]int64, 0, len(list))
+		rows[i].NodeNames = make([]string, 0, len(list))
+		for _, b := range list {
+			rows[i].NodeIDs = append(rows[i].NodeIDs, b.NodeID)
+			rows[i].NodeNames = append(rows[i].NodeNames, b.Name)
+		}
+	}
+}
+
+// adminNameOf 取当前登录管理员用户名（改绑历史的 operator）；取不到返回 nil（落 NULL）。
+func adminNameOf(c *gin.Context) *string {
+	if a := httpx.AdminFromContext(c); a != nil && a.Username != "" {
+		name := a.Username
+		return &name
+	}
+	return nil
 }
 
 // pageSize 对齐 paginate(50)：固定 50，页码从 ?page 取（非数字 → 1）。

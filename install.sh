@@ -439,6 +439,48 @@ EOF
     success "MySQL 安装完成"
 }
 
+# 安装 Redis（可选增强：地区功能的调度锁 + 节点实时负载缓存）
+#
+# **装不上不阻断安装**：面板其余功能一律不依赖 Redis，后端启动时会打一行
+# 「Redis 不可用，调度功能降级」并改用进程内锁（单实例部署照样能用）。
+# 所以这里任何一步失败都只告警、继续装面板 —— 绝不能让一个可选组件把整台面板卡死。
+install_redis() {
+    if command -v redis-cli &>/dev/null && redis-cli ping 2>/dev/null | grep -q PONG; then
+        success "Redis 已安装并运行"
+        systemctl enable redis-server 2>/dev/null || systemctl enable redis 2>/dev/null || true
+        return 0
+    fi
+
+    if ! command -v redis-server &>/dev/null; then
+        info "安装 Redis..."
+        case $PKG_MANAGER in
+            yum)
+                dnf install -y redis 2>/dev/null || \
+                    yum install -y redis 2>/dev/null || \
+                    (dnf install -y epel-release 2>/dev/null; dnf install -y redis 2>/dev/null) || true
+                ;;
+            apt)
+                DEBIAN_FRONTEND=noninteractive apt-get install -y redis-server || true
+                ;;
+        esac
+    fi
+
+    if ! command -v redis-server &>/dev/null; then
+        warn "Redis 安装失败，面板仍可正常安装使用（地区调度退化为进程内锁）"
+        return 0
+    fi
+
+    systemctl enable redis-server 2>/dev/null || systemctl enable redis 2>/dev/null || true
+    systemctl start redis-server 2>/dev/null || systemctl start redis 2>/dev/null || true
+
+    if command -v redis-cli &>/dev/null && redis-cli ping 2>/dev/null | grep -q PONG; then
+        success "Redis 安装完成并已启动"
+    else
+        warn "Redis 已安装但未能启动，面板仍可正常使用（地区调度退化为进程内锁）"
+    fi
+    return 0
+}
+
 # 部署项目
 deploy_project() {
     info "部署项目..."
@@ -522,12 +564,22 @@ DB_DATABASE=controlhub
 DB_USERNAME=root
 DB_PASSWORD=
 
+# Redis（地区功能的调度分配锁 / 节点负载缓存）；不装则调度降级为进程内锁
+REDIS_ADDR=127.0.0.1:6379
+
 SESSION_DRIVER=database
 SESSION_LIFETIME=120
 EOF
         chmod 640 .env
     else
         info ".env 已存在，跳过生成"
+    fi
+
+    # 本次升级前生成的 .env 没有 REDIS_ADDR：补一行（幂等）。
+    # 不补也能启动（后端按 127.0.0.1:6379 默认探测），显式写出来是为了运维一眼能看到。
+    if [ -f .env ] && ! grep -q '^REDIS_ADDR=' .env 2>/dev/null; then
+        printf '\n# Redis（地区功能的调度分配锁 / 节点负载缓存）；不装则调度降级为进程内锁\nREDIS_ADDR=127.0.0.1:6379\n' >> .env
+        info ".env 已补充 REDIS_ADDR=127.0.0.1:6379"
     fi
 
     # 创建 MySQL 数据库
@@ -1051,6 +1103,10 @@ main() {
 
     # 安装 MySQL
     install_mysql
+
+    # 安装 Redis（可选：地区调度的分配锁与节点负载缓存）。
+    # 失败只告警不中断 —— 后端会自动降级为进程内锁，面板功能不受影响。
+    install_redis
 
     # 部署项目
     deploy_project

@@ -51,8 +51,22 @@ func presentUser(u *UserRow, full bool, proxies jsArr) *jsObj {
 		"enabled", u.Enabled,
 		"created_at", nullableISO(u.CreatedAt),
 		"proxy_active_count", u.ProxyActiveCount,
+		// 绑定节点（#地区功能-26）：列表与详情填充，其余写响应为空数组（同
+		// proxy_active_count 的口径）。恒为数组，前端不必判 null。
+		"node_ids", nodeIDsJSON(u.NodeIDs),
+		"node_names", u.NodeNames,
 		"proxies", proxiesOut,
 	)
+}
+
+// nodeIDsJSON 把 []int64 转成 PHP json_encode 口径的数组（phpEncode 不认 []int64，
+// 直接塞会输出 null）。空列表输出 []，与「没绑定节点」区分于 null。
+func nodeIDsJSON(ids []int64) jsArr {
+	out := make(jsArr, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id)
+	}
+	return out
 }
 
 // presentProxies 对齐 UserController::presentProxies（按 id 降序）。
@@ -174,7 +188,9 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 		}
 		balanceOrder = v
 	}
-	rows, total, err := d.users.UserPage(ctxOf(c), search, page, userPagePerPage, cursor, d.now(), balanceOrder)
+	// node_id：只看绑定了这台节点的用户（0/缺省 = 不筛选）
+	nodeID := queryInt(c, "node_id", 0)
+	rows, total, err := d.users.UserPage(ctxOf(c), search, page, userPagePerPage, cursor, nodeID, d.now(), balanceOrder)
 	if err != nil {
 		d.failServer(c, "查询用户", err)
 		return
@@ -187,13 +203,14 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 		}
 		if page > lastPage {
 			page = lastPage
-			rows, total, err = d.users.UserPage(ctxOf(c), search, page, userPagePerPage, 0, d.now(), balanceOrder)
+			rows, total, err = d.users.UserPage(ctxOf(c), search, page, userPagePerPage, 0, nodeID, d.now(), balanceOrder)
 			if err != nil {
 				d.failServer(c, "查询用户", err)
 				return
 			}
 		}
 	}
+	d.fillUserNodes(ctxOf(c), rows)
 	items := make([]any, 0, len(rows))
 	for i := range rows {
 		item := presentUser(&rows[i], false, nil)
@@ -218,6 +235,10 @@ func (d *UserDomain) userShow(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// 详情也带「绑定节点」（一次单用户查询）：列表点进来的弹窗要能核对绑在哪台机器上。
+	rows := []UserRow{*u}
+	d.fillUserNodes(ctxOf(c), rows)
+	u = &rows[0]
 	proxies, err := d.users.UserProxies(ctxOf(c), u.ID)
 	if err != nil {
 		d.failServer(c, "查询代理权益", err)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	discountstatus "controlhub-server/internal/discount"
@@ -171,26 +172,83 @@ func (s *PaymentSQLStore) EnabledPaymentConfigs(ctx context.Context) ([]PaymentC
 
 // ---- plans ----
 
+// planExitColumnsReady 缓存「plans 表有没有 exit_type / exit_profile_id」。
+//
+// 这两列由并行任务建（cmd/server/schema.go 的 ensureColumn）。支付包不持有 schema 责任，
+// 但升级窗口里可能遇到「二进制已更新、迁移还没跑」的库：缺列时退回只读老列，
+// 按 direct 语义处理（老套餐本来就是 direct），而不是让整条下单/回调链路报 1054。
+var (
+	planExitColumnsMu    sync.Mutex
+	planExitColumnsKnown bool
+	planExitColumnsValue bool
+)
+
+func (s *PaymentSQLStore) planExitColumnsReady(ctx context.Context) (bool, error) {
+	planExitColumnsMu.Lock()
+	if planExitColumnsKnown {
+		v := planExitColumnsValue
+		planExitColumnsMu.Unlock()
+		return v, nil
+	}
+	planExitColumnsMu.Unlock()
+
+	var n int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans'
+		  AND COLUMN_NAME IN ('exit_type','exit_profile_id')`).Scan(&n); err != nil {
+		return false, err
+	}
+	ok := n == 2
+	planExitColumnsMu.Lock()
+	planExitColumnsKnown = true
+	planExitColumnsValue = ok
+	planExitColumnsMu.Unlock()
+	return ok, nil
+}
+
 func (s *PaymentSQLStore) PlanForPayment(ctx context.Context, id uint64) (*PlanRow, error) {
 	var (
 		p            PlanRow
 		isActive     int
 		includeLocal sql.NullInt64
 	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, type, is_active, months, monthly_traffic, period_traffic, total_traffic,
-		        price, reset_price, include_local
-		 FROM plans WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.Type, &isActive, &p.Months, &p.MonthlyTraffic, &p.PeriodTraffic,
-			&p.TotalTraffic, &p.Price, &p.ResetPrice, &includeLocal)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+	hasExit, cErr := s.planExitColumnsReady(ctx)
+	if cErr != nil {
+		return nil, cErr
 	}
-	if err != nil {
-		return nil, err
+	if hasExit {
+		err := s.db.QueryRowContext(ctx,
+			`SELECT id, name, type, is_active, months, monthly_traffic, period_traffic, total_traffic,
+			        price, reset_price, include_local, exit_type, exit_profile_id
+			 FROM plans WHERE id = ?`, id).
+			Scan(&p.ID, &p.Name, &p.Type, &isActive, &p.Months, &p.MonthlyTraffic, &p.PeriodTraffic,
+				&p.TotalTraffic, &p.Price, &p.ResetPrice, &includeLocal, &p.ExitType, &p.ExitProfileID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err := s.db.QueryRowContext(ctx,
+			`SELECT id, name, type, is_active, months, monthly_traffic, period_traffic, total_traffic,
+			        price, reset_price, include_local
+			 FROM plans WHERE id = ?`, id).
+			Scan(&p.ID, &p.Name, &p.Type, &isActive, &p.Months, &p.MonthlyTraffic, &p.PeriodTraffic,
+				&p.TotalTraffic, &p.Price, &p.ResetPrice, &includeLocal)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	p.IsActive = isActive != 0
 	p.IncludeLocal = !includeLocal.Valid || includeLocal.Int64 != 0
+	if p.ExitType == "" {
+		p.ExitType = "direct"
+	}
 	return &p, nil
 }
 

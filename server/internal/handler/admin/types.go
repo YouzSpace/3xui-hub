@@ -74,6 +74,12 @@ type Sock struct {
 	Note      *string
 	IsActive  bool
 	CreatedAt *time.Time
+	// 分配方式（#地区功能-17）：shared=多人共用 / exclusive=一条只卖一人。
+	Allocation string
+	// SoldTo / SoldAt 只在独占模式有意义：这条卖给了谁、什么时候。
+	// SoldTo 为 nil = 还在池子里。
+	SoldTo *uint64
+	SoldAt *time.Time
 }
 
 // HasPassword 对齐 `(string) $sock->password !== ”`。
@@ -287,6 +293,9 @@ type SKUInput struct {
 	SourceType     *string
 	Allocation     *string
 	SourceID       *uint64
+	// ClearSourceID = 请求里显式传了 source_id: null（独占池「不指定」时用）。
+	// SourceID 为 nil 只表示「没传」，不能据此把库里的值清空。
+	ClearSourceID  bool
 	Region         *string
 	TrafficGB      *int64
 	DurationDays   int64
@@ -306,6 +315,9 @@ type SockCreate struct {
 	Username *string
 	Password *string
 	Country  *string
+	// Allocation 是这批导入的分配方式（#地区功能-17）：shared / exclusive，
+	// nil = 用表默认（shared），老导入行为不变。
+	Allocation *string
 }
 
 // SockUpdate 是 PUT /proxy-store/socks/{id} 的字段集合。
@@ -319,6 +331,9 @@ type SockUpdate struct {
 	City     *string
 	Note     *string
 	IsActive *bool
+	// Allocation 是分配方式（shared / exclusive）；改成 shared 会把已售记录一并清掉，
+	// 否则这条回到共享后再切回独占会永久占着 sold_to，谁也买不到。
+	Allocation *string
 }
 
 // DiscountFilter 是列表的筛选条件（folder 单独传）。
@@ -470,6 +485,13 @@ type Store interface {
 	DeleteSock(ctx context.Context, id uint64) error
 	SKUExistsUsingSocks(ctx context.Context, socksID uint64) (bool, error)
 	ActiveSocksOptions(ctx context.Context) ([]SockOption, error)
+
+	// 独占 socks 池（#地区功能-17）：一条只卖一人，卖完自动用下一条。
+	// renewSockID = 续费时原来那条（仍归该用户就沿用）；sourceID 非空时只在指定
+	// 那一条里挑。池子空 → sockpool.ErrPoolEmpty。
+	AcquireExclusiveSock(ctx context.Context, renewSockID, sourceID *uint64, userID uint64, now time.Time) (uint64, error)
+	// ReleaseExclusiveSock 把线路放回池子（权益到期/作废）；共享线路是空操作。
+	ReleaseExclusiveSock(ctx context.Context, socksID uint64, now time.Time) error
 
 	// 站点配置
 	SiteConfigMany(ctx context.Context, keys []string) (map[string]string, error)

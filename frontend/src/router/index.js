@@ -113,6 +113,10 @@ const routes = [
       { path: 'monitor', redirect: '/admin' },
       { path: 'users', name: 'admin-users', component: () => import('@/views/admin/Users.vue') },
       { path: 'nodes', name: 'admin-nodes', component: () => import('@/views/admin/Nodes.vue') },
+      // 地区与调度：地区列表 + 展开看节点 + 容量水位 + 迁移/均衡入口
+      { path: 'regions', name: 'admin-regions', component: () => import('@/views/admin/Regions.vue') },
+      // 静态 IP 出口分类：前置节点组 + webshare 账号，套餐绑分类
+      { path: 'exit-profiles', name: 'admin-exit-profiles', component: () => import('@/views/admin/ExitProfiles.vue') },
       { path: 'nodes/multiplier', name: 'admin-node-multipliers', component: () => import('@/views/admin/NodeMultipliers.vue') },
       // 上游（外部货源接入）：第三方机场订阅 / Webshare 代理
       { path: 'upstream/third-party', name: 'admin-upstream-third-party', component: () => import('@/views/admin/ThirdParty.vue') },

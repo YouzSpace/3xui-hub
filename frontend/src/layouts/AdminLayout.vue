@@ -72,6 +72,8 @@ const groups = [
     icon: 'server',
     items: [
       { to: '/admin/nodes', name: 'admin-nodes', label: '节点列表', icon: 'server' },
+      { to: '/admin/regions', name: 'admin-regions', label: '地区与调度', icon: 'server' },
+      { to: '/admin/exit-profiles', name: 'admin-exit-profiles', label: '静态IP出口', icon: 'globe' },
       { to: '/admin/nodes/multiplier', name: 'admin-node-multipliers', label: '流量倍率', icon: 'traffic' },
       { to: '/admin/nodes/xray', name: 'admin-xray', label: 'Xray 高级配置', icon: 'activity' },
       { to: '/admin/geodata', name: 'admin-geodata', label: 'Geo 数据', icon: 'globe' },

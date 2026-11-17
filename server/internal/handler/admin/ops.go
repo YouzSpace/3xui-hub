@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"controlhub-server/internal/sockpool"
 )
 
 // opsOverview 对齐 GET /admin-api/proxy-ops/overview（轻量，30 秒刷新用）。
@@ -408,6 +410,19 @@ func (h *Handler) opsMoveSocks(c *gin.Context) {
 		// 对齐 moveSocksEntitlement：不存在或未启用都是同一条业务错误。
 		h.fail(c, "目标线路不存在或已停用", 400)
 		return
+	}
+	// 独占线路（#地区功能-17）不参与手工换线：它跟买下它的那个用户绑定，
+	// 换过去会让这条线路被再卖一次，而老线路永远占着 sold_to 再也卖不出去。
+	if sock.Allocation == sockpool.Exclusive {
+		h.fail(c, "目标线路是独占型，不能给共享权益换过去", 400)
+		return
+	}
+	if ent.SocksID != nil {
+		if cur, curErr := h.store.SockByID(ctxOf(c), *ent.SocksID); curErr == nil && cur != nil &&
+			cur.Allocation == sockpool.Exclusive {
+			h.fail(c, "这条权益挂在独占线路上，不能手工换线路", 400)
+			return
+		}
 	}
 
 	if err := h.store.UpdateEntitlement(ctxOf(c), ent.ID, EntitlementPatch{SocksID: &socksID}); err != nil {

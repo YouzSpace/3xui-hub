@@ -130,9 +130,111 @@ const loadPlans = async () => {
 
 const load = async () => {
   const q = searchQuery.value.trim()
-  const res = await fetchPage((params, config) => adminApi.listUsers(params, config), q ? { search: q } : null)
+  // 绑定了节点筛选就只查那台机器上的用户（'' = 全部）
+  const extra = {}
+  if (q) extra.search = q
+  if (nodeFilter.value !== '' && nodeFilter.value != null) extra.node_id = nodeFilter.value
+  const res = await fetchPage(
+    (params, config) => adminApi.listUsers(params, config),
+    Object.keys(extra).length ? extra : null,
+  )
   if (res) users.value = res
 }
+
+// ── 绑定节点筛选 / 改绑 ──────────────────────────────────────
+// 节点候选一次拉全（几十台，不分页）：筛选下拉与改绑弹窗共用同一份数据。
+const nodeOptions = ref([])
+const nodeFilter = ref('')
+
+const nodeOptionLabel = (n) => (n.region_name ? `${n.name}（${n.region_name}）` : n.name)
+
+// 首项「全部节点」= 不筛选（node_id 不带给后端）
+const nodeFilterOptions = computed(() => [
+  { label: '全部节点', value: '' },
+  ...nodeOptions.value.map((n) => ({ label: nodeOptionLabel(n), value: n.id })),
+])
+
+const loadNodeOptions = async () => {
+  try {
+    const list = await adminApi.listUserNodeOptions()
+    nodeOptions.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    nodeOptions.value = []
+    toast.error('节点列表加载失败：' + (e.message || '未知错误'))
+  }
+}
+
+/**
+ * 「绑定节点」列：后端给 node_names（字符串数组）+ node_ids；都缺失时显示「—」。
+ */
+const boundNodesText = (u) => {
+  const raw = u?.node_names
+  if (raw == null || raw === '') return '—'
+  const arr = Array.isArray(raw) ? raw : String(raw).split(',')
+  const names = arr.map((v) => (typeof v === 'string' ? v : v?.name)).filter((v) => v != null && v !== '')
+  return names.length ? names.join('、') : '—'
+}
+
+// 用户已绑定的节点 id 列表（改绑弹窗用它排掉「目标节点」里已有的项）
+const boundNodeIds = (u) => (Array.isArray(u?.node_ids) ? u.node_ids : [])
+
+// 改绑弹窗
+const rebindOpen = ref(false)
+const rebindTarget = ref(null)
+const rebindTo = ref(null)
+const rebindSaving = ref(false)
+
+// from_node_id 的取法：只绑了 1 台 → 把它换掉；0 台 → 直接加；多台 → 传空（只加不减），
+// 免得点一次改绑就把用户在其他机器上的绑定悄悄删掉。
+const rebindFromId = computed(() => {
+  const ids = boundNodeIds(rebindTarget.value)
+  return ids.length === 1 ? ids[0] : null
+})
+const rebindTargetOptions = computed(() => {
+  const bound = boundNodeIds(rebindTarget.value)
+  return nodeOptions.value
+    .filter((n) => !bound.includes(n.id))
+    .map((n) => ({ label: nodeOptionLabel(n), value: n.id }))
+})
+
+const openRebind = (u) => {
+  rebindTarget.value = u
+  rebindTo.value = null
+  rebindSaving.value = false
+  rebindOpen.value = true
+}
+
+const confirmRebind = async () => {
+  const u = rebindTarget.value
+  if (!u || rebindSaving.value) return
+  if (!rebindTo.value) {
+    toast.error('请选择目标节点')
+    return
+  }
+  rebindSaving.value = true
+  try {
+    await adminApi.changeUserNodes(u.id, {
+      from_node_id: rebindFromId.value,
+      to_node_id: rebindTo.value,
+    })
+    toast.success('已改绑')
+    rebindOpen.value = false
+    await load()
+  } catch (e) {
+    toast.error(e.message || '改绑失败')
+  } finally {
+    rebindSaving.value = false
+  }
+}
+
+// 换筛选 = 换结果集，页码必须回第 1 页（否则会停在一个空页上）
+watch(nodeFilter, () => {
+  if (page.value !== 1) {
+    router.push({ query: { ...route.query, page: undefined } })
+  } else {
+    load()
+  }
+})
 
 // 搜索走后端全表查询：词变就重查，并把页码按需拨回第 1 页。
 // 不用前端过滤是因为前端手里只有当前页 50 条，对象在别的页就永远搜不到。
@@ -446,8 +548,8 @@ const onVisibility = () => {
   else { silentRefresh(); startSilentPoll() }
 }
 
-onMounted(() => { load(); loadPlans(); startSilentPoll(); document.addEventListener('visibilitychange', onVisibility) })
-onActivated(() => { load(); loadPlans(); startSilentPoll() })
+onMounted(() => { load(); loadPlans(); loadNodeOptions(); startSilentPoll(); document.addEventListener('visibilitychange', onVisibility) })
+onActivated(() => { load(); loadPlans(); loadNodeOptions(); startSilentPoll() })
 onDeactivated(stopSilentPoll)
 onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListener('visibilitychange', onVisibility) })
 </script>
@@ -458,6 +560,13 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
       <h1 class="ch-page-title">用户</h1>
       <div class="au-head-right">
         <Input v-model="searchQuery" placeholder="搜索 ID/邮箱/Token..." class="au-search" />
+        <!-- 绑定节点筛选：选中后只显示绑在该节点上的用户 -->
+        <Select
+          v-model="nodeFilter"
+          :options="nodeFilterOptions"
+          placeholder="绑定节点"
+          wrapper-class="au-node-filter"
+        />
         <Button variant="secondary" size="sm" :disabled="syncingAll" @click="syncAllTraffic"><Icon name="refresh" :size="16" /> {{ syncingAll ? '同步中...' : '同步流量' }}</Button>
         <Button variant="primary" size="sm" @click="openCreate"><Icon name="plus" :size="16" /> 新建用户</Button>
       </div>
@@ -471,6 +580,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
               <th>ID</th>
               <th>邮箱</th>
               <th>套餐</th>
+              <th>绑定节点</th>
               <th>流量</th>
               <th>到期</th>
               <th>状态</th>
@@ -490,6 +600,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
                   代理 {{ u.proxy_active_count }}
                 </Badge>
               </td>
+              <td class="au-bound-nodes">{{ boundNodesText(u) }}</td>
               <td class="mono au-traffic-cell">{{ trafficDisplay(u) }}</td>
               <td>{{ u.expired_at ? new Date(u.expired_at).toLocaleDateString() : '永久' }}</td>
               <td><Badge :variant="u.enabled ? 'success' : 'danger'" dot>{{ u.enabled ? '启用' : '禁用' }}</Badge></td>
@@ -498,19 +609,20 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
                   <Button variant="ghost" size="sm" title="查看/复制 Token" @click="viewDetail(u)"><Icon name="copy" :size="14" /></Button>
                   <Button variant="ghost" size="sm" title="编辑" @click="openEdit(u)"><Icon name="edit" :size="14" /></Button>
                   <Button v-if="u.plan_type === 'period'" variant="ghost" size="sm" title="重置当月流量" @click="resetTraffic(u)"><Icon name="refresh" :size="14" /></Button>
+                  <Button variant="ghost" size="sm" title="改绑节点" @click="openRebind(u)"><Icon name="server" :size="14" /></Button>
                   <Button v-if="u.plan_type === 'total'" variant="ghost" size="sm" title="续费" @click="renewUser(u)"><Icon name="refresh" :size="14" /></Button>
                   <Button variant="ghost" size="sm" title="删除" @click="remove(u)"><Icon name="trash" :size="14" /></Button>
                 </div>
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="7" class="ch-empty">
+              <td colspan="8" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!users.length">
-              <td colspan="7" class="ch-empty">
+              <td colspan="8" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>暂无用户</template>
               </td>
@@ -702,6 +814,36 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
           <Button variant="danger" size="sm" :loading="subResetSaving" @click="confirmSubReset">确认重置</Button>
         </template>
         <Button v-else variant="primary" size="sm" @click="subResetOpen = false">完成</Button>
+      </template>
+    </Modal>
+
+    <!-- 改绑节点：当前绑定只读展示 + 目标节点下拉 -->
+    <Modal v-model="rebindOpen" title="改绑节点" width="460px">
+      <div class="au-form">
+        <label class="au-field">
+          <span>用户</span>
+          <div class="au-rebind-current">{{ rebindTarget?.email || `用户 #${rebindTarget?.id}` }}</div>
+        </label>
+        <label class="au-field">
+          <span>当前节点</span>
+          <div class="au-rebind-current">{{ boundNodesText(rebindTarget) }}</div>
+        </label>
+        <label class="au-field">
+          <span>目标节点</span>
+          <Select v-model="rebindTo" :options="rebindTargetOptions" placeholder="选择目标节点" />
+        </label>
+        <p class="au-detail-hint">
+          <template v-if="boundNodeIds(rebindTarget).length > 1">
+            该用户当前绑了 {{ boundNodeIds(rebindTarget).length }} 台节点：本次为新增一条绑定，原有绑定保持不变。
+          </template>
+          <template v-else>
+            改绑后该用户的节点配置会迁到目标节点，原节点上的绑定会被移除；用户端订阅地址不变。
+          </template>
+        </p>
+      </div>
+      <template #footer>
+        <Button variant="secondary" size="sm" :disabled="rebindSaving" @click="rebindOpen = false">取消</Button>
+        <Button variant="primary" size="sm" :loading="rebindSaving" @click="confirmRebind">确认改绑</Button>
       </template>
     </Modal>
   </div>

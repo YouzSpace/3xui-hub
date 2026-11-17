@@ -199,3 +199,30 @@
 /* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
 .an-grid { align-items: start; }
 .an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
+
+/* ===== 地区/容量/节点筛选（#地区功能 新增）===== */
+
+.an-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.an-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.an-field-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.an-rec {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: calc(-1 * var(--space-1)) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}

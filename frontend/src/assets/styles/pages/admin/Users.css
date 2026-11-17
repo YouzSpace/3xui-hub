@@ -154,3 +154,52 @@
 .mono {
   font-family: var(--font-mono);
 }
+
+/* ===== 节点绑定（#地区功能-26 新增）===== */
+.au-node-filter {
+  width: 200px;
+}
+
+.au-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+}
+
+.au-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.au-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6);
+}
+
+.au-rebind-current {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+  font-size: var(--text-sm);
+}
+
+.au-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.au-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.au-field-row {
+  flex-direction: row;
+  align-items: center;
+}

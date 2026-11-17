@@ -176,7 +176,8 @@ type Store interface {
 
 	// OnlineNodesForProtocol 返回 enabled 且 status=online、且该协议有可用入站的节点
 	// （3x-ui 看 node_inbounds，xray 看 xray_inbounds.enabled）。
-	OnlineNodesForProtocol(ctx context.Context, protocol string) ([]Node, error)
+	// userID 用于按 user_nodes 绑定过滤：该用户没有任何绑定时走全量（老行为不变）。
+	OnlineNodesForProtocol(ctx context.Context, protocol string, userID uint64) ([]Node, error)
 	// EnabledNodesForSwitch 返回全部 enabled 节点（含凭据密文与 inbound 映射），
 	// 供协议切换使用。
 	EnabledNodesForSwitch(ctx context.Context) ([]Node, error)

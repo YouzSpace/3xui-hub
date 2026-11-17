@@ -65,7 +65,7 @@ func TestClientIP_RealRouter(t *testing.T) {
 	t.Setenv("TRUSTED_PROXIES", "")
 
 	gin.SetMode(gin.TestMode)
-	r, _, _ := newRouter(httpx.NewApp(nil, newAcceptanceConfig()), nil, nil)
+	r, _, _ := newRouter(httpx.NewApp(nil, newAcceptanceConfig()), nil, nil, nil)
 
 	var got string
 	r.GET("/__clientip", func(c *gin.Context) { got = c.ClientIP() })

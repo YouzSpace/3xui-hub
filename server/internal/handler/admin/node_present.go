@@ -67,6 +67,9 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 		"latency", n.Latency,
 		"last_check_at", nullableISO(n.LastCheckAt),
 		"region", nullableStr(nodeRegionCode(n.Name)),
+		// region_id / capacity：前端「未归属节点」靠 region_id == null 判断，缺了会把全部节点算成未归属。
+		"region_id", nullableUint(n.RegionID),
+		"capacity", nullableInt(n.Capacity),
 		"metrics", d.presentMetrics(n),
 		"driver_type", nodeDriverTypeOfRecord(n),
 		"inbounds", presentNodeInbounds(n),

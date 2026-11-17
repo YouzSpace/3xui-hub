@@ -52,7 +52,121 @@ const form = ref({
   name: '', driver_type: '3x-ui', host: '', host_v6: '', port: 443, scheme: 'https', web_base_path: '',
   username: 'admin', password: '', api_key: '',
   enabled: true, verify_ssl: false, inbounds: emptyInbounds(),
+  // 地区 / 容量走各自的端点（PUT /nodes/:id/region|capacity），不混进 updateNode 的 payload
+  region_id: '', capacity: '',
 })
+
+// ── 地区（节点归属）────────────────────────────────────────────
+// 地区字典来自 GET /admin-api/regions（含 id/name）。后端未合入时这里保持空数组：
+// 列表「地区」列退回「—」，编辑弹窗的下拉只剩「不设置」，不抛错、不阻塞页面。
+const regions = ref([])
+// 打开弹窗时的原值，用于判断「这次到底改没改」——没改就不发 PUT，
+// 免得后端还没这两个端点时，随便存个节点都多打一次 404。
+const regionBaseline = ref(null)
+const capacityBaseline = ref(null)
+
+const loadRegions = async () => {
+  try {
+    const res = await adminApi.listRegions()
+    // 后端列表口径是 data:{regions:[...]}（见 region_api_test.go 的解码形状）；
+    // 裸数组 / {items} 也一并认，免得后端换壳这里静默变空。
+    regions.value = Array.isArray(res) ? res : res?.regions || res?.items || []
+  } catch (e) {
+    // 后端还没这个接口：静默降级，不影响节点列表本身的可用性
+    regions.value = []
+  }
+}
+
+const regionOptions = computed(() => [
+  { label: '不设置（该节点不参与地区过滤）', value: '' },
+  ...regions.value.map((r) => ({ label: r.name || `#${r.id}`, value: r.id })),
+])
+
+const regionNameById = (id) => {
+  if (id == null || id === '') return null
+  const hit = regions.value.find((r) => r.id === id || String(r.id) === String(id))
+  return hit ? hit.name || `#${hit.id}` : null
+}
+
+// 地区列：字段整体缺失（后端还没补 region_id）= 「—」；明确为 null = 「未归属（全量）」；
+// 有值 = 地区名（字典里查不到就显示 #id，不假装没归属）。
+const regionText = (n) => {
+  if (!n || !('region_id' in n)) return '—'
+  if (n.region_id == null || n.region_id === '') return '未归属（全量）'
+  return n.region_name || regionNameById(n.region_id) || `#${n.region_id}`
+}
+
+// 绑定用户 / 容量：bound_users 缺失（后端还没这个字段）= 「—」；
+// 容量 null = 不限，这里必须兜底成文字，直接渲染会显示字面量 null。
+const bindingText = (n) => {
+  if (!n || n.bound_users === undefined) return '—'
+  const used = n.bound_users ?? 0
+  return `${used} / ${n.capacity == null ? '不限' : n.capacity}`
+}
+
+// 配置来源：3x-ui 面板节点是手工在面板上配的入站；xray 裸内核走面板模板/自定义入站。
+const sourceText = (n) => {
+  const t = n?.driver_type
+  if (t == null) return '—'
+  if (t === '3x-ui' || t === '3xui') return '3x-ui（手动配置）'
+  if (t === 'xray') return '模板 / 自定义'
+  return String(t)
+}
+
+// 容量输入框留空 = 不限（null）；填了非数字也按不限处理，不让 NaN 发到后端
+const normCapacity = (v) => {
+  const s = String(v ?? '').trim()
+  if (!s) return null
+  const n = Number(s)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null
+}
+
+/** 地区/容量各自 PUT；只提交真正改过的项（两项都没动 = 一个请求都不发）。 */
+const saveRegionCapacity = async (nodeId) => {
+  if (!nodeId) return
+  const region = form.value.region_id === '' || form.value.region_id == null ? null : form.value.region_id
+  if (region !== regionBaseline.value) await adminApi.setNodeRegion(nodeId, region)
+  const capacity = normCapacity(form.value.capacity)
+  if (capacity !== capacityBaseline.value) await adminApi.setNodeCapacity(nodeId, capacity)
+}
+
+// ── 容量建议（GET /nodes/:id/capacity-recommend）─────────────────
+// 按最近 7 天内存样本反推的「建议容量上限」，只给参考：不填任何默认值。
+// 后端还没这个端点 / 节点没有样本 → 这一行整块不渲染，也不弹错误（保存照常）。
+const recSuggest = ref(null)
+const recConfidence = ref('')
+
+const loadRecommend = async (nodeId) => {
+  recSuggest.value = null
+  recConfidence.value = ''
+  if (!nodeId) return
+  try {
+    const r = await adminApi.capacityRecommend(nodeId)
+    // 字段口径两种都认：Go 直出（Suggest）或带 json tag（suggest）
+    const s = Number(r?.Suggest ?? r?.suggest)
+    if (Number.isFinite(s) && s > 0) {
+      recSuggest.value = Math.floor(s)
+      recConfidence.value = String(r?.Confidence ?? r?.confidence ?? '').toLowerCase()
+    }
+  } catch (e) {
+    // 接口没有 / 请求失败：保持 null（不显示建议行），不打扰管理员
+    recSuggest.value = null
+  }
+}
+
+const confLabel = (c) => ({ high: '高', medium: '中', low: '低' }[c] || '未知')
+/** 342000 → 34.2 万；不足 1 万按原数（容量框里也是这种量级才好看） */
+const wanText = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  if (n < 10000) return String(n)
+  const w = n / 10000
+  return `${Number.isInteger(w) ? w : w.toFixed(1)} 万`
+}
+/** 采用建议 = 把数字填进容量框（跟手工改一样，点保存才落库，可反悔） */
+const adoptRecommend = () => {
+  if (recSuggest.value) form.value.capacity = String(recSuggest.value)
+}
 
 const driverTypeOptions = [
   { label: '3x-ui 面板', value: '3x-ui' },
@@ -156,7 +270,12 @@ const openCreate = () => {
     name: '', driver_type: '3x-ui', host: '', host_v6: '', port: 443, scheme: 'https', web_base_path: '',
     username: 'admin', password: '', api_key: '',
     enabled: true, verify_ssl: false, inbounds: emptyInbounds(),
+    region_id: '', capacity: '',
   }
+  regionBaseline.value = null
+  capacityBaseline.value = null
+  recSuggest.value = null
+  recConfidence.value = ''
   modalOpen.value = true
 }
 
@@ -177,7 +296,14 @@ const openEdit = async (n) => {
     username: detail.username, password: '', api_key: detail.api_key || '',
     enabled: detail.enabled, verify_ssl: !!detail.verify_ssl,
     inbounds: bindableInbounds(detail.inbounds),
+    // 地区/容量：字段缺失（后端还没补）与明确为空都按「未设置」处理
+    region_id: detail.region_id ?? '',
+    capacity: detail.capacity ?? '',
   }
+  regionBaseline.value = detail.region_id ?? null
+  capacityBaseline.value = detail.capacity ?? null
+  // 建议容量（接口缺失时静默为空，弹窗里不显示这一行）
+  await loadRecommend(detail.id ?? n.id)
   // 用当前 id 作占位项，点「拉取入站」后替换为真实备注
   const seed = (ids) => (Array.isArray(ids) ? ids : ids != null ? [ids] : []).map(id => ({ id, label: `当前入站 id:${id}（点拉取刷新名称）` }))
   const options = emptyInbounds()
@@ -222,6 +348,9 @@ const save = async () => {
           enabled: form.value.enabled,
         }
       : { ...form.value }
+    // 地区/容量不在 updateNode 的 payload 里（各自端点单独提交，见 saveRegionCapacity）
+    delete payload.region_id
+    delete payload.capacity
     // 编辑时空密码/api_key 不提交（保留原值）
     if (editing.value && !xray) {
       if (!payload.password) delete payload.password
@@ -232,6 +361,15 @@ const save = async () => {
       ? await adminApi.updateNode(editing.value.id, payload)
       : await adminApi.createNode(payload)
     toast.success(res?.message || (editing.value ? '已更新' : '已创建'))
+    // 地区/容量各自端点：只在实际改过时才发请求；失败单独提示，不影响上面已经成功的节点保存
+    const nodeId = editing.value?.id ?? res?.id
+    if (nodeId) {
+      try {
+        await saveRegionCapacity(nodeId)
+      } catch (e) {
+        toast.error(e.message || '地区 / 容量保存失败')
+      }
+    }
     // 成功反馈：按钮短暂变对勾（Submit Morph 成功段），再关弹窗
     saved.value = true
     await load()
@@ -493,8 +631,8 @@ const fmtSpeed = (v) => {
   return `${(v / 1048576).toFixed(2)} MB/s`
 }
 
-onMounted(load)
-onActivated(load)
+onMounted(() => { load(); loadRegions() })
+onActivated(() => { load(); loadRegions() })
 </script>
 
 <template>
@@ -516,11 +654,14 @@ onActivated(load)
             <tr>
               <th>名称</th>
               <th>主机</th>
+              <th>地区</th>
               <th>状态</th>
               <th>延迟</th>
               <th>VLESS</th>
               <th>Trojan</th>
               <th>HY2</th>
+              <th>绑定用户 / 容量</th>
+              <th>配置来源</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -531,6 +672,7 @@ onActivated(load)
                 <Badge v-if="n.driver_type === 'xray'" variant="info">xray</Badge>
               </td>
               <td class="mono">{{ n.driver_type === 'xray' ? (n.host || '—') : `${n.host}:${n.port}` }}</td>
+              <td class="an-region">{{ regionText(n) }}</td>
               <td>
                 <Badge v-if="n.driver_type === 'xray' && !hasInbounds(n)" variant="warning" dot>未建入站</Badge>
                 <Badge v-else :variant="statusVariant(n.status)" dot>{{ n.status }}</Badge>
@@ -556,6 +698,8 @@ onActivated(load)
               <td class="mono">{{ n.inbounds?.vless?.join(', ') || '—' }}</td>
               <td class="mono">{{ n.inbounds?.trojan?.join(', ') || '—' }}</td>
               <td class="mono">{{ n.inbounds?.hysteria?.join(', ') || '—' }}</td>
+              <td class="an-binding">{{ bindingText(n) }}</td>
+              <td class="an-source">{{ sourceText(n) }}</td>
               <td>
                 <div class="ch-actions">
                   <Button variant="ghost" size="sm" :loading="testingId === n.id" @click="test(n)"><Icon name="activity" :size="14" /></Button>
@@ -565,13 +709,13 @@ onActivated(load)
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="8" class="ch-empty">
+              <td colspan="11" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!nodes.length">
-              <td colspan="8" class="ch-empty">
+              <td colspan="11" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>暂无服务器</template>
               </td>
@@ -602,6 +746,25 @@ onActivated(load)
             <Input v-model="form.name" :placeholder="isXrayForm ? '如 HK-01' : '选择入站后自动生成'" />
           </label>
         </div>
+
+        <!-- 地区 / 容量：两种节点类型通用。地区决定这个节点收哪批用户（不设 = 全量下发），
+             容量是承载用户数上限（留空 = 不限）。两者各自一个端点，保存时按需单独提交。 -->
+        <div class="an-grid">
+          <label class="an-field">
+            <span>地区</span>
+            <Select v-model="form.region_id" :options="regionOptions" />
+          </label>
+          <label class="an-field">
+            <span>容量（承载用户数上限，留空 = 不限）</span>
+            <Input v-model="form.capacity" type="number" placeholder="不限" />
+          </label>
+        </div>
+
+        <!-- 容量建议：按最近 7 天内存样本反推。接口没就绪 / 没样本时整行不渲染（不编数字）。 -->
+        <p v-if="recSuggest" class="an-rec" data-test="capacity-rec">
+          💡 系统建议 {{ wanText(recSuggest) }}（置信度 {{ confLabel(recConfidence) }}）
+          <Button variant="ghost" size="sm" @click="adoptRecommend">采用</Button>
+        </p>
 
         <!-- ── xray 裸内核节点：一条安装命令装完，agent 自动注册 ── -->
         <template v-if="isXrayForm">

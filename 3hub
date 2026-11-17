@@ -45,6 +45,40 @@ check_install() {
 # artisan 必须以网站运行用户执行：root 跑会往 storage/bootstrap/cache
 # 写 root 属主文件，导致 www-data 的队列 worker 间歇性 Permission denied
 
+# 确保 Redis 可用（幂等；失败不阻断更新）
+#
+# 地区功能要用它：分配节点时抢地区锁（跨实例互斥）、节点实时负载缓存在 ch:node:*。
+# 装不上也不影响面板升级 —— 后端启动时会打「Redis 不可用，调度功能降级」并改用
+# 进程内锁，单实例部署照样能分配（多实例部署必须装上，否则两侧互斥不成立）。
+ensure_redis() {
+    if command -v redis-cli &>/dev/null && redis-cli ping 2>/dev/null | grep -q PONG; then
+        return 0
+    fi
+
+    if ! command -v redis-server &>/dev/null; then
+        echo -e "${CYAN}安装 Redis（地区调度依赖；失败不影响面板）...${NC}"
+        if command -v apt-get &>/dev/null; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y redis-server >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y redis >/dev/null 2>&1 || dnf install -y redis6 >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y redis >/dev/null 2>&1
+        fi
+    fi
+
+    if command -v redis-server &>/dev/null; then
+        systemctl enable redis-server 2>/dev/null || systemctl enable redis 2>/dev/null || true
+        systemctl start redis-server 2>/dev/null || systemctl start redis 2>/dev/null || true
+    fi
+
+    if command -v redis-cli &>/dev/null && redis-cli ping 2>/dev/null | grep -q PONG; then
+        echo -e "${GREEN}Redis 已就绪${NC}"
+    else
+        echo -e "${YELLOW}⚠ Redis 未就绪，地区调度将退化为进程内锁（面板其它功能不受影响）${NC}"
+    fi
+    return 0
+}
+
 # 保障 Laravel 调度器 cron（幂等）：
 #   已有 artisan schedule:run 条目 → 原样不动；缺失 → 合并式补写并回显
 # 为什么要在更新/自检路径反复保障：root crontab 会被 acme.sh 安装、面板自带 cron
@@ -1015,7 +1049,15 @@ EOF
         echo -e "${CYAN}controlhub.service: CONFIG_ENV 已切到根 .env${NC}"
     fi
 
-    # 重启 Go 后端服务（单进程：HTTP + scheduler + WS 内置）
+    # 老机器 .env 里没有 REDIS_ADDR：补一行（幂等；后端有默认值，写出来只为可发现）。
+    if [ -f "${ENV_FILE}" ] && ! grep -q '^REDIS_ADDR=' "${ENV_FILE}" 2>/dev/null; then
+        printf '\n# Redis（地区功能的调度分配锁 / 节点负载缓存）；不装则调度降级为进程内锁\nREDIS_ADDR=127.0.0.1:6379\n' >> "${ENV_FILE}"
+        echo -e "${CYAN}.env 已补充 REDIS_ADDR=127.0.0.1:6379${NC}"
+    fi
+
+    # 重启 Go 后端服务（单进程：HTTP + scheduler + WS 内置）。
+    # 先确保 Redis 在位：分配锁优先走 Redis，缺了只会降级为进程内锁（单实例仍可用）。
+    ensure_redis
     systemctl restart controlhub 2>/dev/null || true
     sleep 1
     if ! systemctl is-active --quiet controlhub; then

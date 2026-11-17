@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"controlhub-server/internal/sockpool"
 )
 
 // proxyCompleter 是 ProxyOrderCompleter 的真实实现。
@@ -52,10 +54,11 @@ func (p *proxyCompleter) CompleteOrder(ctx context.Context, order *Order) error 
 	// 读 SKU
 	var sourceType string
 	var sourceID sql.NullInt64
+	var allocation sql.NullString
 	var durationDays int64
 	err := p.db.QueryRowContext(ctx,
-		`SELECT source_type, source_id, duration_days FROM proxy_skus WHERE id = ?`, skuID).
-		Scan(&sourceType, &sourceID, &durationDays)
+		`SELECT source_type, allocation, source_id, duration_days FROM proxy_skus WHERE id = ?`, skuID).
+		Scan(&sourceType, &allocation, &sourceID, &durationDays)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("规格不存在 sku_id=%d", skuID)
 	}
@@ -73,14 +76,48 @@ func (p *proxyCompleter) CompleteOrder(ctx context.Context, order *Order) error 
 	var existingID sql.NullInt64
 	var existingExpires sql.NullTime
 	var existingAccountID sql.NullInt64
+	var existingSocksID sql.NullInt64
 	p.db.QueryRowContext(ctx,
-		`SELECT id, expires_at, account_id FROM proxy_entitlements
+		`SELECT id, expires_at, account_id, socks_id FROM proxy_entitlements
 		 WHERE user_id = ? AND sku_id = ? AND status IN ('active','expired','disabled')
 		 ORDER BY id DESC LIMIT 1`, order.UserID, skuID).
-		Scan(&existingID, &existingExpires, &existingAccountID)
+		Scan(&existingID, &existingExpires, &existingAccountID, &existingSocksID)
 
 	switch sourceType {
 	case "socks":
+		// 独占（#地区功能-17）：一条线路只卖一个人。续费把旧线路传进去 —— 还归他
+		// 就沿用，已经被释放/转卖就重新挑（池空 = 报无货，订单保持 paid 等补开）。
+		exclusive := allocation.Valid && allocation.String == sockpool.Exclusive
+		if exclusive {
+			var renewSockID *uint64
+			if existingSocksID.Valid {
+				id := uint64(existingSocksID.Int64)
+				renewSockID = &id
+			}
+			sockID, allocErr := sockpool.Acquire(ctx, p.db, renewSockID, uint64PtrOrNil(sourceID), order.UserID, now)
+			if allocErr != nil {
+				p.releaseStock(ctx, skuID, order)
+				return fmt.Errorf("独占 socks 开通失败 sku_id=%d: %w", skuID, allocErr)
+			}
+			if existingID.Valid {
+				// 续费：延长到期，并把线路钉成这次拿到的这条
+				// （仍是老的那条 → 值不变；老的那条已被释放/转卖 → 换成新的）。
+				newExpires := expiresAt
+				if existingExpires.Valid && existingExpires.Time.After(now) {
+					newExpires = existingExpires.Time.AddDate(0, 0, int(durationDays))
+				}
+				if _, err := p.db.ExecContext(ctx,
+					`UPDATE proxy_entitlements
+					 SET order_id = ?, sku_id = ?, status = 'active', expires_at = ?, socks_id = ?
+					 WHERE id = ?`,
+					order.ID, skuID, newExpires, sockID, existingID.Int64); err != nil {
+					return fmt.Errorf("续费 socks 权益失败: %w", err)
+				}
+				return nil
+			}
+			return p.createSocksEntitlement(ctx, order, skuID, sockID, expiresAt, now)
+		}
+
 		if !sourceID.Valid {
 			return fmt.Errorf("socks 规格缺少货源 sku_id=%d", skuID)
 		}
@@ -108,16 +145,7 @@ func (p *proxyCompleter) CompleteOrder(ctx context.Context, order *Order) error 
 				order.ID, skuID, newExpires, existingID.Int64)
 			return err
 		}
-		_, err = p.db.ExecContext(ctx,
-			`INSERT INTO proxy_entitlements (user_id, order_id, sku_id, kind, account_id, socks_id, expires_at, status, created_at, updated_at)
-			 VALUES (?, ?, ?, 'socks', NULL, ?, ?, 'active', ?, ?)`,
-			order.UserID, order.ID, skuID, sourceID.Int64, expiresAt, now, now)
-		if err != nil {
-			p.releaseStock(ctx, skuID, order)
-			return fmt.Errorf("创建 socks 权益失败: %w", err)
-		}
-		p.consumeStock(ctx, skuID, order)
-		return nil
+		return p.createSocksEntitlement(ctx, order, skuID, uint64(sourceID.Int64), expiresAt, now)
 
 	default: // webshare
 		if existingID.Valid && existingAccountID.Valid {
@@ -144,6 +172,31 @@ func (p *proxyCompleter) CompleteOrder(ctx context.Context, order *Order) error 
 		p.releaseStock(ctx, skuID, order)
 		return fmt.Errorf("webshare 账号开通需上游 API（当前未配置 webshare client），请管理员补开 order_no=%s sku_id=%d", order.OrderNo, skuID)
 	}
+}
+
+// createSocksEntitlement 新建一条 socks 权益并占库存（开通成功才占）。
+func (p *proxyCompleter) createSocksEntitlement(
+	ctx context.Context, order *Order, skuID, socksID uint64, expiresAt, now time.Time,
+) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO proxy_entitlements (user_id, order_id, sku_id, kind, account_id, socks_id, expires_at, status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'socks', NULL, ?, ?, 'active', ?, ?)`,
+		order.UserID, order.ID, skuID, socksID, expiresAt, now, now)
+	if err != nil {
+		p.releaseStock(ctx, skuID, order)
+		return fmt.Errorf("创建 socks 权益失败: %w", err)
+	}
+	p.consumeStock(ctx, skuID, order)
+	return nil
+}
+
+// uint64PtrOrNil 把 SQL NULL 值转成指针（nil 表示规格没指定货源）。
+func uint64PtrOrNil(v sql.NullInt64) *uint64 {
+	if !v.Valid {
+		return nil
+	}
+	id := uint64(v.Int64)
+	return &id
 }
 
 // releaseStock 回退库存（仅新购，续费不占）。

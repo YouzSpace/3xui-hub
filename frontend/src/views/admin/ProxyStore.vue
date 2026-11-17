@@ -7,6 +7,7 @@
  * 两类货源：
  *   webshare + exclusive  开上游子账号，一人一个，库存 = 上游剩余子账号数
  *   socks     + shared    多人共用一条手工 socks，库存 = 你填的份数
+ *   socks     + exclusive 一人一条，下单时从池子里取一条未售出的（库存看池子）
  *
  * 流量不归平台管：webshare 建号时把额度传给上游，平台只读回用量；
  * socks 共享型不限流量（交给 socks 机器自己管）。
@@ -57,7 +58,13 @@ const sockSaving = ref(false)
 
 const sourceOptions = [
   { label: 'Webshare 子账号（独占）', value: 'webshare' },
-  { label: '手工 socks（多人共用）', value: 'socks' },
+  { label: '手工 socks（按分配方式）', value: 'socks' },
+]
+
+// 分配方式：共享 = 多人共用一条线路；独占 = 一条只卖一个人
+const allocationOptions = [
+  { label: '共享（多人共用一条）', value: 'shared' },
+  { label: '独占（一人一条）', value: 'exclusive' },
 ]
 
 function blankProduct() {
@@ -68,6 +75,8 @@ function blankSku() {
   return {
     name: '',
     source_type: 'webshare',
+    // webshare 天然独占（一人一个上游子账号），socks 默认共享
+    allocation: 'exclusive',
     source_id: '',
     region: '',
     traffic_gb: 100,
@@ -86,16 +95,41 @@ const providerOptions = computed(() => [
   ...providers.value.map((p) => ({ label: `${p.name}（子用户 ${p.account_count}）`, value: p.id })),
 ])
 
+// 规格的「实际」分配方式：webshare 天然独占（一人一个上游子账号），
+// socks 看管理员选的（后端老数据可能没这字段 → 按共享兜底）
+const skuAllocationOf = (ko) => {
+  if (ko?.source_type === 'webshare') return 'exclusive'
+  return ko?.allocation === 'exclusive' ? 'exclusive' : 'shared'
+}
+// 弹窗里正在编辑的这份
+const skuAllocation = computed(() => skuAllocationOf(skuForm.value))
+
+// 独占模式的货源可以「不指定」：下单时自动从独占池里挑一条没卖出的
 const socksOptions = computed(() => [
-  { label: '请选择一条 socks', value: '' },
+  skuAllocation.value === 'exclusive'
+    ? { label: '不指定（自动从独占池挑）', value: '' }
+    : { label: '请选择一条 socks', value: '' },
   ...socks.value.map((s) => ({
     label: `${s.host}:${s.port}${s.username ? ` · ${s.username}` : ''}${s.country ? ` · ${s.country}` : ''}`,
     value: s.id,
   })),
 ])
 
-const sourceLabel = (sku) =>
-  sku.source_type === 'socks' ? 'socks · 多人共用' : 'Webshare · 独占账号'
+const sourceLabel = (sku) => {
+  if (sku.source_type !== 'socks') return 'Webshare · 独占账号'
+  return skuAllocationOf(sku) === 'exclusive' ? 'socks · 独占' : 'socks · 多人共用'
+}
+
+// 还能卖几份：后端给了 stock_available 就用它，老接口没有就自己算（总数-占用-已售）
+const stockAvailable = (sku) =>
+  sku.stock_available ??
+  Math.max(0, (sku.stock_total ?? 0) - (sku.stock_locked ?? 0) - (sku.stock_sold ?? 0))
+
+// socks 货源的分配方式文案（后端未返回 allocation 时按共享兜底，不猜「独占」）
+const sockAllocLabel = (s) => (s.allocation === 'exclusive' ? '独占' : '共享')
+// 已售给谁：只有独占且确实卖了才显示用户 id
+const sockSoldTo = (s) =>
+  s.allocation === 'exclusive' && s.sold_to ? `用户 #${s.sold_to}` : '—'
 
 const loadSettings = async () => {
   try {
@@ -212,6 +246,7 @@ const openEditSku = (sku) => {
   skuForm.value = {
     name: sku.name,
     source_type: sku.source_type || 'webshare',
+    allocation: sku.allocation ?? 'shared',
     source_id: sku.source_id ?? '',
     region: sku.region || '',
     traffic_gb: sku.traffic_gb ?? 0,
@@ -232,7 +267,7 @@ const saveSku = async () => {
     toast.error('请填写规格名')
     return
   }
-  if (f.source_type === 'socks' && !f.source_id) {
+  if (f.source_type === 'socks' && !f.source_id && skuAllocation.value !== 'exclusive') {
     toast.error('socks 货源必须选择一条已录入的 socks')
     return
   }
@@ -241,6 +276,7 @@ const saveSku = async () => {
     const payload = {
       name: f.name.trim(),
       source_type: f.source_type,
+      allocation: skuAllocation.value,
       source_id: f.source_id === '' ? null : Number(f.source_id),
       region: f.region?.trim() || null,
       traffic_gb: Number(f.traffic_gb) || 0,
@@ -310,6 +346,8 @@ const openEditSock = (s) => {
     password: '',
     country: s.country || '',
     note: s.note || '',
+    // 后端还没返回 allocation 时按共享兜底：老线路本来就是多人共用
+    allocation: s.allocation ?? 'shared',
     is_active: s.is_active,
   }
   sockOpen.value = true
@@ -326,6 +364,7 @@ const saveSock = async () => {
       username: f.username?.trim() || null,
       country: f.country?.trim() || null,
       note: f.note?.trim() || null,
+      allocation: f.allocation === 'exclusive' ? 'exclusive' : 'shared',
       is_active: !!f.is_active,
     }
     // 密码留空 = 不修改
@@ -368,7 +407,7 @@ onMounted(() => {
     </div>
     <p class="ps-hint">
       这里卖的是代理（住宅 / 手工 socks），和节点套餐完全分开。Webshare 走独占账号（一人一个子账号，流量额度传给上游）；
-      手工 socks 走共享（多人共用一条，适合批量小套餐）。
+      手工 socks 可选共享（多人共用一条，适合批量小套餐）或独占（一人一条，下单时从池子里取未售出的那条）。
     </p>
 
     <!-- 总开关：默认关闭，关闭时用户端不显示「代理」，用户接口也拒绝 -->
@@ -434,8 +473,11 @@ onMounted(() => {
               <td class="mono">¥{{ sku.price }}</td>
               <td class="mono ps-dim">¥{{ sku.cost_price }}</td>
               <td class="mono">
-                {{ sku.stock_available }} / {{ sku.stock_total }}
-                <span v-if="sku.stock_locked" class="ps-dim">（占用 {{ sku.stock_locked }}）</span>
+                <template v-if="skuAllocationOf(sku) === 'exclusive'">可用 {{ stockAvailable(sku) }} 条</template>
+                <template v-else>
+                  {{ stockAvailable(sku) }} / {{ sku.stock_total }}
+                  <span v-if="sku.stock_locked" class="ps-dim">（占用 {{ sku.stock_locked }}）</span>
+                </template>
               </td>
               <td>
                 <Badge :variant="sku.is_active ? 'success' : 'warning'">{{ sku.is_active ? '启用' : '停用' }}</Badge>
@@ -487,6 +529,8 @@ onMounted(() => {
               <th>账号</th>
               <th>密码</th>
               <th>国家</th>
+              <th>分配方式</th>
+              <th>已售给</th>
               <th>状态</th>
               <th>操作</th>
             </tr>
@@ -498,6 +542,8 @@ onMounted(() => {
               <td class="mono">{{ s.username || '—' }}</td>
               <td class="ps-dim">{{ s.has_password ? '已设置' : '无' }}</td>
               <td class="ps-dim">{{ s.country || '—' }}</td>
+              <td class="ps-dim">{{ sockAllocLabel(s) }}</td>
+              <td class="ps-dim" :title="s.sold_at || ''">{{ sockSoldTo(s) }}</td>
               <td>
                 <Badge :variant="s.is_active ? 'success' : 'warning'">{{ s.is_active ? '启用' : '停用' }}</Badge>
               </td>
@@ -509,7 +555,7 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-if="!socks.length">
-              <td colspan="7" class="ch-empty-sm">还没有 socks 货源 —— 点右上「批量导入」粘贴</td>
+              <td colspan="9" class="ch-empty-sm">还没有 socks 货源 —— 点右上「批量导入」粘贴</td>
             </tr>
           </tbody>
         </table>
@@ -569,6 +615,20 @@ onMounted(() => {
             />
           </label>
         </div>
+
+        <!-- 分配方式只在 socks 下可选（webshare 一人一个子账号，天生独占） -->
+        <label v-if="skuForm.source_type === 'socks'" class="ps-field">
+          <span class="ps-label">分配方式（一条线路卖给几个人）</span>
+          <Select v-model="skuForm.allocation" :options="allocationOptions" />
+          <p class="ps-tip">
+            <template v-if="skuAllocation === 'exclusive'">
+              独占模式：卖出后自动从池子里取未售出的一条，池空则无法下单。货源选「不指定」即可，不用手工挑。
+            </template>
+            <template v-else>
+              共享模式：所有买家共用同一条线路，库存 = 你填的可售份数，不限流量。
+            </template>
+          </p>
+        </label>
 
         <div class="ps-grid">
           <label class="ps-field">
@@ -679,6 +739,22 @@ socks5://user2:pass2@1.2.3.4:1080"
             <span class="ps-label">密码（留空 = 不修改）</span>
             <Input v-model="sockForm.password" type="password" />
           </label>
+        </div>
+        <div class="ps-field">
+          <span class="ps-label">分配方式</span>
+          <div class="ps-radios">
+            <label class="ps-check">
+              <input v-model="sockForm.allocation" type="radio" value="shared" />
+              <span>共享（多人共用一条）</span>
+            </label>
+            <label class="ps-check">
+              <input v-model="sockForm.allocation" type="radio" value="exclusive" />
+              <span>独占（一人一条）</span>
+            </label>
+          </div>
+          <p class="ps-tip">
+            共享：多个买家共用这条线路，适合批量小套餐；独占：一条只卖一个人，卖出后会记下买家。
+          </p>
         </div>
         <label class="ps-check">
           <input v-model="sockForm.is_active" type="checkbox" />
