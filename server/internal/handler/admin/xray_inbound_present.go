@@ -33,10 +33,11 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		sniffing = jo("enabled", true, "destOverride", jsArr{"http", "tls", "quic"})
 	}
 
-	// wireguard 的 streamSettings 是空的（内核固定 UDP 监听），列表页要显示 udp 而不是默认 tcp。
+	// 列表页显示的传输层：wireguard 的 streamSettings 是空的（内核固定 UDP 监听），
+	// 要显示 udp 而不是默认 tcp —— 取值来自能力表（PresentNetwork）。
 	network := jsonDefaultString(stream, "tcp", "network")
-	if ib.Protocol == "wireguard" {
-		network = "udp"
+	if presentNetwork := inboundProtocolOf(ib.Protocol).PresentNetwork; presentNetwork != "" {
+		network = presentNetwork
 	}
 
 	return jo(

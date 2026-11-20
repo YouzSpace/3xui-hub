@@ -1,0 +1,343 @@
+=== vless-plain ===
+validate=ok
+tag=in-vless
+port=8443
+listen=0.0.0.0
+settings={"decryption":"none"}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vless","remark":"\u5907\u6ce8","protocol":"vless","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== vless-reality ===
+validate=ok
+tag=in-vless
+port=8443
+listen=0.0.0.0
+settings={"decryption":"none"}
+stream={"network":"tcp","security":"reality","realitySettings":{"dest":"www.cloudflare.com:443","serverNames":["a.example.com"],"shortIds":["ab12","CDEF"],"publicKey":"REALITY-PUBLIC-KEY-FIXED","xver":1,"show":true,"minClientVer":"1.8.0","maxClientVer":"26.3.27","maxTimediff":30000,"masterKeyLog":"\/tmp\/vless.log","limitFallbackUpload":{"afterBytes":1024,"bytesPerSec":2097152,"burstBytesPerSec":4194304},"settings":{"fingerprint":"chrome","spiderX":"\/"}}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=REALITY-PRIVATE-KEY-FIXED
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vless","remark":"\u5907\u6ce8","protocol":"vless","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"reality","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":"www.cloudflare.com:443","server_names":["a.example.com"],"short_ids":["ab12","CDEF"],"public_key":"REALITY-PUBLIC-KEY-FIXED","has_private_key":true,"show":true,"xver":1,"min_client_ver":"1.8.0","max_client_ver":"26.3.27","max_timediff":30000,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"\/tmp\/vless.log","fingerprint":"chrome","spider_x":"\/","limit_fallback_upload":{"after_bytes":1024,"bytes_per_sec":2097152,"burst_bytes_per_sec":4194304},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== vless-tls-ws ===
+validate=ok
+tag=in-vless
+port=8443
+listen=0.0.0.0
+settings={"decryption":"none"}
+stream={"network":"ws","security":"tls","wsSettings":{"path":"\/ws","host":"cdn.example.com"},"tlsSettings":{"serverName":"example.com","tlsCertId":5}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vless","remark":"\u5907\u6ce8","protocol":"vless","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"ws","security":"tls","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":"\/ws","ws_host":"cdn.example.com","httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":"example.com","has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":5,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== vless-xhttp ===
+validate=ok
+tag=in-vless
+port=8443
+listen=0.0.0.0
+settings={"decryption":"none"}
+stream={"network":"xhttp","security":"none","xhttpSettings":{"path":"\/xhttp","host":"cdn.example.com","mode":"auto","xPaddingBytes":"100-1000","xPaddingKey":"pad-key","xPaddingHeader":"X-Padding","xPaddingPlacement":"header","xPaddingMethod":"repeat-x","sessionIDPlacement":"path","sessionIDKey":"sid","sessionIDTable":"hex","sessionIDLength":"16","seqPlacement":"query","seqKey":"seq","uplinkDataPlacement":"body","uplinkDataKey":"data","scMaxEachPostBytes":"1000-2000","scMinPostsIntervalMs":"10-20","scStreamUpServerSecs":"20-40","uplinkHTTPMethod":"PUT","xPaddingObfsMode":true,"noSSEHeader":true,"noGRPCHeader":true,"scMaxBufferedPosts":100,"serverMaxHeaderBytes":8192,"uplinkChunkSize":4096,"headers":{"X-A":"1"},"xmux":{"maxConcurrency":"8-16","maxConnections":"4","cMaxReuseTimes":"128","hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":"30"}}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vless","remark":"\u5907\u6ce8","protocol":"vless","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"xhttp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":"\/xhttp","xhttp_host":"cdn.example.com","xhttp_mode":"auto","xhttp_padding_bytes":"100-1000","xhttp_padding_obfs_mode":true,"xhttp_padding_key":"pad-key","xhttp_padding_header":"X-Padding","xhttp_padding_placement":"header","xhttp_padding_method":"repeat-x","xhttp_session_id_placement":"path","xhttp_session_id_key":"sid","xhttp_session_id_table":"hex","xhttp_session_id_length":"16","xhttp_seq_placement":"query","xhttp_seq_key":"seq","xhttp_uplink_data_placement":"body","xhttp_uplink_data_key":"data","xhttp_uplink_chunk_size":4096,"xhttp_sc_max_each_post_bytes":"1000-2000","xhttp_sc_max_buffered_posts":100,"xhttp_sc_min_posts_interval_ms":"10-20","xhttp_sc_stream_up_server_secs":"20-40","xhttp_server_max_header_bytes":8192,"xhttp_uplink_http_method":"PUT","xhttp_no_sse_header":true,"xhttp_no_grpc_header":true,"xhttp_headers":"X-A: 1","xhttp_xmux_max_concurrency":"8-16","xhttp_xmux_max_connections":"4","xhttp_xmux_c_max_reuse_times":"128","xhttp_xmux_h_max_request_times":"600-900","xhttp_xmux_h_max_reusable_secs":"1800-3000","xhttp_xmux_h_keep_alive_period":"30","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== vless-httpupgrade ===
+validate=ok
+tag=in-vless
+port=8443
+listen=0.0.0.0
+settings={"decryption":"none"}
+stream={"network":"httpupgrade","security":"none","httpupgradeSettings":{"path":"\/hu","host":"cdn.example.com"}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vless","remark":"\u5907\u6ce8","protocol":"vless","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"httpupgrade","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":"\/hu","httpupgrade_host":"cdn.example.com","tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== vless-tcp-header ===
+validate=ok
+tag=in-vless
+port=8443
+listen=0.0.0.0
+settings={"decryption":"none"}
+stream={"network":"tcp","security":"none","tcpSettings":{"header":{"type":"http","request":{"version":"1.1","method":"GET","path":["\/raw"],"headers":{"Host":["www.example.com"]}}}}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vless","remark":"\u5907\u6ce8","protocol":"vless","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"http","tcp_header_path":"\/raw","tcp_header_host":"www.example.com","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== vmess-ws ===
+validate=ok
+tag=in-vmess
+port=8443
+listen=0.0.0.0
+settings={}
+stream={"network":"ws","security":"none","wsSettings":{"path":"\/vm"}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-vmess","remark":"\u5907\u6ce8","protocol":"vmess","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"ws","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":"\/vm","ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== trojan-tls ===
+validate=ok
+tag=in-trojan
+port=8443
+listen=0.0.0.0
+settings={}
+stream={"network":"grpc","security":"tls","tlsSettings":{"serverName":"example.com","tlsCertId":5}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-trojan","remark":"\u5907\u6ce8","protocol":"trojan","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"grpc","security":"tls","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":"example.com","has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":5,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== shadowsocks-2022 ===
+validate=ok
+tag=in-shadowsocks
+port=8443
+listen=0.0.0.0
+settings={"method":"2022-blake3-aes-256-gcm","password":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-shadowsocks","remark":"\u5907\u6ce8","protocol":"shadowsocks","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":"2022-blake3-aes-256-gcm","ss_password_set":true,"ss_password":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=","auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== shadowsocks-legacy ===
+validate=ok
+tag=in-shadowsocks
+port=8443
+listen=0.0.0.0
+settings={"method":"aes-256-gcm","password":"legacy-pass"}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-shadowsocks","remark":"\u5907\u6ce8","protocol":"shadowsocks","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":"aes-256-gcm","ss_password_set":true,"ss_password":"legacy-pass","auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== shadowsocks-edit-inherit-password ===
+validate=ok
+tag=in-shadowsocks
+port=8443
+listen=0.0.0.0
+settings={"method":"2022-blake3-aes-256-gcm","password":"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk="}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-shadowsocks","remark":"\u5907\u6ce8","protocol":"shadowsocks","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":"2022-blake3-aes-256-gcm","ss_password_set":true,"ss_password":"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=","auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== hysteria-basic ===
+validate=ok
+tag=in-hysteria
+port=8443
+listen=0.0.0.0
+settings={"version":2}
+stream={"network":"hysteria","security":"tls","hysteriaSettings":{"version":2,"udpIdleTimeout":60},"tlsSettings":{"serverName":"example.com","alpn":["h3"],"rejectUnknownSni":false,"enableSessionResumption":false,"tlsCertId":5}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-hysteria","remark":"\u5907\u6ce8","protocol":"hysteria","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"hysteria","security":"tls","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":"example.com","has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":60,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":5,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== hysteria-full ===
+validate=ok
+tag=in-hysteria
+port=8443
+listen=0.0.0.0
+settings={"version":2}
+stream={"network":"hysteria","security":"tls","hysteriaSettings":{"version":2,"udpIdleTimeout":60,"masquerade":{"type":"string","content":"<h1>hi<\/h1>","statusCode":200}},"tlsSettings":{"alpn":["h3"],"rejectUnknownSni":true,"enableSessionResumption":true,"tlsCertId":5},"finalmask":{"quicParams":{"congestion":"brutal","brutalUp":"100 Mbps","brutalDown":"50 Mbps","initStreamReceiveWindow":16384,"maxStreamReceiveWindow":8388608,"initConnectionReceiveWindow":32768,"maxConnectionReceiveWindow":16777216,"udpHop":{"ports":"20000-30000","interval":"30-60"}},"udp":[{"type":"salamander"}]}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=sal-pass
+client_host=cdn.example.com
+present={"id":7,"tag":"in-hysteria","remark":"\u5907\u6ce8","protocol":"hysteria","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"hysteria","security":"tls","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"20000-30000","hy_hop_interval":"30-60","hy_udp_idle_timeout":60,"hy_masquerade":{"type":"string","content":"<h1>hi<\/h1>","statusCode":200},"hy_congestion":"brutal","hy_reject_unknown_sni":true,"hy_session_resumption":true,"hy_brutal_up":100,"hy_brutal_down":50,"hy_init_stream_window":16384,"hy_max_stream_window":8388608,"hy_init_conn_window":32768,"hy_max_conn_window":16777216,"hy_salamander_password_set":true,"tls_cert_id":5,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== hysteria-masquerade-proxy ===
+validate=ok
+tag=in-hysteria
+port=8443
+listen=0.0.0.0
+settings={"version":2}
+stream={"network":"hysteria","security":"tls","hysteriaSettings":{"version":2,"udpIdleTimeout":60,"masquerade":{"type":"proxy","url":"https:\/\/example.com\/"}},"tlsSettings":{"alpn":["h3"],"rejectUnknownSni":false,"enableSessionResumption":false,"tlsCertId":5},"finalmask":{"quicParams":{"congestion":"bbr"}}}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-hysteria","remark":"\u5907\u6ce8","protocol":"hysteria","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"hysteria","security":"tls","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":60,"hy_masquerade":{"type":"proxy","url":"https:\/\/example.com\/"},"hy_congestion":"bbr","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":5,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== socks ===
+validate=ok
+tag=in-socks
+port=8443
+listen=0.0.0.0
+settings={"auth":"password","accounts":[{"user":"socks-user","pass":"socks-pass"}],"udp":false}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-socks","remark":"\u5907\u6ce8","protocol":"socks","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":"socks-user","auth_password_set":true,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== http ===
+validate=ok
+tag=in-http
+port=8443
+listen=0.0.0.0
+settings={"accounts":[{"user":"http-user","pass":"http-pass"}],"allowTransparent":false}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-http","remark":"\u5907\u6ce8","protocol":"http","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":"http-user","auth_password_set":true,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== socks-edit-inherit-pass ===
+validate=ok
+tag=in-socks
+port=8443
+listen=0.0.0.0
+settings={"auth":"password","accounts":[{"user":"socks-user","pass":"old-pass"}],"udp":false}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-socks","remark":"\u5907\u6ce8","protocol":"socks","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":"socks-user","auth_password_set":true,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== tunnel-udp ===
+validate=ok
+tag=in-tunnel
+port=8443
+listen=0.0.0.0
+settings={"address":"127.0.0.1","port":8080,"network":"udp"}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-tunnel","remark":"\u5907\u6ce8","protocol":"tunnel","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":"127.0.0.1","tunnel_port":8080,"tunnel_network":"udp","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== tunnel-default-network ===
+validate=ok
+tag=in-tunnel
+port=8443
+listen=0.0.0.0
+settings={"address":"10.0.0.2","port":443,"network":"tcp,udp"}
+stream={"network":"tcp","security":"none"}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-tunnel","remark":"\u5907\u6ce8","protocol":"tunnel","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"tcp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":"10.0.0.2","tunnel_port":443,"tunnel_network":"tcp,udp","wg_mtu":0,"wg_public_key":null,"wg_peers":"","wg_peer_count":0,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== wireguard-edit ===
+validate=ok
+tag=in-wireguard
+port=8443
+listen=0.0.0.0
+settings={"secretKey":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=","mtu":1400,"noKernelTun":true,"peers":[{"publicKey":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","allowedIPs":["10.0.0.2\/32","fd00::2\/128"]},{"publicKey":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="}]}
+stream={}
+sniffing={"enabled":true,"destOverride":["http","tls"],"routeOnly":true}
+reality_private_key=<nil>
+salamander_password=<nil>
+client_host=cdn.example.com
+present={"id":7,"tag":"in-wireguard","remark":"\u5907\u6ce8","protocol":"wireguard","port":8443,"listen":"0.0.0.0","client_host":"cdn.example.com","network":"udp","security":"none","sniffing":{"enabled":true,"destOverride":["http","tls"],"routeOnly":true},"dest":null,"server_names":[],"short_ids":[],"public_key":null,"has_private_key":false,"show":false,"xver":0,"min_client_ver":"","max_client_ver":"","max_timediff":0,"mldsa65_seed":"","mldsa65_verify":"","master_key_log":"","fingerprint":"","spider_x":"","limit_fallback_upload":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"limit_fallback_download":{"after_bytes":0,"bytes_per_sec":0,"burst_bytes_per_sec":0},"ws_path":null,"ws_host":null,"httpupgrade_path":null,"httpupgrade_host":null,"tcp_header_type":"none","tcp_header_path":"","tcp_header_host":"","xhttp_path":null,"xhttp_host":null,"xhttp_mode":null,"xhttp_padding_bytes":"","xhttp_padding_obfs_mode":false,"xhttp_padding_key":"","xhttp_padding_header":"","xhttp_padding_placement":"","xhttp_padding_method":"","xhttp_session_id_placement":"","xhttp_session_id_key":"","xhttp_session_id_table":"","xhttp_session_id_length":"","xhttp_seq_placement":"","xhttp_seq_key":"","xhttp_uplink_data_placement":"","xhttp_uplink_data_key":"","xhttp_uplink_chunk_size":0,"xhttp_sc_max_each_post_bytes":"","xhttp_sc_max_buffered_posts":0,"xhttp_sc_min_posts_interval_ms":"","xhttp_sc_stream_up_server_secs":"","xhttp_server_max_header_bytes":0,"xhttp_uplink_http_method":"","xhttp_no_sse_header":false,"xhttp_no_grpc_header":false,"xhttp_headers":"","xhttp_xmux_max_concurrency":"","xhttp_xmux_max_connections":"","xhttp_xmux_c_max_reuse_times":"","xhttp_xmux_h_max_request_times":"","xhttp_xmux_h_max_reusable_secs":"","xhttp_xmux_h_keep_alive_period":"","tls_server_name":null,"has_tls_cert":false,"ss_method":null,"ss_password_set":false,"ss_password":null,"auth_user":null,"auth_password_set":false,"tunnel_address":null,"tunnel_port":0,"tunnel_network":"","wg_mtu":1400,"wg_public_key":"Xf7dO2vUf2+ijuFdlp1bsOpTd01Ii9r53xxuASSz7yI=","wg_peers":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= 10.0.0.2\/32,fd00::2\/128\nAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=","wg_peer_count":2,"hy_hop_ports":"","hy_hop_interval":"","hy_udp_idle_timeout":null,"hy_masquerade":null,"hy_congestion":"","hy_reject_unknown_sni":false,"hy_session_resumption":false,"hy_brutal_up":0,"hy_brutal_down":0,"hy_init_stream_window":0,"hy_max_stream_window":0,"hy_init_conn_window":0,"hy_max_conn_window":0,"hy_salamander_password_set":false,"tls_cert_id":null,"enabled":true,"sort":3,"client_count":120,"created_at":"2026-11-20T10:30:00+00:00"}
+
+=== fail-unknown-protocol ===
+validate=fail
+body={"code":500,"msg":"The selected protocol is invalid.","data":null}
+
+=== fail-unknown-network ===
+validate=fail
+body={"code":500,"msg":"The selected network is invalid.","data":null}
+
+=== fail-reality-on-vmess ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Reality \u4ec5\u652f\u6301 VLESS \u534f\u8bae","data":null}
+
+=== fail-reality-on-ws ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Reality \u4ec5\u652f\u6301 tcp \/ xhttp \/ grpc \u4f20\u8f93","data":null}
+
+=== fail-mldsa-not-paired ===
+validate=ok
+build=fail
+body={"code":500,"msg":"mldsa65Seed \u4e0e mldsa65Verify \u5fc5\u987b\u6210\u5bf9\u8bbe\u7f6e\uff08\u540c\u65f6\u586b\u5199\u6216\u540c\u65f6\u7559\u7a7a\uff09","data":null}
+
+=== fail-shadowsocks-ws ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Shadowsocks \u4ec5\u652f\u6301 tcp + \u65e0\u9644\u52a0\u5b89\u5168\u5c42","data":null}
+
+=== fail-shadowsocks-no-password ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Shadowsocks \u5fc5\u987b\u8bbe\u7f6e\u5bc6\u7801","data":null}
+
+=== fail-tls-without-cert ===
+validate=ok
+build=fail
+body={"code":500,"msg":"TLS \u5165\u7ad9\u9700\u8981\u5f15\u7528\u4e00\u5f20\u8bc1\u4e66\u5e93\u8bc1\u4e66\uff08\u63a8\u8350\uff09\uff0c\u6216\u624b\u586b\u8bc1\u4e66\u4e0e\u79c1\u94a5","data":null}
+
+=== fail-tls-cert-domain-mismatch ===
+validate=ok
+build=fail
+body={"code":500,"msg":"\u9009\u4e2d\u7684\u8bc1\u4e66\uff08example.com\uff09\u8986\u76d6\u4e0d\u5230 serverName other.example.com","data":null}
+
+=== fail-hysteria-no-cert ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Hysteria \u5165\u7ad9\u9700\u8981 TLS \u8bc1\u4e66\uff1a\u8bc1\u4e66\u5e93\u4e3a\u7a7a\uff0c\u8bf7\u5148\u5230\u300eTLS \u8bc1\u4e66\u5e93\u300f\u6dfb\u52a0\u4e00\u5f20\u518d\u56de\u6765","data":null}
+
+=== fail-hysteria-hop-covers-main ===
+validate=ok
+build=fail
+body={"code":500,"msg":"\u4e3b\u7aef\u53e3\u4e0d\u80fd\u843d\u5728\u8df3\u8dc3\u533a\u95f4\u5185\uff088000-9000\uff09\uff1a\u4e3b\u7aef\u53e3\u81ea\u8eab\u7684\u6d41\u91cf\u4f1a\u88ab\u8f6c\u53d1\u89c4\u5219\u8bef\u7ed5\uff0c\u8fde\u63a5\u4f1a\u65ad","data":null}
+
+=== fail-hysteria-force-brutal-no-up ===
+validate=ok
+build=fail
+body={"code":500,"msg":"force-brutal \u5fc5\u987b\u586b\u4e0a\u884c\u5e26\u5bbd\uff08Mbps\uff09\uff1a\u5185\u6838\u8981\u6c42 force-brutal \u9650\u5b9a\u4e0a\u884c\uff0c\u7559\u7a7a\u4f1a\u8ba9\u6574\u4efd\u8282\u70b9\u914d\u7f6e\u8d77\u4e0d\u6765","data":null}
+
+=== fail-hysteria-window-too-small ===
+validate=ok
+build=fail
+body={"code":500,"msg":"HY2 \u7684 \u521d\u59cb\u6d41\u63a5\u6536\u7a97\u53e3\u81f3\u5c11 16384 \u5b57\u8282\uff0c\u6216\u7559\u7a7a\/\u586b 0 \u7528\u5185\u6838\u9ed8\u8ba4\uff08\u5185\u6838\u4f1a\u62d2\u6389\u66f4\u5c0f\u7684\u503c\uff09","data":null}
+
+=== fail-socks-no-pass ===
+validate=ok
+build=fail
+body={"code":500,"msg":"SOCKS \/ HTTP \u5165\u7ad9\u5fc5\u987b\u586b\u5199\u7528\u6237\u540d\u4e0e\u5bc6\u7801\uff08\u5185\u6838\u9ed8\u8ba4 noauth\uff0c\u516c\u7f51\u88f8\u4ee3\u7406\u4f1a\u88ab\u626b\u7aef\u53e3\u6ee5\u7528\uff09","data":null}
+
+=== fail-tunnel-no-address ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Tunnel \u5165\u7ad9\u5fc5\u987b\u586b\u5199\u8f6c\u53d1\u76ee\u6807\uff08\u5730\u5740 + \u7aef\u53e3\uff09","data":null}
+
+=== fail-tunnel-bad-network ===
+validate=ok
+build=fail
+body={"code":500,"msg":"Tunnel \u8f6c\u53d1\u534f\u8bae\u53ea\u652f\u6301 tcp \/ udp \/ tcp,udp","data":null}
+
+=== fail-wireguard-bad-peers ===
+validate=ok
+build=fail
+body={"code":500,"msg":"WireGuard \u5bf9\u7aef\u683c\u5f0f\u9519\u8bef\uff1a\u6bcf\u884c\u300c\u516c\u94a5 [\u5141\u8bb8IP,...]\u300d\uff0c\u516c\u94a5\u4e3a 44 \u5b57\u7b26 base64","data":null}
+

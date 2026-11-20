@@ -1,6 +1,18 @@
 {
-  "default": "26.3.27",
+  "default": "26.4.15",
   "versions": {
+    "26.4.15": {
+      "assets": [
+        {
+          "arch": "linux-64",
+          "file": "Xray-linux-64.zip",
+          "sha256": "8626549737eb4fdb9d6a3c2131b046977c6279fbfbbaa676ec148ebccb71ecfa",
+          "size": 20976808,
+          "url": "https://github.com/XTLS/Xray-core/releases/download/v26.4.15/Xray-linux-64.zip"
+        }
+      ],
+      "released_at": "2026-04-15"
+    },
     "26.3.27": {
       "assets": [
         {

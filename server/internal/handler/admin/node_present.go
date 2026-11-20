@@ -691,12 +691,10 @@ func nodeInboundsOfOK(input map[string]any) (map[string][]int64, bool) {
 }
 
 // isKnownInboundProtocol 判断入站分组名是不是我们认识的协议（防止把表单里的杂键落库）。
+// 取值来自能力表：表里有的协议才是可落库的入站协议。
 func isKnownInboundProtocol(proto string) bool {
-	switch proto {
-	case "vless", "vmess", "trojan", "shadowsocks", "hysteria", "socks", "http", "wireguard", "tunnel":
-		return true
-	}
-	return false
+	_, ok := lookupInboundProtocol(proto)
+	return ok
 }
 
 // inboundIDList 复刻 syncInbounds 的兼容口径：单值也接受（旧数据/前端过渡）。

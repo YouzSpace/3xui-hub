@@ -4,7 +4,7 @@ package admin
 //
 // 为什么单独一套、不复用 api 包的 RateGuardService：
 // api 的 rateLimiter 绑在 api.Handler 的 cache 上，admin 包拿不到 cache；
-// 管理端登录也只有「来源 IP + 用户名」两个维度，不需要 site_configs 那套可调阈值。
+// 管理端登录只有「用户名 + 来源 IP + 全站」三个维度，不需要 site_configs 那套可调阈值。
 //
 // 语义：
 //   - 账号维度（user:用户名）：失败数到阈值即锁，锁定期取剩余时长 —— 与原来一致；
@@ -16,9 +16,20 @@ package admin
 //          ADMIN_LOGIN_IP_FAIL_WINDOW_SECONDS）：挡 issue #142 实测的慢速撞库 ——
 //          每 15~20 秒一次、每次换个用户名，账号维度到不了阈值，每分钟 30 次也
 //          到不了。窗口内失败数到上限即持续拒，直到最老一次失败滑出窗口才放行；
+//   - 全站维度（issue #142 剩余部分）：所有来源 IP 合计的失败数在短窗口内到阈值，
+//     整站冷却一段时间（默认 5 分钟内 100 次失败 → 冷却 120 秒；env
+//     ADMIN_LOGIN_GLOBAL_FAIL_MAX / ADMIN_LOGIN_GLOBAL_FAIL_WINDOW_SECONDS /
+//     ADMIN_LOGIN_GLOBAL_COOLDOWN_SECONDS）。冷却内所有登录请求直接 429、不查库、
+//     也不再计数 —— 挡「轮换 CDN 出口 IP、每个 IP 只失败 1~2 次」的撞库：账号维度
+//     到不了 5 次，IP 维度的失败窗口与每分钟上限也都到不了，只有合计速率抓得住。
+//     冷却到期即恢复（刻意不做「锁到窗口滑空」：否则攻击者一次冲动就能把全站锁上
+//     十几分钟）；冷却结束后若窗口内失败数仍在上限之上，下一次失败会立刻
+//     重新触发一轮冷却 —— 攻击者被压到「每轮冷却最多再试一次」，正常管理员只要密码
+//     正确就能立刻登录（成功登录不计数、也不清全站窗口，否则握一个合法账号即可刷掉
+//     全站计数）；
 //   - 判定（blocked）排在查库之前 —— 限流/锁定期内连正确密码也拒，且不做任何凭据比对；
 //   - 账号不存在、密码错误、2FA 输错共用同一套计数（对外文案见 handler）；
-//   - 登录成功清掉账号维度的失败计数（IP 维度不因成功而重置）；
+//   - 登录成功清掉账号维度的失败计数（IP / 全站维度不因成功而重置）；
 //   - 计数只在内存（进程重启即清空），惰性清理过期项 + 条目数硬上限，防止被灌大内存；
 //   - 登录失败的审计由 recordFailure 返回的汇总事件驱动：同一来源 IP 在一个失败窗口
 //     内只落一条 type='system' 记录（带次数），不再一次失败一行 —— 否则一次爆破
@@ -66,13 +77,33 @@ const (
 	defaultLoginIPFailMax           = 10
 	defaultLoginIPFailWindowSeconds = 600
 
+	// defaultLoginGlobalFailMax / defaultLoginGlobalFailWindowSeconds /
+	// defaultLoginGlobalCooldownSeconds 是全站维度（所有来源 IP 合计）的默认值：
+	// 5 分钟内全站累计 100 次登录失败 → 整站冷却 120 秒。
+	//
+	// 取值依据（issue #142 实测：轮换 CDN 出口 IP，每个 IP 只失败 1~2 次）：
+	// 管理端登录量极小（几个管理员手工登录），5 分钟内 100 次失败只可能是撞库，
+	// 正常业务碰不到 —— 这一维只在「合计速率」明显异常时触发，不进正常路径。
+	// 冷却只 120 秒且成功登录不受影响：冷却一到期，正常管理员用正确密码立刻能进；
+	// 攻击者则每轮冷却最多再试一次（一失败就重新触发冷却）。
+	defaultLoginGlobalFailMax           = 100
+	defaultLoginGlobalFailWindowSeconds = 300
+	defaultLoginGlobalCooldownSeconds   = 120
+
 	// envAdminLoginMaxAttempts / envAdminLoginLockSeconds / envAdminLoginIPPerMinute /
-	// envAdminLoginIPFailMax / envAdminLoginIPFailWindowSeconds 是可调项的变量名。
+	// envAdminLoginIPFailMax / envAdminLoginIPFailWindowSeconds /
+	// envAdminLoginGlobalFailMax / envAdminLoginGlobalFailWindowSeconds /
+	// envAdminLoginGlobalCooldownSeconds 是可调项的变量名。
 	envAdminLoginMaxAttempts         = "ADMIN_LOGIN_MAX_ATTEMPTS"
 	envAdminLoginLockSeconds         = "ADMIN_LOGIN_LOCK_SECONDS"
 	envAdminLoginIPPerMinute         = "ADMIN_LOGIN_IP_PER_MINUTE"
 	envAdminLoginIPFailMax           = "ADMIN_LOGIN_IP_FAIL_MAX"
 	envAdminLoginIPFailWindowSeconds = "ADMIN_LOGIN_IP_FAIL_WINDOW_SECONDS"
+
+	// 全站维度（issue #142 剩余部分）的三个可调项。
+	envAdminLoginGlobalFailMax           = "ADMIN_LOGIN_GLOBAL_FAIL_MAX"
+	envAdminLoginGlobalFailWindowSeconds = "ADMIN_LOGIN_GLOBAL_FAIL_WINDOW_SECONDS"
+	envAdminLoginGlobalCooldownSeconds   = "ADMIN_LOGIN_GLOBAL_COOLDOWN_SECONDS"
 
 	// loginIPWindow 是 IP 维度「每分钟尝试次数」的计数窗口（固定 1 分钟，不可配）。
 	loginIPWindow = time.Minute
@@ -84,6 +115,16 @@ const (
 	// maxLoginIPFailWindowSeconds 是 IP 失败窗口的上限（24 小时）：再长就是配错，
 	// 按非法值回退默认，同时挡住 time.Duration 溢出。
 	maxLoginIPFailWindowSeconds = 24 * 3600
+
+	// maxLoginGlobalFailMax 是全站失败阈值的上限（10 万次）：再大就是配错，按非法值
+	// 回退默认。全站窗口要为每次失败存一个时间戳，阈值即这个切片的长度上限
+	// （10 万项约 2MB 量级），不设上限等于把内存交给配错的人。
+	maxLoginGlobalFailMax = 100000
+
+	// maxLoginGlobalFailWindowSeconds / maxLoginGlobalCooldownSeconds 是全站窗口与
+	// 冷却的上限（24 小时）：超了按配错回退默认，同时挡住 time.Duration 溢出。
+	maxLoginGlobalFailWindowSeconds = 24 * 3600
+	maxLoginGlobalCooldownSeconds   = 24 * 3600
 
 	// loginGuardMaxEntries 是计数表条目上限。正常量级（几个管理员 + 少量来源 IP）
 	// 远用不到，它挡的是「拿海量不同 IP / 用户名灌计数表」的撑内存手法。
@@ -126,20 +167,25 @@ type loginAuditEvent struct {
 
 // loginGuard 是登录失败计数器。并发安全（一次登录可能同时被两个请求命中）。
 type loginGuard struct {
-	mu           sync.Mutex
-	entries      map[string]*loginAttempt         // "user:" 失败计数 + "ip:" 每分钟尝试计数
-	ipFailures   map[string]*loginIPFailureWindow // 来源 IP 的失败滑动窗口
-	now          func() time.Time
-	maxAttempts  int
-	lockFor      time.Duration
-	ipPerMinute  int
-	ipFailMax    int
-	ipFailWindow time.Duration
-	maxEntries   int
-	lastSweep    time.Time
+	mu               sync.Mutex
+	entries          map[string]*loginAttempt         // "user:" 失败计数 + "ip:" 每分钟尝试计数
+	ipFailures       map[string]*loginIPFailureWindow // 来源 IP 的失败滑动窗口
+	globalFailures   []time.Time                      // 全站失败滑动窗口（所有 IP 合计，升序）
+	globalBlockUntil time.Time                        // 全站冷却截止时刻（零值 / 已过 = 未触发）
+	now              func() time.Time
+	maxAttempts      int
+	lockFor          time.Duration
+	ipPerMinute      int
+	ipFailMax        int
+	ipFailWindow     time.Duration
+	globalFailMax    int
+	globalFailWindow time.Duration
+	globalCooldown   time.Duration
+	maxEntries       int
+	lastSweep        time.Time
 }
 
-// newLoginGuardFromEnv 按 env 构造计数器；非法值（非整数 / <=0 / 时长超上限）回退默认。
+// newLoginGuardFromEnv 按 env 构造计数器；非法值（非整数 / <=0 / 超上限）回退默认。
 func newLoginGuardFromEnv() *loginGuard {
 	lockSec := envPositiveInt(envAdminLoginLockSeconds, defaultLoginLockSeconds)
 	if lockSec > maxLoginLockSeconds {
@@ -149,6 +195,18 @@ func newLoginGuardFromEnv() *loginGuard {
 	if failWindowSec > maxLoginIPFailWindowSeconds {
 		failWindowSec = defaultLoginIPFailWindowSeconds
 	}
+	globalFailMax := envPositiveInt(envAdminLoginGlobalFailMax, defaultLoginGlobalFailMax)
+	if globalFailMax > maxLoginGlobalFailMax {
+		globalFailMax = defaultLoginGlobalFailMax
+	}
+	globalWindowSec := envPositiveInt(envAdminLoginGlobalFailWindowSeconds, defaultLoginGlobalFailWindowSeconds)
+	if globalWindowSec > maxLoginGlobalFailWindowSeconds {
+		globalWindowSec = defaultLoginGlobalFailWindowSeconds
+	}
+	globalCooldownSec := envPositiveInt(envAdminLoginGlobalCooldownSeconds, defaultLoginGlobalCooldownSeconds)
+	if globalCooldownSec > maxLoginGlobalCooldownSeconds {
+		globalCooldownSec = defaultLoginGlobalCooldownSeconds
+	}
 	g := newLoginGuard(
 		envPositiveInt(envAdminLoginMaxAttempts, defaultLoginMaxAttempts),
 		time.Duration(lockSec)*time.Second,
@@ -157,6 +215,9 @@ func newLoginGuardFromEnv() *loginGuard {
 	g.ipPerMinute = envPositiveInt(envAdminLoginIPPerMinute, defaultLoginIPPerMinute)
 	g.ipFailMax = envPositiveInt(envAdminLoginIPFailMax, defaultLoginIPFailMax)
 	g.ipFailWindow = time.Duration(failWindowSec) * time.Second
+	g.globalFailMax = globalFailMax
+	g.globalFailWindow = time.Duration(globalWindowSec) * time.Second
+	g.globalCooldown = time.Duration(globalCooldownSec) * time.Second
 	return g
 }
 
@@ -172,16 +233,19 @@ func newLoginGuard(maxAttempts int, lockFor time.Duration, now func() time.Time)
 		now = time.Now
 	}
 	return &loginGuard{
-		entries:      make(map[string]*loginAttempt),
-		ipFailures:   make(map[string]*loginIPFailureWindow),
-		now:          now,
-		maxAttempts:  maxAttempts,
-		lockFor:      lockFor,
-		ipPerMinute:  defaultLoginIPPerMinute,
-		ipFailMax:    defaultLoginIPFailMax,
-		ipFailWindow: defaultLoginIPFailWindowSeconds * time.Second,
-		maxEntries:   loginGuardMaxEntries,
-		lastSweep:    now(),
+		entries:          make(map[string]*loginAttempt),
+		ipFailures:       make(map[string]*loginIPFailureWindow),
+		now:              now,
+		maxAttempts:      maxAttempts,
+		lockFor:          lockFor,
+		ipPerMinute:      defaultLoginIPPerMinute,
+		ipFailMax:        defaultLoginIPFailMax,
+		ipFailWindow:     defaultLoginIPFailWindowSeconds * time.Second,
+		globalFailMax:    defaultLoginGlobalFailMax,
+		globalFailWindow: defaultLoginGlobalFailWindowSeconds * time.Second,
+		globalCooldown:   defaultLoginGlobalCooldownSeconds * time.Second,
+		maxEntries:       loginGuardMaxEntries,
+		lastSweep:        now(),
 	}
 }
 
@@ -193,14 +257,16 @@ func loginIPKey(ip string) string     { return "ip:" + strings.TrimSpace(ip) }
 func loginUserKey(name string) string { return "user:" + normalizeLoginUsername(name) }
 
 // 空 IP / 空用户名一律不入键 —— 否则所有「没带用户名」的请求会挤进同一个桶，
-// 互相锁死。两个维度的入键判断分别写在 blocked / recordFailure 里。
+// 互相锁死。账号 / IP 两个维度的入键判断分别写在 blocked / recordFailure 里
+// （全站维度不按键，所有失败合计）。
 
 // blocked 判断是否应拒绝本次登录。返回 true 时同时给出还需等待的时长。
 //
-// 三个判定规则不同：
+// 四个判定规则不同：
 //   - user: 失败数到阈值 → 锁 session（默认 900 秒）；
 //   - ip:   窗口内尝试次数到每分钟上限 → 只等本分钟结束（最多 60 秒），不产生长锁；
-//   - ip:   失败滑动窗口内失败数到上限 → 等到最老一次失败滑出窗口（最多一个窗口）。
+//   - ip:   失败滑动窗口内失败数到上限 → 等到最老一次失败滑出窗口（最多一个窗口）；
+//   - 全站: 冷却期内 → 一律拒，等到冷却结束（最长一个冷却，默认 120 秒）。
 func (g *loginGuard) blocked(ip, username string) (bool, time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -209,6 +275,11 @@ func (g *loginGuard) blocked(ip, username string) (bool, time.Duration) {
 	g.sweepLocked(now)
 
 	var remaining time.Duration
+	// 全站冷却优先：命中时本次请求直接拒，既不查库也不计入任何维度
+	// （handler 在 blocked 之后才查库，这里返回非零 remaining 即可拦住）。
+	if now.Before(g.globalBlockUntil) {
+		remaining = g.globalBlockUntil.Sub(now)
+	}
 	pick := func(e *loginAttempt, threshold int) {
 		if e == nil || threshold <= 0 || e.hits < threshold {
 			return
@@ -269,7 +340,7 @@ func (g *loginGuard) recordAttempt(ip string) {
 	g.trimLocked(now)
 }
 
-// recordFailure 给账号维度记一次失败，并推进来源 IP 的失败滑动窗口
+// recordFailure 给账号维度记一次失败，并推进来源 IP 的失败滑动窗口与全站失败窗口
 // （IP 维度的「每分钟尝试次数」已由 recordAttempt 记过）。
 //
 // 放行前已经判过锁，所以这里不再判断是否已锁 —— 锁定期内的请求根本走不到这一步，
@@ -325,6 +396,12 @@ func (g *loginGuard) recordFailure(ip, username string) *loginAuditEvent {
 		ipFailures, accounts = len(w.failures), len(w.users)
 	}
 
+	// 全站维度：所有来源 IP 合计的失败滑动窗口 —— 与 IP 是否为空、ipFailMax 是否
+	// 开启都无关（空 IP / 关掉 IP 维度都不能成为绕过全站速率的路径）。
+	// 命中即整站冷却 globalCooldown 秒；冷却内 blocked 直接拒、不再走到这里，
+	// 所以冷却不会被自己的请求无限顺延。
+	g.recordGlobalFailureLocked(now)
+
 	if !ipLimited && !accountLocked {
 		g.trimLocked(now)
 		return nil
@@ -377,11 +454,48 @@ func (g *loginGuard) trimIPFailuresLocked(w *loginIPFailureWindow, now time.Time
 	}
 }
 
+// recordGlobalFailureLocked 把一次失败推进全站滑动窗口，到阈值即开一轮整站冷却。
+//
+// 冷却到期**不**把窗口清零：窗口里剩下的失败仍算数，所以攻击者冷却一结束再试一次
+// 就会立刻重新触发冷却（每轮最多多试一次）；而正常管理员用正确密码登录不产生失败，
+// 冷却一到期就能进 —— 这就是「冷却 N 秒」而不是「锁到窗口滑空」的原因：
+// 后者会让攻击者的一次冲动变成全站十几分钟登不进。
+func (g *loginGuard) recordGlobalFailureLocked(now time.Time) {
+	if g.globalFailMax <= 0 || g.globalFailWindow <= 0 {
+		return
+	}
+	g.trimGlobalLocked(now)
+	g.globalFailures = append(g.globalFailures, now)
+	// 到阈值即停（冷却内不再计数），这里兜住并发与调参：只保留最近的 max 条，
+	// 切片长度因此以 globalFailMax 为上限（env 侧另有 maxLoginGlobalFailMax 兜底）。
+	if len(g.globalFailures) > g.globalFailMax {
+		g.globalFailures = g.globalFailures[len(g.globalFailures)-g.globalFailMax:]
+	}
+	if len(g.globalFailures) >= g.globalFailMax {
+		g.globalBlockUntil = now.Add(g.globalCooldown)
+	}
+}
+
+// trimGlobalLocked 丢掉全站窗口里滑出的失败时刻（升序切片，从头丢）。
+func (g *loginGuard) trimGlobalLocked(now time.Time) {
+	if len(g.globalFailures) == 0 {
+		return
+	}
+	cut := now.Add(-g.globalFailWindow)
+	keep := 0
+	for keep < len(g.globalFailures) && !g.globalFailures[keep].After(cut) {
+		keep++
+	}
+	if keep > 0 {
+		g.globalFailures = append(g.globalFailures[:0], g.globalFailures[keep:]...)
+	}
+}
+
 // clear 清掉账号维度的失败计数（登录成功时调用）。
 //
-// IP 维度**刻意不清**：它是「本分钟尝试次数」与「失败滑动窗口」，不是凭据状态。
+// IP / 全站维度**刻意不清**：它们是「本分钟尝试次数」与「失败滑动窗口」，不是凭据状态。
 // 成功登录若把它清零，攻击者只要握有一个合法账号（或管理员自己顺手登录一次），
-// 就能反复把共享出口 IP 的计数刷回 0，限流形同虚设。
+// 就能反复把共享出口 IP 与全站计数刷回 0，限流形同虚设。
 func (g *loginGuard) clear(ip, username string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -408,6 +522,8 @@ func (g *loginGuard) sweepLocked(now time.Time) {
 			delete(g.ipFailures, ip)
 		}
 	}
+	// 全站窗口不必删：它是个固定长度的切片，空了就是空切片，冷却截止时刻比时间即可。
+	g.trimGlobalLocked(now)
 }
 
 // trimLocked 守住条目上限：到上限先清过期项，仍满则淘汰最早到期的一条。

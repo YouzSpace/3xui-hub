@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"controlhub-server/internal/crypto"
-	"controlhub-server/internal/ss2022"
 )
 
 // 全量配置渲染：逐行对齐 backend/app/Drivers/Xray/XrayConfigService.php。
@@ -332,73 +331,32 @@ func listenOr(listen string) string {
 // SS-2022 多用户（2022-blake3-aes-*-gcm）例外：凭据在用户维度，每用户一把由 uuid
 // 确定性派生的 PSK（与 driver/xray、订阅侧同一派生）—— 内核靠它认人、按 email
 // 统计流量，节点也因此能对账到人。其余 ss 仍是入站级单凭据。
+//
+// 凭据键与形态查表（protocol_clients.go）：一个协议一行，别在这里加 switch 分支。
 // 第二个返回值表示是否注入（对应 PHP 的 null）。
 func clientsFor(d *RenderData, ib RenderInbound) (Array, bool, error) {
-	ssMethod := ""
-	if ib.Protocol == "shadowsocks" {
-		ssMethod = ssMethodOf(ib)
-		if !ss2022.IsMultiUser(ssMethod) {
-			return nil, false, nil
-		}
+	spec := inboundClientSpecOf(ib.Protocol)
+	env := &inboundClientEnv{ib: ib}
+	if spec.Prepare != nil && !spec.Prepare(env) {
+		return nil, false, nil
 	}
 
+	// 用户全协议通用：每个入站都注入所有人，不按 users.protocol 过滤。
+	//
+	// 这份渲染器才是真正把配置发给节点 agent 的那个（driver/xray/config.go 里
+	// 那份是另一条路径）。之前只改了后者，结果所有 hysteria 入站在节点上
+	// clients=0 —— 订阅里有 hy2 链接，但节点上没有任何用户被授权，谁连都连不上。
+	//
+	// spec.Build 为空 = 该协议没有逐用户凭据（socks / http / tunnel / wireguard 与未知协议）。
 	clients := Array{}
-	for _, u := range d.Users {
-		// 用户全协议通用：每个入站都注入所有人，不按 users.protocol 过滤。
-		//
-		// 这份渲染器才是真正把配置发给节点 agent 的那个（driver/xray/config.go 里
-		// 那份是另一条路径）。之前只改了后者，结果所有 hysteria 入站在节点上
-		// clients=0 —— 订阅里有 hy2 链接，但节点上没有任何用户被授权，谁连都连不上。
-		var client Object
-		switch ib.Protocol {
-		case "vless":
-			client = Object{
-				{Key: "id", Value: u.UUID},
-				{Key: "email", Value: clientEmailOf(u)},
-				{Key: "totalGB", Value: u.TrafficLimit},
-				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
-			}
-			if flowApplies(ib) {
+	if spec.Build != nil {
+		for _, u := range d.Users {
+			client := spec.Build(u, env)
+			if spec.Flow && streamAllowsFlow(ib) {
 				client = append(client, Member{Key: "flow", Value: FLOW})
 			}
-		case "vmess":
-			client = Object{
-				{Key: "id", Value: u.UUID},
-				{Key: "email", Value: clientEmailOf(u)},
-				{Key: "totalGB", Value: u.TrafficLimit},
-				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
-			}
-		case "trojan":
-			// trojan 以密码定位用户：统一用 uuid 作密码（面板侧保证唯一）。
-			client = Object{
-				{Key: "password", Value: u.UUID},
-				{Key: "email", Value: clientEmailOf(u)},
-				{Key: "totalGB", Value: u.TrafficLimit},
-				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
-			}
-		case "hysteria":
-			// Hysteria2 以 auth 令牌定位用户（键名是 auth，不是 password/id）：
-			// 沿用 uuid 作令牌，与订阅侧 hysteria2:// 链接的密码同源。
-			client = Object{
-				{Key: "auth", Value: u.UUID},
-				{Key: "email", Value: clientEmailOf(u)},
-				{Key: "totalGB", Value: u.TrafficLimit},
-				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
-			}
-		case "shadowsocks":
-			// SS-2022 多用户：password 是该用户的 PSK（内核按它区分身份 / 统计流量）。
-			// 刻意不带 method —— 2022 多用户下内核拒绝 client 自带的 method。
-			client = Object{
-				{Key: "password", Value: ss2022.ClientKey(ssMethod, u.UUID)},
-				{Key: "email", Value: clientEmailOf(u)},
-				{Key: "totalGB", Value: u.TrafficLimit},
-				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
-			}
-		default:
-			// 未知协议：PHP 的 match 返回 null，不注入该用户。
-			continue
+			clients = append(clients, client)
 		}
-		clients = append(clients, client)
 	}
 
 	// 中转凭据：面板在目标入站上为来源节点自动生成的 client。
@@ -406,14 +364,7 @@ func clientsFor(d *RenderData, ib RenderInbound) (Array, bool, error) {
 		if rc.InboundID != ib.ID {
 			continue
 		}
-		switch ib.Protocol {
-		case "trojan":
-			clients = append(clients, Object{{Key: "password", Value: rc.ClientID}})
-		case "hysteria":
-			clients = append(clients, Object{{Key: "auth", Value: rc.ClientID}})
-		default:
-			clients = append(clients, Object{{Key: "id", Value: rc.ClientID}})
-		}
+		clients = append(clients, Object{{Key: spec.RelayCredentialKey, Value: rc.ClientID}})
 	}
 
 	return clients, true, nil
@@ -435,11 +386,10 @@ func expiryZulu(t *time.Time) any {
 	return iso8601Zulu(*t)
 }
 
-// flowApplies 复刻 flowApplies()：仅 vless + tcp + reality/tls。
-func flowApplies(ib RenderInbound) bool {
-	if ib.Protocol != "vless" {
-		return false
-	}
+// streamAllowsFlow 复刻 flowApplies() 里「传输层/安全层是否吃 flow」那一半：
+// tcp + reality/tls。**协议门禁在能力表里**（inboundClientTable 的 Flow 字段，现状仅 vless），
+// 这里不再重复判协议。
+func streamAllowsFlow(ib RenderInbound) bool {
 	streamVal, err := ParseJSON(ib.StreamSettings)
 	if err != nil {
 		return false

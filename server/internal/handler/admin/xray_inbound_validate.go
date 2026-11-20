@@ -14,22 +14,24 @@ import (
 // validateInboundPayload 对齐 validatePayload()。
 func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any) bool {
 	v := newNodeValidator(ctxOf(c), input)
-	// 入站协议白名单：与 XrayInbounds.vue 的协议下拉一一对应，多一项前端提交会被打回、
-	// 少一项协议建不出来。socks / http / tunnel / wireguard 是 P2 补回来的全协议适配：
+	// 入站协议白名单：取自能力表（protocol_registry.go），与 XrayInbounds.vue 的协议下拉
+	// 一一对应 —— 多一项前端提交会被打回、少一项协议建不出来。表里现有
+	// vless / vmess / trojan / shadowsocks / hysteria / socks / http / tunnel / wireguard：
 	//   socks     传统 SOCKS5 代理入站（auth 用户密码）
 	//   http      传统 HTTP 正向代理入站（accounts 用户密码）
 	//   tunnel    dokodemo-door（内核 26.x 的协议名就叫 tunnel）：目标地址+端口原样转发
 	//   wireguard 内核自带 WireGuard 服务端（UDP 监听，server 私钥 + 对端公钥清单）
-	v.field("protocol", "required", "in:vless,vmess,trojan,shadowsocks,hysteria,socks,http,tunnel,wireguard")
+	v.field("protocol", "required", inRule(inboundProtocolNames()))
 	v.field("tag", "nullable", "string", "max:64", "regex:/^[A-Za-z0-9_-]+$/")
 	v.field("remark", "nullable", "string", "max:128")
 	v.field("port", "required", "integer", "between:1,65535")
 	v.field("listen", "nullable", "string", "max:64")
-	// hysteria 也在白名单里：HY2 的传输层由 buildInboundInput 强制归一成 hysteria
+	// 传输层 / 安全层白名单：同样是能力表里的并集（表里受限的行只列它能用的项）。
+	// hysteria 也在传输层白名单里：HY2 的传输层由 buildInboundInput 强制归一成 hysteria
 	// （内核只认这个名字），前端建 HY2 时固定提交 network=hysteria —— 缺了它这条会被
 	// 这里拦成 422「The selected network is invalid.」，整个 HY2 入站根本建不出来。
-	v.field("network", "nullable", "in:tcp,ws,grpc,xhttp,httpupgrade,hysteria")
-	v.field("security", "nullable", "in:none,tls,reality")
+	v.field("network", "nullable", inRule(inboundProtocolNetworks()))
+	v.field("security", "nullable", inRule(inboundProtocolSecurities()))
 	v.field("sniffing", "nullable", "array")
 	v.field("sniffing.enabled", "nullable", "boolean")
 	v.field("sniffing.destOverride", "nullable", "array", "max:4")

@@ -681,6 +681,186 @@ func TestLoginGuardIPFailureEnv(t *testing.T) {
 	})
 }
 
+// ---- 用例 5b：全站失败速率（issue #142 剩余部分：轮换 IP 的慢速撞库）----
+//
+// 实测形态：攻击者轮换 CDN 出口 IP，每个 IP 只失败 1~2 次。账号维度（5 次/账号）
+// 与 IP 维度（10 次失败/10 分钟、30 次尝试/分钟）都到不了阈值 —— 只有「所有来源 IP
+// 合计的失败速率」抓得住。
+//
+// 变异锚点：去掉 recordFailure 里的 recordGlobalFailureLocked 调用（或 blocked 里
+// 的 globalBlockUntil 判断），本节用例全部变红。
+
+func TestLoginGlobalFailureRateBlocksRotatingIPs(t *testing.T) {
+	// 刻意不覆盖全站阈值：用默认值验证「50 个 IP × 各 2 次失败」正好够到
+	// defaultLoginGlobalFailMax（默认 5 分钟 / 100 次）。
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+
+	failures := 0
+	for i := 1; i <= 50; i++ {
+		ip := "198.18.0." + itoa(i) // 50 个互不相同的来源 IP
+		for j := 1; j <= 2; j++ {
+			failures++
+			// 每个用户名只用一次：账号维度永远到不了阈值。
+			user := "ghost-" + itoa(i) + "-" + itoa(j)
+			code, body := postLogin(t, f.h, ip, user, "x", "")
+			if code != http.StatusOK || decodeLogin(t, body).Code != 401 {
+				t.Fatalf("全站第 %d 次失败（阈值 %d）应放行（401），得到 HTTP %d: %s",
+					failures, defaultLoginGlobalFailMax, code, body)
+			}
+		}
+	}
+	if failures != defaultLoginGlobalFailMax {
+		t.Fatalf("本用例应正好攒到默认阈值 %d 次失败，实际 %d 次（默认值被改过？）",
+			defaultLoginGlobalFailMax, failures)
+	}
+
+	// 到阈值后：换一个全新 IP、用正确密码也必须 429（判定在查库之前）。
+	code, body := postLogin(t, f.h, "203.0.113.200", "admin", "correct-horse", "")
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("全站 %d 次失败后应整站 429，得到 HTTP %d: %s", failures, code, body)
+	}
+	if got := decodeLogin(t, body); got.Code != 429 || !strings.Contains(got.Msg, "登录失败次数过多") {
+		t.Fatalf("全站限流响应应为 code 429 + 现有文案，得到 %+v", got)
+	}
+
+	// 冷却期内的请求一律拒，且被拒的请求不再累计失败（否则冷却会被自己无限顺延）。
+	for i := 1; i <= 5; i++ {
+		if code, body := postLogin(t, f.h, "203.0.113.201", "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+			t.Fatalf("冷却期内第 %d 次请求应 429，得到 HTTP %d: %s", i, code, body)
+		}
+	}
+	if got := len(f.h.auth.globalFailures); got != defaultLoginGlobalFailMax {
+		t.Fatalf("冷却期内的请求不应计入全站窗口，窗口应有 %d 条，实际 %d 条", defaultLoginGlobalFailMax, got)
+	}
+}
+
+func TestLoginGlobalFailureRateIgnoresNormalTraffic(t *testing.T) {
+	// 正常业务：零星手滑（10 次、分散在不同 IP / 用户名）不该触发整站冷却。
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+
+	for i := 1; i <= defaultLoginIPFailMax; i++ {
+		postLogin(t, f.h, "198.18.1."+itoa(i), "typo-"+itoa(i), "x", "")
+	}
+
+	// 全站窗口照常计数（证明这一维在工作），但没到阈值。
+	if got := len(f.h.auth.globalFailures); got != defaultLoginIPFailMax {
+		t.Fatalf("全站窗口应记 %d 次失败，实际 %d 次", defaultLoginIPFailMax, got)
+	}
+	// 正常管理员照常登录。
+	if code, body := postLogin(t, f.h, "203.0.113.210", "admin", "correct-horse", ""); code != http.StatusOK ||
+		decodeLogin(t, body).Msg != "登录成功" {
+		t.Fatalf("全站 %d 次失败不应触发整站冷却，得到 HTTP %d: %s", defaultLoginIPFailMax, code, body)
+	}
+}
+
+func TestLoginGlobalFailureCountsEmptyUsername(t *testing.T) {
+	// 空用户名 / 空 IP 也必须计入全站窗口：否则编个空用户名就能绕开全站速率。
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+	f.h.auth.globalFailMax = 3
+	f.h.auth.globalFailWindow = time.Minute
+	f.h.auth.globalCooldown = 30 * time.Second
+
+	for i := 1; i <= 3; i++ {
+		postLogin(t, f.h, "198.18.3."+itoa(i), "", "x", "")
+	}
+	if code, body := postLogin(t, f.h, "203.0.113.215", "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("空用户名的失败也应计入全站窗口，第 4 次应 429，得到 HTTP %d: %s", code, body)
+	}
+}
+
+func TestLoginGlobalCooldownExpiresAndRecovers(t *testing.T) {
+	const ip = "203.0.113.220"
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+	f.h.auth.globalFailMax = 3
+	f.h.auth.globalFailWindow = 5 * time.Minute
+	f.h.auth.globalCooldown = 30 * time.Second
+
+	// 3 个不同 IP 各失败 1 次 → 到全站阈值（IP 维度 1 次，远不到 10 次）。
+	for i := 1; i <= 3; i++ {
+		postLogin(t, f.h, "198.18.2."+itoa(i), "ghost"+itoa(i), "x", "")
+	}
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("全站 3 次失败后应 429，得到 HTTP %d: %s", code, body)
+	}
+
+	// 冷却 30 秒：29 秒时仍拒。
+	f.clock.advance(29 * time.Second)
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("冷却未到期（29s）应仍 429，得到 HTTP %d: %s", code, body)
+	}
+	// 冷却到期自动恢复：正确密码能直接登录（成功登录不计数，也不清窗口）。
+	f.clock.advance(2 * time.Second)
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusOK ||
+		decodeLogin(t, body).Msg != "登录成功" {
+		t.Fatalf("冷却到期（31s）后应恢复登录，得到 HTTP %d: %s", code, body)
+	}
+
+	// 窗口内失败数仍在上限之上：攻击者下一次失败会立刻重新触发一轮冷却，
+	// 也就是每轮冷却最多只能多试一次。
+	if code, body := postLogin(t, f.h, ip, "ghost-retry", "x", ""); code != http.StatusOK ||
+		decodeLogin(t, body).Code != 401 {
+		t.Fatalf("重新触发前的这次失败应回 401，得到 HTTP %d: %s", code, body)
+	}
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("窗口内仍有 3 次失败，再失败一次应立刻重新开冷却，得到 HTTP %d: %s", code, body)
+	}
+}
+
+func TestLoginGuardGlobalEnv(t *testing.T) {
+	t.Run("env 生效", func(t *testing.T) {
+		t.Setenv(envAdminLoginGlobalFailMax, "42")
+		t.Setenv(envAdminLoginGlobalFailWindowSeconds, "90")
+		t.Setenv(envAdminLoginGlobalCooldownSeconds, "15")
+		g := newLoginGuardFromEnv()
+		if g.globalFailMax != 42 {
+			t.Fatalf("ADMIN_LOGIN_GLOBAL_FAIL_MAX=42 应生效，得到 %d", g.globalFailMax)
+		}
+		if g.globalFailWindow != 90*time.Second {
+			t.Fatalf("ADMIN_LOGIN_GLOBAL_FAIL_WINDOW_SECONDS=90 应生效，得到 %v", g.globalFailWindow)
+		}
+		if g.globalCooldown != 15*time.Second {
+			t.Fatalf("ADMIN_LOGIN_GLOBAL_COOLDOWN_SECONDS=15 应生效，得到 %v", g.globalCooldown)
+		}
+	})
+
+	t.Run("默认值保守", func(t *testing.T) {
+		g := newLoginGuardFromEnv()
+		if g.globalFailMax != defaultLoginGlobalFailMax ||
+			g.globalFailWindow != defaultLoginGlobalFailWindowSeconds*time.Second ||
+			g.globalCooldown != defaultLoginGlobalCooldownSeconds*time.Second {
+			t.Fatalf("默认应为 %d 次 / %d 秒 / 冷却 %d 秒，得到 %d 次 / %v / %v",
+				defaultLoginGlobalFailMax, defaultLoginGlobalFailWindowSeconds,
+				defaultLoginGlobalCooldownSeconds, g.globalFailMax, g.globalFailWindow, g.globalCooldown)
+		}
+	})
+
+	t.Run("非法值回退默认", func(t *testing.T) {
+		for _, raw := range []string{"", "abc", "0", "-5"} {
+			t.Setenv(envAdminLoginGlobalFailMax, raw)
+			if got := newLoginGuardFromEnv().globalFailMax; got != defaultLoginGlobalFailMax {
+				t.Fatalf("ADMIN_LOGIN_GLOBAL_FAIL_MAX=%q 应回退默认 %d，得到 %d", raw, defaultLoginGlobalFailMax, got)
+			}
+		}
+		// 超上限（阈值 > 10 万 / 窗口与冷却 > 24h）按配错处理，回退默认。
+		t.Setenv(envAdminLoginGlobalFailMax, "999999999")
+		if got := newLoginGuardFromEnv().globalFailMax; got != defaultLoginGlobalFailMax {
+			t.Fatalf("阈值超上限应回退默认 %d，得到 %d", defaultLoginGlobalFailMax, got)
+		}
+		t.Setenv(envAdminLoginGlobalFailWindowSeconds, "999999999")
+		if got := newLoginGuardFromEnv().globalFailWindow; got != defaultLoginGlobalFailWindowSeconds*time.Second {
+			t.Fatalf("窗口超上限应回退默认 %ds，得到 %v", defaultLoginGlobalFailWindowSeconds, got)
+		}
+		t.Setenv(envAdminLoginGlobalCooldownSeconds, "999999999")
+		if got := newLoginGuardFromEnv().globalCooldown; got != defaultLoginGlobalCooldownSeconds*time.Second {
+			t.Fatalf("冷却超上限应回退默认 %ds，得到 %v", defaultLoginGlobalCooldownSeconds, got)
+		}
+	})
+}
+
 // ---- 用例 6：登录失败审计按 IP 窗口聚合（issue #142 第 3 条）----
 //
 // 原来中间件对每个 POST 无论成败都落一条 operation_logs，实测 18,756 行登录失败

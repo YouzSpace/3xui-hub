@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"controlhub-server/internal/driver/xray"
-	"controlhub-server/internal/ss2022"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,6 +14,9 @@ import (
 // buildInboundInput 对齐 fillFromPayload()（含全部业务校验）。
 func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input map[string]any, existing *XrayInboundRecord) (XrayInboundInput, bool) {
 	protocol := nodeStringField(input, "protocol")
+	// 协议行来自能力表（protocol_registry.go）：支持项、组合限制、传输层归一、
+	// settings 渲染入口都在表里，这里不再按协议写分支。
+	spec := inboundProtocolOf(protocol)
 	network := "tcp"
 	if s, ok := inputString(input["network"]); ok && s != "" {
 		network = s
@@ -25,29 +27,25 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	}
 
 	// 组合合法性（前后端同守）。
-	if security == "reality" && protocol != "vless" {
+	if security == "reality" && len(spec.RealityTransports) == 0 {
 		d.fail(c, "Reality 仅支持 VLESS 协议", 500)
 		return XrayInboundInput{}, false
 	}
-	if security == "reality" && !phpInArray(network, []string{"tcp", "xhttp", "grpc"}) {
+	if security == "reality" && !phpInArray(network, spec.RealityTransports) {
 		d.fail(c, "Reality 仅支持 tcp / xhttp / grpc 传输", 500)
 		return XrayInboundInput{}, false
 	}
-	if protocol == "shadowsocks" && (security != "none" || network != "tcp") {
-		d.fail(c, "Shadowsocks 仅支持 tcp + 无附加安全层", 500)
+	if spec.RejectMessage != "" && (!phpInArray(network, spec.Transports) || !phpInArray(security, spec.Securities)) {
+		d.fail(c, spec.RejectMessage, 500)
 		return XrayInboundInput{}, false
 	}
-	if protocol == "hysteria" {
-		// HY2 的传输层固定：内核只认 network=hysteria + 强制 TLS（QUIC 自带加密）。
-		// 前端不选传输/安全层，这里统一归一，避免历史负载带进非法组合。
-		network = "hysteria"
-		security = "tls"
-	}
-	if protocol == "wireguard" {
-		// WireGuard 自带加密、固定 UDP：传输层与安全层都不存在，归一成空
+	if spec.Normalize {
+		// hysteria：传输层固定 hysteria + 强制 TLS（QUIC 自带加密），前端不选传输/安全层；
+		// wireguard：自带加密、固定 UDP，传输层与安全层都不存在，归一成空
 		// （后面按空值跳过所有传输分支，stream_settings 落库就是 {}）。
-		network = ""
-		security = "none"
+		// 两行都只是把能力表里的归一取值套上去，避免历史负载带进非法组合。
+		network = spec.ForcedNetwork
+		security = spec.ForcedSecurity
 	}
 
 	// Reality 后量子：seed 与 verify 成对。
@@ -106,121 +104,11 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		return XrayInboundInput{}, false
 	}
 
-	// settings
-	var settings *jsObj
-	switch protocol {
-	case "vless":
-		settings = jo("decryption", "none")
-	case "shadowsocks":
-		// 默认 2022-blake3-aes-256-gcm（多用户）：与前端 emptyForm 默认一致，
-		// 新建 ss 入站开箱即按用户区分流量（对齐 3x-ui 默认）。
-		method := "2022-blake3-aes-256-gcm"
-		if s, ok := inputString(input["ss_method"]); ok && s != "" {
-			method = s
-		}
-		settings = jo("method", method)
-		pw := strings.TrimSpace(nodeStringField(input, "ss_password"))
-		if pw == "" && existing != nil && existing.Protocol == "shadowsocks" {
-			// 编辑时留空 = 沿用原值（与 socks/http 的「不改不用重填」同口径）。
-			prev, _ := parseOrderedJS(existing.Settings)
-			pw = strings.TrimSpace(jsonGetString(prev, "password"))
-		}
-		if ss2022.KeyLen(method) > 0 {
-			// SS-2022：服务端 PSK 必须是 base64 且解码后正好 16/32 字节，
-			// 长度不对内核会 "bad key" 拒载**整份**节点配置。留空或非法就现场生成一把
-			// 合法的（前端会把落库的值回显出来，管理员能看到/复制）。
-			if !ss2022.ValidKey(method, pw) {
-				gen, err := ss2022.GenerateKey(method)
-				if err != nil {
-					d.failServer(c, "生成 Shadowsocks-2022 密钥", err)
-					return XrayInboundInput{}, false
-				}
-				pw = gen
-			}
-		} else if pw == "" {
-			// 传统 AEAD 的 password 是自由格式：不校验、不生成，只要求非空。
-			d.fail(c, "Shadowsocks 必须设置密码", 500)
-			return XrayInboundInput{}, false
-		}
-		settings.put("password", pw)
-	case "hysteria":
-		// 内核只接受 version=2；写 1 会让**整份节点配置**被拒（不是只挂这个入站）。
-		settings = jo("version", 2)
-	case "socks", "http":
-		// 传统代理入站。落库形状（xray 26.3.27 实测可跑通真实代理流量）：
-		//   socks = {auth: "password", accounts: [{user, pass}], udp: false}
-		//   http  = {accounts: [{user, pass}], allowTransparent: false}
-		user := strings.TrimSpace(nodeStringField(input, "auth_user"))
-		pass := nodeStringField(input, "auth_pass")
-		if pass == "" && existing != nil {
-			// 密码不回显：编辑时留空 = 沿用原值（重填才改）。
-			prev, _ := parseOrderedJS(existing.Settings)
-			pass = jsonGetString(prev, "accounts", "0", "pass")
-		}
-		if user == "" || pass == "" {
-			d.fail(c, "SOCKS / HTTP 入站必须填写用户名与密码（内核默认 noauth，公网裸代理会被扫端口滥用）", 500)
-			return XrayInboundInput{}, false
-		}
-		account := jo("user", user, "pass", pass)
-		if protocol == "socks" {
-			// udp=false：只占 TCP，与端口族判定（inboundFamiliesOf）同口径。
-			settings = jo("auth", "password", "accounts", jsArr{account}, "udp", false)
-		} else {
-			settings = jo("accounts", jsArr{account}, "allowTransparent", false)
-		}
-	case "tunnel":
-		// dokodemo-door：把收到的流量原样转给 address:port。
-		// 注意 L4 网络是 settings.network（tcp/udp/tcp,udp），写进 streamSettings.network
-		// 会被内核直接拒（unknown transport protocol: udp）。
-		tunAddr := strings.TrimSpace(nodeStringField(input, "tunnel_address"))
-		tunPort := int64(0)
-		if v, present := input["tunnel_port"]; present && v != nil {
-			tunPort = inputInt(v)
-		}
-		if tunAddr == "" || tunPort <= 0 {
-			d.fail(c, "Tunnel 入站必须填写转发目标（地址 + 端口）", 500)
-			return XrayInboundInput{}, false
-		}
-		tunNet, netOK := tunnelNetwork(input)
-		if !netOK {
-			d.fail(c, "Tunnel 转发协议只支持 tcp / udp / tcp,udp", 500)
-			return XrayInboundInput{}, false
-		}
-		settings = jo("address", tunAddr, "port", tunPort, "network", tunNet)
-	case "wireguard":
-		// 内核自带的 WireGuard 服务端：UDP 监听，服务端私钥 + 对端公钥清单。
-		// secretKey 是服务端身份私钥（等同于节点密码），只在库里与下发给节点的配置里出现，
-		// 读接口只回 wg_public_key。
-		secret := ""
-		if existing != nil {
-			prev, _ := parseOrderedJS(existing.Settings)
-			secret = jsonGetString(prev, "secretKey")
-		}
-		if secret == "" {
-			kp, err := xray.WireGuardKeypair()
-			if err != nil {
-				d.failServer(c, "生成 WireGuard 密钥", err)
-				return XrayInboundInput{}, false
-			}
-			secret = kp[0]
-		}
-		peers, ok := wireGuardPeers(nodeStringField(input, "wg_peers"))
-		if !ok {
-			d.fail(c, "WireGuard 对端格式错误：每行「公钥 [允许IP,...]」，公钥为 44 字符 base64", 500)
-			return XrayInboundInput{}, false
-		}
-		mtu := int64(1420)
-		if v, present := input["wg_mtu"]; present && inputInt(v) > 0 {
-			mtu = inputInt(v)
-		}
-		// noKernelTun=true：内核目前只有 gVisor TUN 支持 WireGuard 入站（自带告警），
-		// 显式写上，免得以后内核默认值变化把入站搞挂。
-		settings = jo("secretKey", secret, "mtu", mtu, "noKernelTun", true)
-		if len(peers) > 0 {
-			settings.put("peers", peers)
-		}
-	default:
-		settings = jo()
+	// settings：渲染入口在能力表里（一行一个协议，见 protocol_registry.go 与
+	// xray_inbound_settings.go），这里不再按协议写 switch。
+	settings, ok := spec.Build(&inboundBuild{domain: d, c: c, input: input, existing: existing, spec: spec})
+	if !ok {
+		return XrayInboundInput{}, false
 	}
 
 	// stream_settings
@@ -228,10 +116,10 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	// wireguard 自带加密、固定 UDP，没有可选的传输层与安全层：整段不写
 	// （写入 network 虽然会被内核忽略，但列表页会把它显示成 TCP 入站，误导管理员）。
 	var stream *jsObj
-	if protocol == "wireguard" {
-		stream = jo()
-	} else {
+	if spec.Stream {
 		stream = jo("network", network, "security", security)
+	} else {
+		stream = jo()
 	}
 
 	in := XrayInboundInput{
