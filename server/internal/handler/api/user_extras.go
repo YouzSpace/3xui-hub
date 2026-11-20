@@ -1,6 +1,6 @@
 package api
 
-// user_extras.go 是用户端补充端点（sync-traffic / invite / discount / proxy-store）。
+// user_extras.go 是用户端补充端点（sync-traffic / invite / discount）。
 // 对齐 backend/routes/api.php 中 P0-P9 未覆盖的端点。
 //
 // 这些端点直接用 *sql.DB 查询（Store 接口不暴露 DB()，且不改 P0-P9 已有接口）。
@@ -85,10 +85,6 @@ func (e *UserExtras) Register(r gin.IRouter) {
 	r.GET("/api/sync-traffic/status", e.handleSyncTrafficStatus)
 	r.GET("/api/invite/me", e.handleInviteMe)
 	r.POST("/api/discount/check", e.handleDiscountCheck)
-	r.GET("/api/proxy-store/products", e.handleProxyProducts)
-	r.POST("/api/proxy-store/orders", e.handleProxyOrder)
-	r.GET("/api/proxy-store/entitlements", e.handleProxyEntitlements)
-	r.GET("/api/proxy-store/entitlements/:id/proxies", e.handleProxyEntitlementProxies)
 	// 用户自助重置订阅（换 token + uuid，旧链接失效；不动登录态）。见 user_reset_subscription.go。
 	r.POST("/api/reset-subscription", e.handleResetSubscription)
 	// 账户余额：查余额+流水、兑换码兑换。见 balance_handlers.go。
@@ -508,159 +504,4 @@ func (e *UserExtras) handleDiscountCheck(c *gin.Context) {
 	))
 }
 
-// handleProxyProducts 对齐 ApiProxyStoreController::products。
-func (e *UserExtras) handleProxyProducts(c *gin.Context) {
-	if !e.proxyStoreEnabled(c) {
-		fail(c, "代理商城暂未开放", 403)
-		return
-	}
 
-	rows, err := e.db.QueryContext(c.Request.Context(),
-		"SELECT id, name, subtitle, description FROM proxy_products WHERE is_active = 1 ORDER BY sort_order, id")
-	if err != nil {
-		fail(c, "服务器错误", 500)
-		return
-	}
-	defer rows.Close()
-
-	items := make(jsArr, 0, 16)
-	for rows.Next() {
-		var id int64
-		var name, subtitle, description string
-		if err := rows.Scan(&id, &name, &subtitle, &description); err != nil {
-			continue
-		}
-
-		skuRows, err := e.db.QueryContext(c.Request.Context(),
-			"SELECT id, name, region, traffic_gb, duration_days, price FROM proxy_skus WHERE product_id = ? AND is_active = 1 ORDER BY price",
-			id)
-		if err != nil {
-			continue
-		}
-		skus := make(jsArr, 0, 8)
-		for skuRows.Next() {
-			var skuID int64
-			var skuName, region string
-			var trafficGB, durationDays int64
-			var price float64
-			if err := skuRows.Scan(&skuID, &skuName, &region, &trafficGB, &durationDays, &price); err != nil {
-				continue
-			}
-			skus = append(skus, jo("id", skuID, "name", skuName, "region", region,
-				"traffic_gb", trafficGB, "duration_days", durationDays, "price", price))
-		}
-		skuRows.Close()
-
-		items = append(items, jo("id", id, "name", name, "subtitle", subtitle,
-			"description", description, "skus", skus))
-	}
-
-	success(c, items)
-}
-
-// handleProxyOrder 对齐 ApiProxyStoreController::createOrder。
-func (e *UserExtras) handleProxyOrder(c *gin.Context) {
-	if !e.proxyStoreEnabled(c) {
-		fail(c, "代理商城暂未开放", 403)
-		return
-	}
-
-	var body struct {
-		SkuID int64 `json:"sku_id"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, "参数错误", 400)
-		return
-	}
-
-	success(c, jo("order_id", 0, "status", "pending"), "订单已创建")
-}
-
-// handleProxyEntitlements 对齐 ApiProxyStoreController::entitlements。
-func (e *UserExtras) handleProxyEntitlements(c *gin.Context) {
-	u := currentUser(c)
-
-	rows, err := e.db.QueryContext(c.Request.Context(),
-		"SELECT e.id, s.name, e.status, e.expires_at FROM proxy_entitlements e LEFT JOIN proxy_skus s ON s.id = e.sku_id WHERE e.user_id = ? ORDER BY e.id DESC",
-		u.ID)
-	if err != nil {
-		fail(c, "服务器错误", 500)
-		return
-	}
-	defer rows.Close()
-
-	items := make(jsArr, 0, 8)
-	for rows.Next() {
-		var id int64
-		var skuName sql.NullString
-		var status string
-		var expiresAt sql.NullTime
-		if err := rows.Scan(&id, &skuName, &status, &expiresAt); err != nil {
-			continue
-		}
-		var exp any
-		if expiresAt.Valid {
-			exp = expiresAt.Time.Unix()
-		}
-		var skuNameOut any
-		if skuName.Valid {
-			skuNameOut = skuName.String
-		}
-		items = append(items, jo("id", id, "sku_name", skuNameOut, "status", status, "expires_at", exp))
-	}
-
-	success(c, items)
-}
-
-// handleProxyEntitlementProxies 对齐 ApiProxyStoreController::proxies。
-func (e *UserExtras) handleProxyEntitlementProxies(c *gin.Context) {
-	u := currentUser(c)
-	entID := c.Param("id")
-
-	var ownerID int64
-	err := e.db.QueryRowContext(c.Request.Context(),
-		"SELECT user_id FROM proxy_entitlements WHERE id = ?", entID).Scan(&ownerID)
-	if err == sql.ErrNoRows {
-		fail(c, "接口不存在", 404)
-		return
-	}
-	if err != nil {
-		fail(c, "服务器错误", 500)
-		return
-	}
-	if ownerID != int64(u.ID) {
-		fail(c, "接口不存在", 404)
-		return
-	}
-
-	rows, err := e.db.QueryContext(c.Request.Context(),
-		"SELECT s.host, s.port, s.username, s.password FROM proxy_socks s JOIN proxy_entitlements e ON e.socks_id = s.id WHERE e.id = ?", entID)
-	if err != nil {
-		fail(c, "服务器错误", 500)
-		return
-	}
-	defer rows.Close()
-
-	items := make(jsArr, 0, 8)
-	for rows.Next() {
-		var host, username, password string
-		var port int64
-		if err := rows.Scan(&host, &port, &username, &password); err != nil {
-			continue
-		}
-		items = append(items, jo("host", host, "port", port, "username", username, "password", password))
-	}
-
-	success(c, items)
-}
-
-// proxyStoreEnabled 检查代理商城开关。
-func (e *UserExtras) proxyStoreEnabled(c *gin.Context) bool {
-	var val string
-	err := e.db.QueryRowContext(c.Request.Context(),
-		"SELECT value FROM site_configs WHERE key = 'proxy_store_enabled'").Scan(&val)
-	if err != nil {
-		return false
-	}
-	return val == "1"
-}

@@ -36,9 +36,6 @@ const { page, loading, loadError, pagination, hasPrev, hasNext, prev, next, fetc
 const modalOpen = ref(false)
 const editing = ref(null)
 const form = ref({ email: '', plan_id: null, enabled: true })
-// 编辑弹窗里的代理权益明细（只读）—— 代理是独立商品，不走套餐模板
-const editProxies = ref([])
-const editProxyLoading = ref(false)
 // 保存提交中：按钮转圈并防重入（节点多时 updateUser 要同步等各节点，不能被反复点击）
 const saving = ref(false)
 const saved = ref(false)
@@ -281,19 +278,6 @@ const openEdit = async (u) => {
     enabled: u.enabled,
   }
   modalOpen.value = true
-
-  // 代理权益只读展示：代理是独立商品，不在「套餐模板」里分配，
-  // 所以编辑弹窗要单独把「这个用户买了哪些代理」列出来，避免误以为没买。
-  editProxies.value = []
-  editProxyLoading.value = true
-  try {
-    const detail = await adminApi.getUser(u.id)
-    editProxies.value = detail?.proxies || []
-  } catch (e) {
-    editProxies.value = []
-  } finally {
-    editProxyLoading.value = false
-  }
 }
 
 const save = async () => {
@@ -596,9 +580,6 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
                   {{ u.plan_name }}
                 </Badge>
                 <span v-else class="au-muted">无</span>
-                <Badge v-if="u.proxy_active_count" variant="info" size="sm" class="au-proxy-badge" title="代理商城：生效中的代理数量（与节点套餐无关）">
-                  代理 {{ u.proxy_active_count }}
-                </Badge>
               </td>
               <td class="au-bound-nodes">{{ boundNodesText(u) }}</td>
               <td class="mono au-traffic-cell">{{ trafficDisplay(u) }}</td>
@@ -669,25 +650,6 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
           <span>启用</span>
         </label>
 
-        <!-- 代理权益（只读）-->
-        <div class="au-proxy-box">
-          <div class="au-proxy-title">
-            代理权益
-            <span class="au-proxy-note">代理是单独的商品，用户自己在代理商城购买，不在上面的套餐模板里分配</span>
-          </div>
-          <p v-if="editProxyLoading" class="au-muted">加载中…</p>
-          <p v-else-if="!editProxies.length" class="au-muted">未购买代理</p>
-          <div v-else class="au-proxy-list">
-            <div v-for="p in editProxies" :key="p.id" class="au-proxy-line">
-              <Badge :variant="p.status === 'active' ? 'success' : 'warning'" size="sm">{{ p.kind_label }}</Badge>
-              <span class="au-proxy-sku">{{ p.sku_name || '—' }}</span>
-              <span class="au-muted">
-                到期 {{ p.expires_at ? new Date(p.expires_at).toLocaleDateString() : '—' }}
-                <template v-if="p.status !== 'active'">· {{ p.status === 'expired' ? '已到期' : '已停用' }}</template>
-              </span>
-            </div>
-          </div>
-        </div>
       </div>
       <template #footer>
         <Button variant="secondary" size="sm" :disabled="saving" @click="modalOpen = false">取消</Button>
@@ -716,19 +678,6 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
           <span class="au-detail-label">流量重置</span>
           <span class="au-detail-value">
             {{ Math.max(0, Math.ceil((new Date(detail.next_traffic_reset_at) - new Date()) / (1000 * 60 * 60 * 24))) }} 天后
-          </span>
-        </div>
-        <div class="au-detail-row">
-          <span class="au-detail-label">代理</span>
-          <span class="au-detail-value">
-            <template v-if="detail.proxies?.length">
-              <div v-for="p in detail.proxies" :key="p.id" class="au-proxy-line">
-                <Badge :variant="p.status === 'active' ? 'success' : 'warning'" size="sm">{{ p.kind_label }}</Badge>
-                <span class="au-proxy-sku">{{ p.sku_name || '—' }}</span>
-                <span class="au-muted">到期 {{ p.expires_at ? new Date(p.expires_at).toLocaleDateString() : '—' }}</span>
-              </div>
-            </template>
-            <span v-else>未购买代理</span>
           </span>
         </div>
         <div class="au-detail-row">

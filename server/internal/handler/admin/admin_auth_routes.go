@@ -14,6 +14,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +34,9 @@ type AdminAuthRoutes struct {
 	// lookupAdmin 按用户名取登录所需凭据；查不到返回 (nil, nil)。
 	// 默认实现查 admins 表，单测替换成内存实现（不连库）。
 	lookupAdmin func(ctx context.Context, username string) (*adminCredentials, error)
+	// auditLogin 落「登录失败到阈值」的汇总审计（operation_logs.type='system'）。
+	// 默认实现写库，单测替换成内存捕获（不连库）。
+	auditLogin func(ctx context.Context, ev *loginAuditEvent) error
 }
 
 // adminCredentials 是登录校验要用到的管理员凭据快照。
@@ -48,6 +52,7 @@ type adminCredentials struct {
 func NewAdminAuthRoutes(app *httpx.App, db *sql.DB) *AdminAuthRoutes {
 	h := &AdminAuthRoutes{app: app, db: db, now: time.Now, auth: newLoginGuardFromEnv()}
 	h.lookupAdmin = h.queryAdminByUsername
+	h.auditLogin = h.insertLoginFailureAudit
 	return h
 }
 
@@ -140,14 +145,72 @@ func (h *AdminAuthRoutes) Login(c *gin.Context) {
 
 // loginFailure 记一次失败（两个维度各一次）并按原口径回 401。
 // 第 N 次失败本身仍回 401；紧接的第 N+1 次才会被判锁回 429（外部验收口径）。
+//
+// 审计：逐条明细不再落库（登录失败由 httpx.OperationLogMiddleware 按 OpLogSkipKey
+// 跳过），改为在失败数到阈值时只写一条汇总（type='system'，带窗口内次数）——
+// issue #142 实测 18,756 行登录失败把审计表占了 92.5%，真正的系统事件被埋。
 func (h *AdminAuthRoutes) loginFailure(c *gin.Context, ip, username, msg string) {
-	h.auth.recordFailure(ip, username)
+	ev := h.auth.recordFailure(ip, username)
+	c.Set(httpx.OpLogSkipKey, true)
+	if ev != nil && h.auditLogin != nil {
+		// 用 Background 而不是请求 ctx：审计不该因为客户端断开就丢。
+		if err := h.auditLogin(context.Background(), ev); err != nil {
+			log.Printf("记录登录失败汇总失败: %v", err)
+		}
+	}
 	h.fail(c, msg, 401)
+}
+
+// loginAuditAction 是登录失败汇总写进 operation_logs.action 的固定值，
+// 审计页按 action 就能筛出爆破告警。
+const loginAuditAction = "登录爆破告警"
+
+// insertLoginFailureAudit 写一条系统审计（operation_logs.type='system'）。
+//
+// 与逐条明细的区别：一行代表「某来源 IP 在一个失败窗口内达到阈值」这个事件，
+// 带窗口内失败次数、涉及账号数与样本用户名，审计页首屏能直接看见；被限流期间的
+// 每次 429 不再各写一行（handler 侧统一置 OpLogSkipKey）。
+func (h *AdminAuthRoutes) insertLoginFailureAudit(ctx context.Context, ev *loginAuditEvent) error {
+	if h.db == nil {
+		return nil
+	}
+	ip := strings.TrimSpace(ev.IP)
+	if ip == "" {
+		ip = "未知"
+	}
+	var reasons []string
+	if ev.IPLimited {
+		reasons = append(reasons, "来源 IP 失败次数达到上限")
+	}
+	if ev.AccountLocked {
+		reasons = append(reasons, "账号失败次数达到上限")
+	}
+	// humanDuration 是 agent_upgrade.go 的包内工具（600s → 10 分钟），复用即可。
+	sample := ev.Username
+	if sample == "" {
+		sample = "（空用户名）"
+	}
+	detail := fmt.Sprintf("%s 在 %s 内登录失败 %d 次，涉及 %d 个账号（样本：%s）；触发：%s",
+		ip, humanDuration(ev.Window), ev.IPFailures, ev.Accounts, sample, strings.Join(reasons, "、"))
+
+	var ipArg any
+	if strings.TrimSpace(ev.IP) != "" {
+		ipArg = strings.TrimSpace(ev.IP)
+	}
+	_, err := h.db.ExecContext(ctx,
+		`INSERT INTO operation_logs (type, actor_name, action, method, path, status, error, ip, created_at)
+		 VALUES ('system', 'login-guard', ?, 'POST', 'admin-api/login', 401, ?, ?, ?)`,
+		loginAuditAction, detail, ipArg, time.Now().UTC(),
+	)
+	return err
 }
 
 // failLocked 输出锁定期的 429：body code 与 HTTP status 都是 429
 // （外部扫描器/网关按 http status 判定，前端仍可读 body code）。
 func (h *AdminAuthRoutes) failLocked(c *gin.Context, retryAfter time.Duration) {
+	// 限流期间的每次 429 不落审计明细：同一个 IP 的这次（这轮）爆破已经由
+	// loginFailure 落过一条汇总，再逐条记只会把审计表重新灌满。
+	c.Set(httpx.OpLogSkipKey, true)
 	secs := int(retryAfter/time.Second) + 1 // 向上取整，至少 1 秒
 	if secs < 1 {
 		secs = 1

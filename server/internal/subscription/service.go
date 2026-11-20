@@ -2,10 +2,12 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,52 +61,99 @@ func (s *siteConfigReader) get(key, def string) string {
 	return def
 }
 
+// generateOutcome 是一次订阅渲染的完整结果。
+//
+// partial=true 表示本次渲染里至少有一个节点取数失败（含请求取消/超时）：
+// 正文只是残缺快照，调用方**必须**据此跳过缓存 —— 否则用户在整个 TTL 内反复
+// 拿到少节点的订阅，重试也不会恢复（issue #141）。
+type generateOutcome struct {
+	body    string
+	partial bool
+}
+
+// renderStats 累积一次渲染中的节点取数失败次数。
+//
+// 并发取链的 goroutine 会同时写，故用 atomic；只关心「有没有」，不看具体条数。
+type renderStats struct {
+	failures atomic.Int64
+}
+
+// markFailed 记一次节点取数失败（失败原因由调用点负责记日志）。
+func (st *renderStats) markFailed() { st.failures.Add(1) }
+
+// partial 表示本次渲染是否残缺（有节点取数失败）。
+func (st *renderStats) partial() bool { return st.failures.Load() > 0 }
+
+// isContextErr 判断错误是否来自请求取消 / 超时（errors.Is 可穿透 *url.Error 等包装）。
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// contextErrHint 给日志补一句「这是请求被取消，不是节点坏了」，便于区分两类失败。
+func contextErrHint(err error) string {
+	if isContextErr(err) {
+		return "（请求已取消或超时）"
+	}
+	return ""
+}
+
 // Generate 生成订阅内容。校验失败返回 *Error（对应 SubscriptionException）。
 //
-// 对应 SubscriptionService::generate()。
+// 对应 SubscriptionService::generate()。残缺标记在这里被丢弃：
+// 需要它来决定「能不能写缓存」的调用方（handler）走 generate。
 func (s *Service) Generate(ctx context.Context, user *User, format Format) (string, error) {
+	out, err := s.generate(ctx, user, format)
+	return out.body, err
+}
+
+// generate 是真正的生成实现：与 Generate 同口径，额外报告本次渲染是否残缺。
+func (s *Service) generate(ctx context.Context, user *User, format Format) (generateOutcome, error) {
+	st := &renderStats{}
+
 	cfg, err := s.loadSiteConfigs(ctx)
 	if err != nil {
-		return "", err
+		return generateOutcome{}, err
 	}
 
 	plan, err := s.loadPlan(ctx, user)
 	if err != nil {
-		return "", err
+		return generateOutcome{}, err
 	}
 
 	if err := ensureUsable(user, s.now()); err != nil {
-		return "", err
+		return generateOutcome{}, err
 	}
 
-	links, err := s.getLinks(ctx, user, plan, cfg)
+	links, err := s.getLinks(ctx, user, plan, cfg, st)
 	if err != nil {
-		return "", err
+		return generateOutcome{}, err
 	}
+
+	partial := st.partial()
 
 	if len(links) == 0 {
 		// 全空时不静默返回：xray 节点最常见的原因是「已启用、在线，但没填连接地址」——
 		// 链接由 host 拼出，host 为空则一条都产不出。给出可诊断的原因（404 + 说明）。
 		blankHost, err := s.repo.HasEnabledOnlineXrayNodeWithoutHost(ctx)
 		if err != nil {
-			return "", err
+			return generateOutcome{}, err
 		}
 		if blankHost {
-			return "", &Error{
+			return generateOutcome{}, &Error{
 				Message: "暂无可用的节点配置：节点尚未设置连接地址，请联系管理员在面板中补充",
 				Code:    404,
 			}
 		}
-		return "", nil
+		return generateOutcome{partial: partial}, nil
 	}
 
 	switch format {
 	case FormatClash:
-		return s.generateClash(user, plan, links, cfg), nil
+		return generateOutcome{body: s.generateClash(user, plan, links, cfg), partial: partial}, nil
 	case FormatSingbox:
-		return s.generateSingbox(user, plan, links, cfg), nil
+		return generateOutcome{body: s.generateSingbox(user, plan, links, cfg), partial: partial}, nil
 	default:
-		return s.generateBase64(user, plan, links, cfg), nil
+		return generateOutcome{body: s.generateBase64(user, plan, links, cfg), partial: partial}, nil
 	}
 }
 
@@ -155,7 +204,9 @@ func (s *Service) loadPlan(ctx context.Context, user *User) (*Plan, error) {
 // 本地节点：套餐「不含本地」时跳过。xray 节点本地拼链接（零 HTTP）；
 // 3x-ui 节点按「协议匹配入站」过滤端口后取链接（生产实现里 Bearer 节点整批并发）。
 // 第三方链接只读本地缓存（后台定时拉取），失败不影响本地订阅。
-func (s *Service) getLinks(ctx context.Context, user *User, plan *Plan, cfg *siteConfigReader) ([]string, error) {
+//
+// st 累积本节点的取数失败：失败节点照旧被跳过（与 PHP 同口径），但整条渲染因此残缺。
+func (s *Service) getLinks(ctx context.Context, user *User, plan *Plan, cfg *siteConfigReader, st *renderStats) ([]string, error) {
 	var links []string
 	email := clientEmail(user.ID)
 
@@ -195,7 +246,7 @@ func (s *Service) getLinks(ctx context.Context, user *User, plan *Plan, cfg *sit
 		// 这里用同一套「分批 + 批内并发 + 按批序收集」：并发只影响耗时，不影响顺序 ——
 		// 结果按 batch 内原顺序落位，与 PHP 的 foreach ($batch as $entry) 一致。
 		for _, batch := range chunkEntries(concurrent, s.concurrency()) {
-			nodeLinks := s.fetchBatchConcurrently(ctx, batch, user, email, cfg)
+			nodeLinks := s.fetchBatchConcurrently(ctx, batch, user, email, cfg, st)
 			for _, perNode := range nodeLinks {
 				links = appendUnique(links, perNode...)
 			}
@@ -204,7 +255,10 @@ func (s *Service) getLinks(ctx context.Context, user *User, plan *Plan, cfg *sit
 		for _, entry := range sequential {
 			nodeLinks, err := s.fetchNodeLinks(ctx, entry.node, entry.inboundIDs, user, email, cfg)
 			if err != nil {
-				return nil, err
+				// 单节点取数失败照旧只跳过该节点（日志已在 fetchNodeLinks 里记），
+				// 但本次渲染残缺 → 不能进缓存。
+				st.markFailed()
+				continue
 			}
 			links = appendUnique(links, nodeLinks...)
 		}
@@ -253,8 +307,9 @@ func chunkEntries(items []nodeEntry, size int) [][]nodeEntry {
 
 // fetchBatchConcurrently 对应 fetchNodeLinksConcurrently()：批内并发取链，按入参顺序返回。
 //
-// 单节点失败只丢该节点（PHP 侧 report 后 continue），不影响同批其它节点。
-func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry, user *User, email string, cfg *siteConfigReader) [][]string {
+// 单节点失败只丢该节点（PHP 侧 report 后 continue），不影响同批其它节点；
+// 但仍要把本次渲染标记为残缺 —— 残缺结果不能进缓存。
+func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry, user *User, email string, cfg *siteConfigReader, st *renderStats) [][]string {
 	results := make([][]string, len(batch))
 	var wg sync.WaitGroup
 
@@ -266,6 +321,7 @@ func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry,
 			nodeLinks, err := s.fetchNodeLinks(ctx, entry.node, entry.inboundIDs, user, email, cfg)
 			if err != nil {
 				results[i] = nil // 与单节点失败同口径：该节点不产出链接
+				st.markFailed()
 				return
 			}
 			results[i] = nodeLinks
@@ -277,43 +333,55 @@ func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry,
 }
 
 // fetchNodeLinks 对应 fetchNodeLinks()（单节点）：单节点失败只记日志，不影响其它节点。
+//
+// 返回 error 表示该节点本次取数失败（含请求取消/超时）：链接不可信，调用方只丢该节点，
+// 并把本次渲染标记为残缺。日志在这里统一记（带节点 id/名称），调用方不必重复打。
 func (s *Service) fetchNodeLinks(ctx context.Context, node Node, inboundIDs []int64, user *User, email string, cfg *siteConfigReader) ([]string, error) {
 	var raw []string
 
 	if node.IsXray() {
-		raw = xraySubscriptionURIs(node, user, ctx, s.repo)
+		uris, err := xraySubscriptionURIs(node, user, ctx, s.repo)
+		if err != nil {
+			// 取入站失败不是「该节点没有入站」：必须留痕，否则用户看到订阅少节点却无从追查。
+			s.logf("[sub] 节点 %d/%s 取入站失败%s: %v", node.ID, node.Name, contextErrHint(err), err)
+			return nil, err
+		}
+		raw = uris
 	} else {
 		panelLinks, err := s.repo.PanelLinks(ctx, node, email)
 		if err != nil {
 			// 取链接失败不是「该节点没链接」，必须留痕：否则用户看到订阅少一个节点却无从追查。
-			s.logf("[sub] 节点 %s 取链接失败 user=%d email=%s: %v", node.Name, user.ID, email, err)
-			return nil, nil
+			s.logf("[sub] 节点 %d/%s 取链接失败%s user=%d email=%s: %v",
+				node.ID, node.Name, contextErrHint(err), user.ID, email, err)
+			return nil, err
 		}
 		raw = filterNodeLinks(panelLinks)
 		if len(raw) == 0 {
 			// 节点在线、入站也配了，但该用户在 3x-ui 侧一个 client 都没有 —— 建号没跟上，
 			// 这是「订阅里少节点」最常见的原因，留一条便于定位。
-			s.logf("[sub] 节点 %s 无任何链接 user=%d email=%s（3x-ui 上可能缺 client）", node.Name, user.ID, email)
+			s.logf("[sub] 节点 %d/%s 无任何链接 user=%d email=%s（3x-ui 上可能缺 client）", node.ID, node.Name, user.ID, email)
 		}
 	}
 
 	return s.withMultiplierSuffix(node, raw, cfg), nil
 }
 
-// xraySubscriptionURIs 对应 XrayConfigService::subscriptionUris()（同步取入站，故不返回 error：
-// 读库失败等同于该节点没有入站，PHP 侧异常同样被 catch 掉）。
-func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repository) []string {
+// xraySubscriptionURIs 对应 XrayConfigService::subscriptionUris()。
+//
+// 读库失败**不能**等同于「该节点没有入站」：返回 error 由调用方留日志并标记本次渲染残缺
+// （issue #141：一次请求取消就静默少十几个节点，而且残缺结果还会被缓存一个 TTL）。
+func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repository) ([]string, error) {
 	host := phpTrim(node.Host)
 	hostV6 := node.HostV6()
 	// issue #88：只配了 host_v6、没配 host 的节点仍然可以有 v6 入口的链接，
 	// 所以这里不再以 host 为空直接放弃，改为逐入站选地址。
 	if user.UUID == "" {
-		return nil
+		return nil, nil
 	}
 
 	inbounds, err := repo.XrayInbounds(ctx, node.ID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	uris := make([]string, 0, len(inbounds))
@@ -331,7 +399,7 @@ func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repos
 		uris = append(uris, xrayInboundURI(node, inbound, user, inboundHost))
 	}
 	// PHP 侧 XrayDriver::getClientLinks 返回后还要过一遍 sanitizeLinks（过滤空串、去重）。
-	return sanitizeLinks(uris)
+	return sanitizeLinks(uris), nil
 }
 
 // isBearerNode 对应 canFetchConcurrently()：3x-ui 节点 + api_key 非空（Bearer 无状态）。

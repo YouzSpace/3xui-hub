@@ -90,7 +90,7 @@ func newTestHandler(repo Repository, rateLimit, cacheSeconds int64, now func() t
 	h := &Handler{Service: NewService(repo), Repo: repo, now: now}
 	h.limiter = newTokenLimiter(rateLimit, func() time.Time { return h.now() })
 	h.cache = newRenderCache(cacheSeconds, func() time.Time { return h.now() })
-	h.generator = func(context.Context, *User, Format) (string, error) { return "", nil }
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) { return generateOutcome{}, nil }
 	return h
 }
 
@@ -309,9 +309,9 @@ func TestShowRejectsUppercaseTokenEndToEnd(t *testing.T) {
 	fixed := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	h := newTestHandler(repo, 0, 0, func() time.Time { return fixed })
 	var genCalls atomic.Int64
-	h.generator = func(context.Context, *User, Format) (string, error) {
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
 		genCalls.Add(1)
-		return "SHOULD-NOT-HAPPEN", nil
+		return generateOutcome{body: "SHOULD-NOT-HAPPEN"}, nil
 	}
 
 	// 大写变体 → 404（HTTP 200 + X-CH-Code: 404，保持项目契约）
@@ -513,9 +513,9 @@ func TestCacheHitsGenerateOnlyOnce(t *testing.T) {
 	h := newTestHandler(repo, 0, 300, func() time.Time { return fixed })
 
 	var genCalls atomic.Int64
-	h.generator = func(context.Context, *User, Format) (string, error) {
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
 		genCalls.Add(1)
-		return "SUBSCRIBE-BODY", nil
+		return generateOutcome{body: "SUBSCRIBE-BODY"}, nil
 	}
 
 	const n = 10
@@ -545,11 +545,11 @@ func TestCacheKeyIncludesFormat(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := map[Format]int{}
-	h.generator = func(_ context.Context, _ *User, f Format) (string, error) {
+	h.generator = func(_ context.Context, _ *User, f Format) (generateOutcome, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		seen[f]++
-		return "BODY-" + string(f), nil
+		return generateOutcome{body: "BODY-" + string(f)}, nil
 	}
 
 	// 先 base64，再 clash —— 顺序刻意反过来，专门抓「只按 token 做键」
@@ -583,8 +583,8 @@ func TestCacheExpiresAfterTTL(t *testing.T) {
 	h := newTestHandler(repo, 0, 300, func() time.Time { return now })
 
 	var genCalls atomic.Int64
-	h.generator = func(context.Context, *User, Format) (string, error) {
-		return fmt.Sprintf("gen-%d", genCalls.Add(1)), nil
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
+		return generateOutcome{body: fmt.Sprintf("gen-%d", genCalls.Add(1))}, nil
 	}
 
 	if got := serveShow(t, h, "tok", "").Body.String(); got != "gen-1" {
@@ -609,9 +609,9 @@ func TestCacheDisabledWhenZero(t *testing.T) {
 		t.Fatalf("ttl=0 时 cache 应为 nil（关闭）")
 	}
 	var genCalls atomic.Int64
-	h.generator = func(context.Context, *User, Format) (string, error) {
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
 		genCalls.Add(1)
-		return "x", nil
+		return generateOutcome{body: "x"}, nil
 	}
 	for i := 0; i < 3; i++ {
 		_ = serveShow(t, h, "tok", "")
@@ -629,11 +629,11 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 	h := newTestHandler(repo, 0, 300, func() time.Time { return fixed })
 
 	var calls atomic.Int64
-	h.generator = func(context.Context, *User, Format) (string, error) {
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
 		if calls.Add(1) == 1 {
-			return "", &Error{Message: "流量已耗尽", Code: 403}
+			return generateOutcome{}, &Error{Message: "流量已耗尽", Code: 403}
 		}
-		return "OK-BODY", nil
+		return generateOutcome{body: "OK-BODY"}, nil
 	}
 
 	w := serveShow(t, h, "tok", "")
@@ -658,10 +658,10 @@ func TestCacheSingleFlight(t *testing.T) {
 
 	var genCalls atomic.Int64
 	release := make(chan struct{})
-	h.generator = func(context.Context, *User, Format) (string, error) {
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
 		genCalls.Add(1)
 		<-release // 卡住第一个，让其余请求都堆在 single-flight 上
-		return "ONCE", nil
+		return generateOutcome{body: "ONCE"}, nil
 	}
 
 	const n = 32
@@ -701,8 +701,8 @@ func TestCacheKeyDistinguishesToken(t *testing.T) {
 	}}
 	h := newTestHandler(repo, 0, 300, func() time.Time { return fixed })
 
-	h.generator = func(_ context.Context, u *User, _ Format) (string, error) {
-		return "BODY-" + u.Token, nil
+	h.generator = func(_ context.Context, u *User, _ Format) (generateOutcome, error) {
+		return generateOutcome{body: "BODY-" + u.Token}, nil
 	}
 
 	if got := serveShow(t, h, "tokA", "").Body.String(); got != "BODY-tokA" {
@@ -735,7 +735,9 @@ func TestShowStreamsBodyWhenCacheDisabled(t *testing.T) {
 	fixed := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	repo := &fakeRepo{users: map[string]*User{"tok": testUser(t, "tok")}}
 	h := newTestHandler(repo, 0, 0, func() time.Time { return fixed })
-	h.generator = func(context.Context, *User, Format) (string, error) { return "PLAIN", nil }
+	h.generator = func(context.Context, *User, Format) (generateOutcome, error) {
+		return generateOutcome{body: "PLAIN"}, nil
+	}
 
 	w := serveShow(t, h, "tok", "")
 	if w.Code != http.StatusOK || w.Body.String() != "PLAIN" {

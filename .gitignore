@@ -1,4 +1,6 @@
-docs/
+# docs/ 下是内部笔记，不入库；但贡献者要看的规范文档必须能被提交
+docs/*
+!docs/CODE-STYLE.md
 .hermes/
 MIGRATION.md
 # Go 后端运行时数据（geodata 下载的 geoip/geosite 等，非源码）
@@ -26,3 +28,6 @@ frontend/node_modules/
 
 # 误建的空目录
 server/node_modules/
+
+# 临时诊断/备份产物，一律不进仓库
+sub_diag/

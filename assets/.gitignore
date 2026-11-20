@@ -1,5 +1,8 @@
 # 放行 xray 资产目录全部内容（二进制/脚本/manifest 随面板入库）
 !*
 !.gitignore
-# 例外：agent 二进制只放 Release、不随面板入库（源码在仓库 agent/ 目录），sha256 权威在 manifest
+# 例外 1：agent 二进制只放 Release、不随面板入库（源码在仓库 agent/ 目录）
 node-bin/agent/
+# 例外 2：xray 内核 zip（20MB+）不入库（issue #138），面板本地缺文件时按 manifest 的 url
+# 下载并缓存（server/internal/nodeapi/assets.go 的 fetchRemoteAsset），sha256 权威仍在 manifest
+node-bin/*/*.zip

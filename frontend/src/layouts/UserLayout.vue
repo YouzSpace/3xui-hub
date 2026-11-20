@@ -28,21 +28,12 @@ const navItems = [
     icon: 'home',
   },
   { to: '/dashboard/shop', name: 'user-shop', label: '商店', icon: 'cart' },
-  { to: '/dashboard/proxy', name: 'user-proxy', label: '代理', icon: 'globe', requiresProxyStore: true },
   { to: '/dashboard/more', name: 'user-more', label: '我的', icon: 'person' },
 ]
-
-// 代理商城默认关闭：开关没开时「代理」入口不出现（后端接口同时拒绝，
-// 直接输 URL 会被路由守卫弹回仪表盘 —— 不是只把菜单藏起来）
-const visibleNavItems = computed(() =>
-  navItems.filter((item) => !item.requiresProxyStore || siteConfig.proxyStoreEnabled)
-)
 
 const titles = {
   'user-dashboard': '仪表盘',
   'user-shop': '套餐商店',
-  'user-proxy': '代理商城',
-  'user-proxy-mine': '我的代理',
   'user-more': '我的',
   'user-announcement': '系统公告',
   'user-orders': '我的订单',
@@ -139,7 +130,7 @@ watch(
 
         <nav class="ul-nav">
           <RouterLink
-            v-for="item in visibleNavItems"
+            v-for="item in navItems"
             :key="item.name"
             :to="item.to"
             class="ul-nav-item uu-press"
@@ -212,7 +203,7 @@ watch(
     <!-- 移动端底部 Tab Bar -->
     <nav class="ul-tabbar">
       <RouterLink
-        v-for="item in visibleNavItems"
+        v-for="item in navItems"
         :key="item.name"
         :to="item.to"
         class="ul-tabbar-item uu-press"

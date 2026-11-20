@@ -20,8 +20,10 @@ set -euo pipefail
 
 # 与 install.sh / 3hub 的 INSTALL_DIR 保持一致
 INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/3xui-hub}"
-# ACME 挑战目录：沿用旧路径，老机器的 acme.sh 已把 Le_Webroot 记在自家 conf 里，
-# 换路径会让自动续期静默失败。前端不在这里，只放 .well-known/acme-challenge。
+# ACME 挑战目录：WEBROOT 是唯一真源——nginx conf 的 .well-known root 与 acme.sh 各域名
+# conf 里的 Le_Webroot 都对齐到它（见 sync_acme_webroot）。存量域从旧模板/旧目录迁过来时
+# acme.sh 记的还是旧路径，续期会把挑战文件写到旧目录、nginx 从新目录找 → 404 静默失败。
+# 前端不在这里，只放 .well-known/acme-challenge。
 WEBROOT="${WEBROOT:-${INSTALL_DIR}/frontend/dist}"
 ENV_FILE="${ENV_FILE:-${INSTALL_DIR}/.env}"
 ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
@@ -322,6 +324,145 @@ issue_cert_retry() {
   die_json "acme.sh issue failed for ${domain}（重试 ${times} 次仍失败）"
 }
 
+# ---------------------------------------------------------------------------
+# acme.sh Le_Webroot 对齐（issue #140）
+#
+# acme.sh 续期（--cron）读的是它自己 conf 里的 Le_Webroot，不是我们 --issue 时传的 -w：
+#   ~/.acme.sh/<域名>/<域名>.conf        （ECC 证书在 <域名>_ecc/ 下）
+# 存量域从旧模板/旧目录迁过来时这个值还是旧路径（如 /var/www/acme），而 nginx 的
+# .well-known root 已经指向 ${WEBROOT}：挑战文件写到旧目录、nginx 从新目录找 → 404 →
+# 续期静默失败，证书到期才暴露。而「证书还在有效期」时 acme.sh --issue 直接返回 2 跳过，
+# 传进去的 -w 根本不会落盘，只能改 conf。
+#
+# 这里按「声明式对齐」处理：WEBROOT 是唯一真源，conf 与它不一致就改写（改前备份），
+# 改完立刻 --renew --force 真跑一次 HTTP-01 校验，证明续期链路恢复。
+# 幂等：值已一致时不碰文件、不续期。
+# 返回：0=已改（调用方需再装一次证书）1=无需改 2=写失败
+# ---------------------------------------------------------------------------
+
+# 该域名的 acme.sh conf 路径（RSA 目录 + _ecc 目录，各一行；不存在则不输出）
+acme_conf_paths() {
+  local domain="$1" conf
+  for conf in "${ACME_HOME}/${domain}/${domain}.conf" "${ACME_HOME}/${domain}_ecc/${domain}.conf"; do
+    [[ -f "${conf}" ]] && printf '%s\n' "${conf}"
+  done
+  return 0
+}
+
+# 读 conf 里的 Le_Webroot（去引号）；没有该行输出空
+acme_conf_webroot() {
+  local conf="$1" line
+  line="$(grep -m1 '^Le_Webroot=' "${conf}" 2>/dev/null || true)"
+  [[ -n "${line}" ]] || return 0
+  line="${line#Le_Webroot=}"
+  line="${line#\'}"
+  line="${line%\'}"
+  line="${line#\"}"
+  line="${line%\"}"
+  printf '%s' "${line}"
+}
+
+# 只替换 Le_Webroot 那一行，其余原样保留（写回同一 inode，权限/属主不变）
+acme_conf_set_webroot() {
+  local conf="$1" root="$2" tmp="${conf}.3hub-tmp" line wrote=0
+  : > "${tmp}" || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${wrote}" -eq 0 && "${line}" == Le_Webroot=* ]]; then
+      printf "Le_Webroot='%s'\n" "${root}" >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+      wrote=1
+    else
+      printf '%s\n' "${line}" >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+    fi
+  done < "${conf}"
+  if [[ "${wrote}" -eq 0 ]]; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  cat "${tmp}" > "${conf}" || { rm -f "${tmp}"; return 1; }
+  rm -f "${tmp}"
+  return 0
+}
+
+# 校正后强制续一次，让 acme.sh 真按新 webroot 走一遍 HTTP-01 校验。
+# 失败只告警：conf 已对齐，下次 cron 续期仍会走新目录，不该因此挡住 apply/renew。
+acme_force_renew() {
+  local domain="$1" conf="$2" ecc="" rc=0
+  if [[ "$(basename "$(dirname "${conf}")")" == *_ecc ]]; then
+    ecc="--ecc"
+  fi
+  if [[ ! -x "${ACME_BIN}" ]]; then
+    log "acme.sh 不可执行，跳过校正后的强制续期：${ACME_BIN}"
+    return 0
+  fi
+  log "acme.sh renew --force ${domain}（验证校正后的 Le_Webroot）"
+  # shellcheck disable=SC2086
+  "${ACME_BIN}" --renew -d "${domain}" ${ecc} --force </dev/null >&2 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    log "校正后强制续期失败 (exit=${rc})：conf 已对齐，下次 cron 续期会走新目录"
+    alog "sync ${domain}: 校正后 --renew --force 失败 (exit=${rc})"
+    return 1
+  fi
+  log "校正后强制续期成功：${domain}"
+  return 0
+}
+
+# 把 acme.sh 记的 Le_Webroot 对齐到 WEBROOT（域名的 RSA / ECC conf 都看）
+sync_acme_webroot() {
+  local domain="$1" confs conf cur backup stamp changed=0 failed=0
+  confs="$(acme_conf_paths "${domain}")"
+  if [[ -z "${confs}" ]]; then
+    log "无 acme.sh conf，跳过 Le_Webroot 校正：${domain}"
+    return 1
+  fi
+
+  stamp="$(date +%Y%m%d%H%M%S)"
+  while IFS= read -r conf; do
+    [[ -z "${conf}" ]] && continue
+    cur="$(acme_conf_webroot "${conf}")"
+    if [[ -z "${cur}" ]]; then
+      log "acme conf 无 Le_Webroot 行，跳过：${conf}"
+      continue
+    fi
+    if [[ "${cur}" == "${WEBROOT}" ]]; then
+      continue
+    fi
+    # 只校正「单一目录」的 webroot 模式；dns_* / no / 多目录（空格分隔）不猜，免得毁掉 DNS 验证
+    if [[ "${cur}" != /* || "${cur}" == *[[:space:]]* ]]; then
+      log "acme Le_Webroot=${cur} 非单一 webroot 模式，不校正（${conf}）"
+      alog "sync ${domain}: 跳过 Le_Webroot=${cur}（非 webroot 模式）"
+      continue
+    fi
+
+    backup="${conf}.bak.${stamp}"
+    if ! cp -f "${conf}" "${backup}" 2>/dev/null; then
+      log "备份 acme conf 失败，不校正：${conf}"
+      alog "sync ${domain}: 备份失败，跳过校正 ${conf}"
+      failed=1
+      continue
+    fi
+    if ! acme_conf_set_webroot "${conf}" "${WEBROOT}"; then
+      log "写 acme conf 失败，已还原备份：${conf}"
+      alog "sync ${domain}: 写失败，已还原 ${conf}"
+      cp -f "${backup}" "${conf}" 2>/dev/null || true
+      failed=1
+      continue
+    fi
+
+    log "acme.sh Le_Webroot 已校正：${cur} → ${WEBROOT}（${conf}）"
+    alog "sync ${domain}: Le_Webroot ${cur} → ${WEBROOT}（备份 ${backup}）"
+    changed=1
+    acme_force_renew "${domain}" "${conf}" || true
+  done <<< "${confs}"
+
+  if [[ "${changed}" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "${failed}" -eq 1 ]]; then
+    return 2
+  fi
+  return 1
+}
+
 # 冲突检测：conf 目录下其它 *.conf（排除我们自有文件）是否已声明该域名的 server_name
 # 命中则输出冲突文件路径并返回 0；未命中返回 1
 find_conf_conflict() {
@@ -486,6 +627,123 @@ nginx_test_and_reload() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# 自检：bash 3hub-domain --self-test   （不需要 root / acme.sh / nginx）
+# 覆盖 issue #140：旧值→新值（含备份，且真调一次 --renew --force）、
+# 已一致不动（文件 mtime 不变、不调 acme.sh）、dns 模式不碰、ECC 目录带 --ecc。
+# ---------------------------------------------------------------------------
+st_ok() { printf '[PASS] %s\n' "$*"; }
+
+st_ng() {
+  printf '[FAIL] %s\n' "$*"
+  ST_FAIL=$((ST_FAIL + 1))
+}
+
+# 假 acme.sh：只把参数追加到日志，不真去续期
+self_test_fake_acme() {
+  cat > "${ACME_BIN}" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_ACME_LOG}"
+exit 0
+FAKE
+  chmod +x "${ACME_BIN}" 2>/dev/null || true
+}
+
+self_test() {
+  ST_FAIL=0
+  ST_TMP="$(mktemp -d)"
+  trap 'rm -rf "${ST_TMP}"' EXIT
+
+  # 全部指到临时目录，绝不碰真实 acme.sh / 日志 / nginx conf
+  local home="${ST_TMP}/acme" conf backup before after calls rc
+  ACME_HOME="${home}"
+  ACME_BIN="${ST_TMP}/fake-acme.sh"
+  WEBROOT="${ST_TMP}/webroot"
+  HELPER_LOG="${ST_TMP}/helper.log"
+  export FAKE_ACME_LOG="${ST_TMP}/acme-calls.log"
+  mkdir -p "${home}/old.example.com" "${home}/ok.example.com" \
+    "${home}/dns.example.com" "${home}/ecc.example.com_ecc" "${WEBROOT}"
+  self_test_fake_acme
+  : > "${FAKE_ACME_LOG}"
+
+  # 用例1：旧 webroot → 校正成 WEBROOT（备份 + 强制续一次）
+  conf="${home}/old.example.com/old.example.com.conf"
+  printf "Le_Domain='old.example.com'\nLe_Alt='no'\nLe_Webroot='/var/www/acme'\nLe_Keylength='2048'\n" > "${conf}"
+  rc=0
+  sync_acme_webroot old.example.com || rc=$?
+  if [[ "${rc}" -eq 0 ]] && [[ "$(acme_conf_webroot "${conf}")" == "${WEBROOT}" ]] \
+    && grep -qx "Le_Domain='old.example.com'" "${conf}" \
+    && grep -qx "Le_Keylength='2048'" "${conf}"; then
+    st_ok "旧值 /var/www/acme → ${WEBROOT}（其余行原样保留）"
+  else
+    st_ng "旧值未被校正（rc=${rc}, Le_Webroot=$(acme_conf_webroot "${conf}")）"
+  fi
+  backup="$(ls -1 "${conf}".bak.* 2>/dev/null | head -n1 || true)"
+  if [[ -n "${backup}" ]] && grep -qx "Le_Webroot='/var/www/acme'" "${backup}"; then
+    st_ok "改前已备份：$(basename "${backup}")（内容是旧值）"
+  else
+    st_ng "没有备份或备份内容不对"
+  fi
+  if grep -qx -- '--renew -d old.example.com --force' "${FAKE_ACME_LOG}"; then
+    st_ok "校正后触发一次 acme.sh --renew -d old.example.com --force"
+  else
+    st_ng "校正后没有触发 --renew --force（实际：$(tr '\n' ';' < "${FAKE_ACME_LOG}")）"
+  fi
+
+  # 用例2：已一致 → 不动文件、不调 acme.sh
+  conf="${home}/ok.example.com/ok.example.com.conf"
+  printf "Le_Domain='ok.example.com'\nLe_Webroot='%s'\nLe_Keylength='2048'\n" "${WEBROOT}" > "${conf}"
+  touch -d '2020-01-01 00:00:00' "${conf}"
+  before="$(stat -c '%y' "${conf}")"
+  calls="$(wc -l < "${FAKE_ACME_LOG}" | tr -d ' ')"
+  rc=0
+  sync_acme_webroot ok.example.com || rc=$?
+  after="$(stat -c '%y' "${conf}")"
+  if [[ "${rc}" -eq 1 ]] && [[ "${before}" == "${after}" ]]; then
+    st_ok "已一致 → 不改文件（mtime 保持 ${before}，返回 1）"
+  else
+    st_ng "已一致时仍动了文件（rc=${rc}, mtime ${before} → ${after}）"
+  fi
+  if [[ "$(wc -l < "${FAKE_ACME_LOG}" | tr -d ' ')" == "${calls}" ]] \
+    && ! ls -1 "${conf}".bak.* >/dev/null 2>&1; then
+    st_ok "已一致 → 不调 acme.sh、不产生备份"
+  else
+    st_ng "已一致却调了 acme.sh 或留下了备份"
+  fi
+
+  # 用例3：dns 模式（Le_Webroot='dns_cf'）不碰，免得毁掉 DNS 验证
+  conf="${home}/dns.example.com/dns.example.com.conf"
+  printf "Le_Domain='dns.example.com'\nLe_Webroot='dns_cf'\n" > "${conf}"
+  rc=0
+  sync_acme_webroot dns.example.com || rc=$?
+  if [[ "${rc}" -eq 1 ]] && [[ "$(acme_conf_webroot "${conf}")" == "dns_cf" ]] \
+    && ! ls -1 "${conf}".bak.* >/dev/null 2>&1; then
+    st_ok "dns 模式（dns_cf）保持原样"
+  else
+    st_ng "dns 模式被误改（rc=${rc}, Le_Webroot=$(acme_conf_webroot "${conf}")）"
+  fi
+
+  # 用例4：ECC 证书（conf 在 <域名>_ecc 下）→ 续期要带 --ecc
+  conf="${home}/ecc.example.com_ecc/ecc.example.com.conf"
+  printf "Le_Domain='ecc.example.com'\nLe_Webroot='/var/www/acme'\n" > "${conf}"
+  : > "${FAKE_ACME_LOG}"
+  rc=0
+  sync_acme_webroot ecc.example.com || rc=$?
+  if [[ "${rc}" -eq 0 ]] && [[ "$(acme_conf_webroot "${conf}")" == "${WEBROOT}" ]] \
+    && grep -qx -- '--renew -d ecc.example.com --ecc --force' "${FAKE_ACME_LOG}"; then
+    st_ok "ECC 目录：已校正且续期带 --ecc"
+  else
+    st_ng "ECC 目录处理不对（rc=${rc}, 调用：$(tr '\n' ';' < "${FAKE_ACME_LOG}")）"
+  fi
+
+  if [[ "${ST_FAIL}" -eq 0 ]]; then
+    printf '自检通过：4 组用例全部 OK\n'
+    return 0
+  fi
+  printf '自检失败：%d 项不通过\n' "${ST_FAIL}"
+  return 1
+}
+
 main() {
   require_root
 
@@ -505,6 +763,10 @@ main() {
 
   case "${ACTION}" in
     apply)
+      # 存量域迁移兜底：先把 acme.sh 记的 Le_Webroot 对齐到 WEBROOT（issue #140）。
+      # 不做的话，证书还在有效期内时 acme.sh --issue 返回 2 跳过、-w 不落盘，
+      # 旧路径会一直留到某次静默失败的续期。
+      sync_acme_webroot "${DOMAIN}" || true
       # 签发/续签（acme.sh 幂等）→ 装证 → 按表重建 conf → nginx -t → reload → 输出到期时间
       issue_cert_retry "${DOMAIN}" 0 "${ISSUE_RETRY_TIMES}"
       rebuild_nginx_conf
@@ -512,16 +774,23 @@ main() {
       ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
       ;;
     renew)
+      # 存量域迁移兜底：Le_Webroot 与 WEBROOT 不一致时先校正，并强制续一次跑真校验。
+      # 校正过（sync=0）说明证书刚续到手，后面用非 force 的 --issue 装证即可，不额外烧额度。
+      local synced=0 force=1
+      if sync_acme_webroot "${DOMAIN}"; then
+        synced=1
+        force=0
+      fi
       # 先看剩余天数：还够 RENEW_THRESHOLD_DAYS 天 → 不重签，校验+重建后正常返回（不消耗 LE 额度）
-      if cert_days_enough "${DOMAIN}"; then
+      if [[ "${synced}" -eq 0 ]] && cert_days_enough "${DOMAIN}"; then
         log "证书剩余 ≥ ${RENEW_THRESHOLD_DAYS} 天，无需重签（到期 $(cert_expiry "${DOMAIN}")）"
         alog "renew ${DOMAIN}: 跳过（剩余 ≥ ${RENEW_THRESHOLD_DAYS} 天，到期 $(cert_expiry "${DOMAIN}")）"
         rebuild_nginx_conf
         nginx_test_and_reload
         ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
       fi
-      # 剩余不足（或无证书）→ 强制签发，失败重试
-      issue_cert_retry "${DOMAIN}" 1 "${ISSUE_RETRY_TIMES}"
+      # 剩余不足（或无证书）→ 强制签发；刚校正过 Le_Webroot 的走非 force（--issue 未到期自会跳过，只装证）
+      issue_cert_retry "${DOMAIN}" "${force}" "${ISSUE_RETRY_TIMES}"
       rebuild_nginx_conf
       nginx_test_and_reload
       ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
@@ -540,5 +809,10 @@ main() {
 
 # 被 source 时只导出函数/变量（供本地单测），不执行 main
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  # 隐藏自检入口（不进 sudoers，只在机器上手工跑）：bash 3hub-domain --self-test
+  if [[ "${1-}" == "--self-test" ]]; then
+    self_test
+    exit $?
+  fi
   main "$@"
 fi

@@ -14,10 +14,13 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -403,6 +406,9 @@ func TestLoginIPPerMinuteLimit(t *testing.T) {
 	const ip = "203.0.113.70"
 	f := newLoginFixture(t, 5, 900*time.Second,
 		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+	// 本用例只验「每分钟尝试次数」这道闸门：把失败滑动窗口的上限抬高，
+	// 免得 30 次连续失败先撞上它（那道闸门见 TestLoginIPFailureSlidingWindow）。
+	f.h.auth.ipFailMax = 1000
 
 	// 前 30 次放行（每次换个不存在的用户名，避免撞上账号维度）。
 	for i := 1; i <= defaultLoginIPPerMinute; i++ {
@@ -485,6 +491,8 @@ func TestLoginSuccessDoesNotResetIPWindow(t *testing.T) {
 	const ip = "203.0.113.72"
 	f := newLoginFixture(t, 5, 900*time.Second,
 		testAccounts(t, map[string]string{"admin": "pw"}))
+	// 同上：本用例针对「每分钟尝试次数」窗口，抬高失败滑动窗口的上限。
+	f.h.auth.ipFailMax = 1000
 
 	for i := 1; i < defaultLoginIPPerMinute; i++ {
 		postLogin(t, f.h, ip, "ghost"+itoa(i), "x", "")
@@ -527,6 +535,360 @@ func TestLoginGuardBoundsMemory(t *testing.T) {
 	}
 	if len(g.entries) > g.maxEntries {
 		t.Fatalf("账号维度条目数应被上限约束在 %d 内，实际 %d", g.maxEntries, len(g.entries))
+	}
+}
+
+// ---- 用例 5：IP 失败滑动窗口（issue #142 的慢速撞库）----
+//
+// 实测攻击形态：同一 IP 每 15~20 秒试一次、每次换一个用户名。账号维度永远到不了
+// 5 次阈值，每分钟 30 次的尝试上限也永远到不了 —— 只有「窗口内失败总数」拦得住。
+//
+// 变异锚点：把 blocked() 里 ipFailures 的那段判断删掉，本组用例全部变红。
+
+func TestLoginIPFailureSlidingWindow(t *testing.T) {
+	const ip = "203.0.113.80"
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+	f.h.auth.ipFailMax = 3
+	f.h.auth.ipFailWindow = 5 * time.Minute
+
+	// 3 次失败，每次换一个用户名：账号维度一次都不会到阈值。
+	for i := 1; i <= 3; i++ {
+		code, body := postLogin(t, f.h, ip, "ghost"+itoa(i), "x", "")
+		if code != http.StatusOK || decodeLogin(t, body).Code != 401 {
+			t.Fatalf("第 %d 次失败应在 IP 窗口上限内放行（401），得到 HTTP %d: %s", i, code, body)
+		}
+	}
+
+	// 第 4 次：即使账号密码正确也必须 429（判锁排在查库之前）。
+	code, body := postLogin(t, f.h, ip, "admin", "correct-horse", "")
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("同一 IP 换用户名累计 3 次失败后应 429，得到 HTTP %d: %s", code, body)
+	}
+	if got := decodeLogin(t, body); got.Code != 429 || !strings.Contains(got.Msg, "登录失败次数过多") {
+		t.Fatalf("限流响应应为 code 429 + 现有文案，得到 %+v", got)
+	}
+
+	// 滑动窗口没走完就继续拒；且被拒的请求不再计数（不会把窗口无限顺延）。
+	f.clock.advance(4*time.Minute + 59*time.Second)
+	for i := 0; i < 3; i++ {
+		if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+			t.Fatalf("窗口内（4m59s）应仍限流，得到 HTTP %d: %s", code, body)
+		}
+	}
+
+	// 最老一次失败滑出窗口后恢复登录。
+	f.clock.advance(2 * time.Second)
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusOK ||
+		decodeLogin(t, body).Msg != "登录成功" {
+		t.Fatalf("失败滑出窗口后应放行，得到 HTTP %d: %s", code, body)
+	}
+
+	// 窗口重置后必须重新能拦住：证明不是「一旦放行就永久失效」。
+	for i := 1; i <= 3; i++ {
+		if code, body := postLogin(t, f.h, ip, "ghost2-"+itoa(i), "x", ""); code != http.StatusOK ||
+			decodeLogin(t, body).Code != 401 {
+			t.Fatalf("第二轮第 %d 次失败应放行（401），得到 HTTP %d: %s", i, code, body)
+		}
+	}
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("第二轮攒满 3 次失败后应再次 429，得到 HTTP %d: %s", code, body)
+	}
+}
+
+func TestLoginIPFailureWindowIsolation(t *testing.T) {
+	const (
+		ipA = "203.0.113.81"
+		ipB = "203.0.113.82"
+	)
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+	f.h.auth.ipFailMax = 3
+	f.h.auth.ipFailWindow = 5 * time.Minute
+
+	for i := 1; i <= 3; i++ {
+		postLogin(t, f.h, ipA, "ghost"+itoa(i), "x", "")
+	}
+	if code, _ := postLogin(t, f.h, ipA, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("A 攒满失败后应被限流，得到 HTTP %d", code)
+	}
+
+	// B 的窗口是空的：同一时刻必须能正常登录（不同 IP 不互相影响）。
+	if code, body := postLogin(t, f.h, ipB, "admin", "correct-horse", ""); code != http.StatusOK ||
+		decodeLogin(t, body).Msg != "登录成功" {
+		t.Fatalf("B 未失败过，不应被 A 连坐，得到 HTTP %d: %s", code, body)
+	}
+
+	// B 自己攒满同样会被拦。
+	for i := 1; i <= 3; i++ {
+		postLogin(t, f.h, ipB, "other"+itoa(i), "x", "")
+	}
+	if code, _ := postLogin(t, f.h, ipB, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("B 攒满失败后应被限流，得到 HTTP %d", code)
+	}
+}
+
+func TestLoginIPFailureWindowCountsEmptyUsername(t *testing.T) {
+	// 空用户名也必须计入 IP 失败窗口：否则「编个空用户名」就能绕开限流，
+	// 只剩每分钟 30 次的尝试上限。
+	const ip = "203.0.113.83"
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "correct-horse"}))
+	f.h.auth.ipFailMax = 3
+	f.h.auth.ipFailWindow = 5 * time.Minute
+
+	for i := 1; i <= 3; i++ {
+		postLogin(t, f.h, ip, "", "x", "")
+	}
+	if code, body := postLogin(t, f.h, ip, "admin", "correct-horse", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("空用户名的失败也应计入 IP 窗口，第 4 次应 429，得到 HTTP %d: %s", code, body)
+	}
+}
+
+func TestLoginGuardIPFailureEnv(t *testing.T) {
+	t.Run("env 生效", func(t *testing.T) {
+		t.Setenv(envAdminLoginIPFailMax, "7")
+		t.Setenv(envAdminLoginIPFailWindowSeconds, "120")
+		g := newLoginGuardFromEnv()
+		if g.ipFailMax != 7 {
+			t.Fatalf("ADMIN_LOGIN_IP_FAIL_MAX=7 应生效，得到 %d", g.ipFailMax)
+		}
+		if g.ipFailWindow != 2*time.Minute {
+			t.Fatalf("ADMIN_LOGIN_IP_FAIL_WINDOW_SECONDS=120 应生效，得到 %v", g.ipFailWindow)
+		}
+	})
+
+	t.Run("默认值保守", func(t *testing.T) {
+		g := newLoginGuardFromEnv()
+		if g.ipFailMax != defaultLoginIPFailMax || g.ipFailWindow != defaultLoginIPFailWindowSeconds*time.Second {
+			t.Fatalf("默认应为 %d 次 / %d 秒，得到 %d 次 / %v",
+				defaultLoginIPFailMax, defaultLoginIPFailWindowSeconds, g.ipFailMax, g.ipFailWindow)
+		}
+	})
+
+	t.Run("非法值回退默认", func(t *testing.T) {
+		for _, raw := range []string{"", "abc", "0", "-5"} {
+			t.Setenv(envAdminLoginIPFailMax, raw)
+			if got := newLoginGuardFromEnv().ipFailMax; got != defaultLoginIPFailMax {
+				t.Fatalf("ADMIN_LOGIN_IP_FAIL_MAX=%q 应回退默认 %d，得到 %d", raw, defaultLoginIPFailMax, got)
+			}
+		}
+		// 窗口超上限（> 24h）按配错处理，回退默认。
+		t.Setenv(envAdminLoginIPFailWindowSeconds, "999999999")
+		if got := newLoginGuardFromEnv().ipFailWindow; got != defaultLoginIPFailWindowSeconds*time.Second {
+			t.Fatalf("窗口超上限应回退默认 %ds，得到 %v", defaultLoginIPFailWindowSeconds, got)
+		}
+	})
+}
+
+// ---- 用例 6：登录失败审计按 IP 窗口聚合（issue #142 第 3 条）----
+//
+// 原来中间件对每个 POST 无论成败都落一条 operation_logs，实测 18,756 行登录失败
+// 占了全表 92.5%。现在失败明细由 handler 置 OpLogSkipKey 跳过，只在「某 IP 的失败
+// 窗口达到阈值」时落一条 type='system' 汇总（带次数）。
+
+func newAuditCapture(f *loginFixture) *[]loginAuditEvent {
+	events := &[]loginAuditEvent{}
+	f.h.auditLogin = func(_ context.Context, ev *loginAuditEvent) error {
+		*events = append(*events, *ev)
+		return nil
+	}
+	return events
+}
+
+func TestLoginFailureAuditAggregationPerIPWindow(t *testing.T) {
+	const (
+		ipA = "203.0.113.90"
+		ipB = "203.0.113.91"
+	)
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "pw"}))
+	f.h.auth.ipFailMax = 5
+	f.h.auth.ipFailWindow = 10 * time.Minute
+	events := newAuditCapture(f)
+
+	// 未到阈值：一条审计都不落（正常手滑不该刷审计）。
+	for i := 1; i < 5; i++ {
+		postLogin(t, f.h, ipA, "ghost"+itoa(i), "x", "")
+	}
+	if len(*events) != 0 {
+		t.Fatalf("未到阈值不应落审计，实际 %d 条", len(*events))
+	}
+
+	// 第 5 次失败：到阈值 → 恰好一条汇总，带次数与账号数。
+	postLogin(t, f.h, ipA, "ghost5", "x", "")
+	if len(*events) != 1 {
+		t.Fatalf("到阈值应落 1 条汇总审计，实际 %d 条", len(*events))
+	}
+	ev := (*events)[0]
+	if ev.IP != ipA || !ev.IPLimited || ev.AccountLocked {
+		t.Fatalf("汇总内容不对: %+v", ev)
+	}
+	if ev.IPFailures != 5 || ev.Accounts != 5 || ev.Window != 10*time.Minute {
+		t.Fatalf("汇总应带窗口内次数 5 / 账号 5 / 窗口 10m，得到 %+v", ev)
+	}
+
+	// 触发后的限流请求（429）不再追加审计。
+	for i := 0; i < 5; i++ {
+		postLogin(t, f.h, ipA, "ghostX", "x", "")
+	}
+	if len(*events) != 1 {
+		t.Fatalf("同一 IP 同一窗口只应落 1 条审计，实际 %d 条", len(*events))
+	}
+
+	// 另一个 IP 自己一条（窗口互相独立）。
+	for i := 1; i <= 5; i++ {
+		postLogin(t, f.h, ipB, "ghostB"+itoa(i), "x", "")
+	}
+	if len(*events) != 2 || (*events)[1].IP != ipB {
+		t.Fatalf("第二个 IP 应单独落一条，实际 %d 条: %+v", len(*events), *events)
+	}
+}
+
+func TestLoginAccountLockEmitsSingleAudit(t *testing.T) {
+	const ip = "203.0.113.92"
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "pw"}))
+	// IP 窗口上限抬高：本用例只验账号维度锁定时的汇总。
+	f.h.auth.ipFailMax = 100
+	events := newAuditCapture(f)
+
+	for i := 1; i <= 5; i++ {
+		postLogin(t, f.h, ip, "admin", "wrong", "")
+	}
+	if len(*events) != 1 {
+		t.Fatalf("账号锁定应落 1 条汇总审计，实际 %d 条", len(*events))
+	}
+	if ev := (*events)[0]; !ev.AccountLocked || ev.Username != "admin" || ev.Accounts != 1 {
+		t.Fatalf("账号锁定汇总内容不对: %+v", ev)
+	}
+
+	// 锁定期间的请求不再落审计（也不再计数）。
+	for i := 0; i < 3; i++ {
+		postLogin(t, f.h, ip, "admin", "pw", "")
+	}
+	if len(*events) != 1 {
+		t.Fatalf("锁定期内不应追加审计，实际 %d 条", len(*events))
+	}
+}
+
+// ---- 用例 7：汇总审计真的按 operation_logs 的列落库（假驱动，不连库）----
+
+type loginAuditRow struct {
+	Type, Actor, Action, Path string
+	Status                    int64
+	Detail, IP                string
+}
+
+type loginAuditFakeState struct {
+	mu   sync.Mutex
+	rows []loginAuditRow
+}
+
+func (s *loginAuditFakeState) snapshot() []loginAuditRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]loginAuditRow, len(s.rows))
+	copy(out, s.rows)
+	return out
+}
+
+func (s *loginAuditFakeState) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows = nil
+}
+
+var (
+	loginAuditFake     = &loginAuditFakeState{}
+	loginAuditFakeOnce sync.Once
+)
+
+const loginAuditFakeDriverName = "adminLoginAuditFake"
+
+// openLoginAuditFakeDB 打开一个只认 operation_logs INSERT 的假库。
+func openLoginAuditFakeDB(t *testing.T) *sql.DB {
+	t.Helper()
+	loginAuditFakeOnce.Do(func() { sql.Register(loginAuditFakeDriverName, loginAuditFakeDriver{}) })
+	db, err := sql.Open(loginAuditFakeDriverName, "fake")
+	if err != nil {
+		t.Fatalf("打开假库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+type loginAuditFakeDriver struct{}
+
+func (loginAuditFakeDriver) Open(string) (driver.Conn, error) { return loginAuditFakeConn{}, nil }
+
+type loginAuditFakeConn struct{}
+
+func (loginAuditFakeConn) Prepare(string) (driver.Stmt, error) {
+	return nil, fmt.Errorf("假驱动只支持 ExecContext")
+}
+func (loginAuditFakeConn) Close() error { return nil }
+func (loginAuditFakeConn) Begin() (driver.Tx, error) {
+	return nil, fmt.Errorf("假驱动不支持事务")
+}
+
+func (loginAuditFakeConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if !strings.Contains(query, "INSERT INTO operation_logs") {
+		return nil, fmt.Errorf("假库未识别的写入: %s", query)
+	}
+	// 参数顺序必须与 SQL 一致：action, error, ip, created_at（其余是字面量）。
+	if len(args) != 4 {
+		return nil, fmt.Errorf("operation_logs 写入参数应为 4 个，实际 %d", len(args))
+	}
+	row := loginAuditRow{
+		Type:   "system",
+		Actor:  "login-guard",
+		Action: fmt.Sprint(args[0].Value),
+		Path:   "admin-api/login",
+		Status: 401,
+		Detail: fmt.Sprint(args[1].Value),
+		IP:     fmt.Sprint(args[2].Value),
+	}
+	if !strings.Contains(query, "'system', 'login-guard'") {
+		return nil, fmt.Errorf("审计行应固定为 type=system / actor=login-guard: %s", query)
+	}
+	loginAuditFake.mu.Lock()
+	loginAuditFake.rows = append(loginAuditFake.rows, row)
+	loginAuditFake.mu.Unlock()
+	return driver.RowsAffected(1), nil
+}
+
+func TestInsertLoginFailureAuditRow(t *testing.T) {
+	loginAuditFake.reset()
+	const ip = "203.0.113.95"
+
+	f := newLoginFixture(t, 5, 900*time.Second,
+		testAccounts(t, map[string]string{"admin": "pw"}))
+	f.h.db = openLoginAuditFakeDB(t)
+	f.h.auditLogin = f.h.insertLoginFailureAudit // 走真实落库实现
+	f.h.auth.ipFailMax = 2
+
+	// 两次失败（换用户名）→ 到阈值 → 一条汇总。
+	for i := 1; i <= 2; i++ {
+		postLogin(t, f.h, ip, "ghost"+itoa(i), "x", "")
+	}
+
+	rows := loginAuditFake.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("应落 1 行汇总审计，实际 %d 行", len(rows))
+	}
+	row := rows[0]
+	if row.Type != "system" || row.Actor != "login-guard" || row.Action != loginAuditAction ||
+		row.Path != "admin-api/login" || row.Status != 401 {
+		t.Fatalf("审计行固定列不对: %+v", row)
+	}
+	if row.IP != ip {
+		t.Fatalf("审计行 ip 应为 %s，实际 %s", ip, row.IP)
+	}
+	for _, want := range []string{"失败 2 次", "样本：ghost2", "来源 IP 失败次数达到上限"} {
+		if !strings.Contains(row.Detail, want) {
+			t.Fatalf("审计详情应包含 %q，实际: %s", want, row.Detail)
+		}
 	}
 }
 

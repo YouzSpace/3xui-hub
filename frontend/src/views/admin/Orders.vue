@@ -27,7 +27,6 @@ const orderType = ref(String(route.query.type ?? ''))
 const typeOptions = [
   { label: '全部订单', value: '' },
   { label: '节点套餐', value: 'plan' },
-  { label: '代理商城', value: 'proxy' },
 ]
 
 const { page, loading, loadError, pagination, hasPrev, hasNext, prev, next, fetchPage } = usePagedList()

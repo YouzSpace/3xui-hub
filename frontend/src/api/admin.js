@@ -90,63 +90,6 @@ export const adminApi = {
   refreshThirdParty: (id) => client.post(`/admin-api/nodes/third-party/${id}/refresh`, {}, { timeout: 60000 }),
   setThirdPartyEnabled: (enabled) => client.put('/admin-api/nodes/third-party/switch', { enabled }),
 
-  // 上游 · Webshare 代理（站长账号 → 子用户凭据）
-  listWebshareProviders: () => client.get('/admin-api/upstream/webshare/providers'),
-  createWebshareProvider: (data) => client.post('/admin-api/upstream/webshare/providers', data),
-  updateWebshareProvider: (id, data) => client.put(`/admin-api/upstream/webshare/providers/${id}`, data),
-  deleteWebshareProvider: (id) => client.delete(`/admin-api/upstream/webshare/providers/${id}`),
-  // 连上游，慢（15s 超时），单独放宽
-  testWebshareProvider: (id) => client.post(`/admin-api/upstream/webshare/providers/${id}/test`, {}, { timeout: 60000 }),
-  listWebsharePlans: (id) => client.get(`/admin-api/upstream/webshare/providers/${id}/plans`, { timeout: 60000 }),
-  listWebshareAccounts: (id) => client.get(`/admin-api/upstream/webshare/providers/${id}/accounts`),
-  // 代理 IP 列表（只回 IP/端口/国家，不回主账号凭据）
-  listWebshareProxies: (id, params) => client.get(`/admin-api/upstream/webshare/providers/${id}/proxies`, { params, timeout: 60000 }),
-  createWebshareAccount: (id, data) => client.post(`/admin-api/upstream/webshare/providers/${id}/accounts`, data, { timeout: 60000 }),
-  // 把上游已有子用户拉回本地（后台直接建过号 / 换机器时用）
-  syncWebshareAccounts: (id) => client.post(`/admin-api/upstream/webshare/providers/${id}/accounts/sync`, {}, { timeout: 90000 }),
-  disableWebshareAccount: (id) => client.post(`/admin-api/upstream/webshare/accounts/${id}/disable`, {}, { timeout: 60000 }),
-  deleteWebshareAccount: (id) => client.delete(`/admin-api/upstream/webshare/accounts/${id}`, { timeout: 60000 }),
-  pullWebshareUsage: (id) => client.post(`/admin-api/upstream/webshare/accounts/${id}/usage`, {}, { timeout: 60000 }),
-  // 读取本地保存的子用户凭据（上游没有读密码接口；同步来的记录会 404）
-  getWebshareCredential: (id) => client.post(`/admin-api/upstream/webshare/accounts/${id}/credential`),
-  pullWebshareUsageBatch: (id) => client.post(`/admin-api/upstream/webshare/providers/${id}/usage`, {}, { timeout: 120000 }),
-
-  // 静态 IP 出口分类（#静态IP）：一个分类 = 一组前置节点 + 一个 webshare 账号。
-  // 列表每项含 node_ids / node_count / provider_name；后端未合入时 404，页面降级为空列表。
-  listExitProfiles: () => client.get('/admin-api/exit-profiles'),
-  createExitProfile: (data) => client.post('/admin-api/exit-profiles', data),
-  updateExitProfile: (id, data) => client.put(`/admin-api/exit-profiles/${id}`, data),
-  // 有套餐绑定时后端拒绝删除，msg 里带套餐数 —— 页面原样展示
-  deleteExitProfile: (id) => client.delete(`/admin-api/exit-profiles/${id}`),
-
-  // 代理运营（谁买了、还剩多少、到期没、待补开）
-  proxyOpsOverview: () => client.get('/admin-api/proxy-ops/overview'),
-  proxyOpsAccounts: (params) => client.get('/admin-api/proxy-ops/accounts', { params }),
-  proxyOpsSocksGroups: (params) => client.get('/admin-api/proxy-ops/socks-groups', { params }),
-  proxyOpsPending: (params) => client.get('/admin-api/proxy-ops/pending', { params }),
-  proxyOpsPull: (accountId) => client.post(`/admin-api/proxy-ops/accounts/${accountId}/pull`, {}, { timeout: 60000 }),
-  proxyOpsDisable: (accountId) => client.post(`/admin-api/proxy-ops/accounts/${accountId}/disable`, {}, { timeout: 60000 }),
-  proxyOpsResetPassword: (accountId) => client.post(`/admin-api/proxy-ops/accounts/${accountId}/reset-password`, {}, { timeout: 60000 }),
-  proxyOpsAccountProxies: (accountId) => client.get(`/admin-api/proxy-ops/accounts/${accountId}/proxies`, { timeout: 60000 }),
-  proxyOpsDeleteAccount: (accountId) => client.delete(`/admin-api/proxy-ops/accounts/${accountId}`, { timeout: 60000 }),
-  proxyOpsExtend: (entitlementId, days) => client.post(`/admin-api/proxy-ops/entitlements/${entitlementId}/extend`, { days }),
-  proxyOpsMoveSocks: (entitlementId, socksId) => client.post(`/admin-api/proxy-ops/entitlements/${entitlementId}/move-socks`, { socks_id: socksId }),
-  proxyOpsRetryOrder: (orderId) => client.post(`/admin-api/proxy-ops/orders/${orderId}/retry`, {}, { timeout: 60000 }),
-
-  // 代理商城 · 商品 / 规格 / 手工 socks 货源（与节点套餐完全独立）
-  proxyStoreSettings: () => client.get('/admin-api/proxy-store/settings'),
-  updateProxyStoreSettings: (enabled) => client.post('/admin-api/proxy-store/settings', { enabled }),
-  listProxyProducts: () => client.get('/admin-api/proxy-store/products'),
-  createProxyProduct: (data) => client.post('/admin-api/proxy-store/products', data),
-  updateProxyProduct: (id, data) => client.put(`/admin-api/proxy-store/products/${id}`, data),
-  deleteProxyProduct: (id) => client.delete(`/admin-api/proxy-store/products/${id}`),
-  createProxySku: (productId, data) => client.post(`/admin-api/proxy-store/products/${productId}/skus`, data),
-  updateProxySku: (id, data) => client.put(`/admin-api/proxy-store/skus/${id}`, data),
-  deleteProxySku: (id) => client.delete(`/admin-api/proxy-store/skus/${id}`),
-  listProxySocks: () => client.get('/admin-api/proxy-store/socks'),
-  importProxySocks: (text) => client.post('/admin-api/proxy-store/socks/import', { text }),
-  updateProxySock: (id, data) => client.put(`/admin-api/proxy-store/socks/${id}`, data),
-  deleteProxySock: (id) => client.delete(`/admin-api/proxy-store/socks/${id}`),
 
   // 套餐
   // 分页同 listUsers；params 传 { all: 1 } 时后端显式返回全量（套餐选择器用）。

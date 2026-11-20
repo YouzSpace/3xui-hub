@@ -78,16 +78,13 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 	// 游标模式：不查总数（100 万行 COUNT 要几百毫秒且随规模线性增长），
 	// total 返回 -1 由上层识别为「未知」。
 	if cursor > 0 {
-		q := fmt.Sprintf(`SELECT %s,
-		(SELECT COUNT(*) FROM proxy_entitlements e
-			WHERE e.user_id = u.id AND e.status = 'active'
-			  AND (e.expires_at IS NULL OR e.expires_at > ?)) AS proxy_active_count
+		q := fmt.Sprintf(`SELECT %s
 		FROM users u
 		LEFT JOIN plans p ON p.id = u.plan_id
 		WHERE 1=1%s AND u.id < ?
 		ORDER BY %s
 		LIMIT ?`, userSelectColumns, where, orderBy)
-		args2 := append([]any{now}, args...)
+		args2 := append([]any{}, args...)
 		args2 = append(args2, cursor, perPage)
 		rows, err := s.db.QueryContext(ctx, q, args2...)
 		if err != nil {
@@ -105,16 +102,13 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 	}
 	offset := (page - 1) * perPage
 
-	q := fmt.Sprintf(`SELECT %s,
-		(SELECT COUNT(*) FROM proxy_entitlements e
-			WHERE e.user_id = u.id AND e.status = 'active'
-			  AND (e.expires_at IS NULL OR e.expires_at > ?)) AS proxy_active_count
+	q := fmt.Sprintf(`SELECT %s
 		FROM users u
 		LEFT JOIN plans p ON p.id = u.plan_id
 		WHERE 1=1%s
 		ORDER BY %s
 		LIMIT ? OFFSET ?`, userSelectColumns, where, orderBy)
-	args2 := append([]any{now}, args...)
+	args2 := append([]any{}, args...)
 	args2 = append(args2, perPage, offset)
 
 	rows, err := s.db.QueryContext(ctx, q, args2...)
@@ -125,7 +119,7 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 
 	out := []UserRow{}
 	for rows.Next() {
-		u, err := scanUserRow(rows, true)
+		u, err := scanUserRow(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -138,7 +132,7 @@ func (s *adminUserSQLStore) UserPage(ctx context.Context, search string, page, p
 func scanUserRows(rows *sql.Rows) ([]UserRow, error) {
 	out := []UserRow{}
 	for rows.Next() {
-		u, err := scanUserRow(rows, true)
+		u, err := scanUserRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +155,7 @@ func userSearchWhere(search string, now time.Time) (string, []any) {
 	return ` AND (u.email LIKE ? OR u.token LIKE ?)`, []any{like, like}
 }
 
-func scanUserRow(row interface{ Scan(...any) error }, withProxyCount bool) (*UserRow, error) {
+func scanUserRow(row interface{ Scan(...any) error }) (*UserRow, error) {
 	var (
 		u                               UserRow
 		email, planType, planName       sql.NullString
@@ -178,10 +172,6 @@ func scanUserRow(row interface{ Scan(...any) error }, withProxyCount bool) (*Use
 		&planType, &planName, &planMonths,
 		&trafficLimit, &trafficUsed, &monthlyUsed, &monthlyLimit,
 		&nextReset, &expiredAt, &enabled, &createdAt, &balance,
-	}
-	var proxyCount int64
-	if withProxyCount {
-		dest = append(dest, &proxyCount)
 	}
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
@@ -203,31 +193,20 @@ func scanUserRow(row interface{ Scan(...any) error }, withProxyCount bool) (*Use
 	u.Enabled = enabled != 0
 	u.CreatedAt = nullTimePtr(createdAt)
 	u.Balance = balance
-	if withProxyCount {
-		u.ProxyActiveCount = proxyCount
-	}
 	return &u, nil
 }
 
-// UserByID 详情查询（带 proxy_active_count，与列表同口径）。
+// UserByID 详情查询。
 func (s *adminUserSQLStore) UserByID(ctx context.Context, id uint64) (*UserRow, error) {
-	q := fmt.Sprintf(`SELECT %s,
-		(SELECT COUNT(*) FROM proxy_entitlements e
-			WHERE e.user_id = u.id AND e.status = 'active'
-			  AND (e.expires_at IS NULL OR e.expires_at > ?)) AS proxy_active_count
+	q := fmt.Sprintf(`SELECT %s
 		FROM users u
 		LEFT JOIN plans p ON p.id = u.plan_id
 		WHERE u.id = ?`, userSelectColumns)
-	// 详情的 proxy_active_count 用「现在」；PHP 的 show 不算 count（$u->proxy_active_count ?? 0）。
-	// 但 create/update 的响应是 $user->load('plan') 后 present —— 同样拿不到 withCount 属性。
-	// 这里保持与列表一致的计数查询，避免两套 SQL；present 的语义由调用方决定。
-	row := s.db.QueryRowContext(ctx, q, time.Now().UTC(), id)
-	u, err := scanUserRow(row, true)
+	row := s.db.QueryRowContext(ctx, q, id)
+	u, err := scanUserRow(row)
 	if err != nil {
 		return nil, err
 	}
-	// PHP 的详情/写响应 proxy_active_count 恒为 0（未 withCount）。对齐这一点。
-	u.ProxyActiveCount = 0
 	return u, nil
 }
 
@@ -237,32 +216,7 @@ func (s *adminUserSQLStore) UserExists(ctx context.Context, id uint64) (bool, er
 	return n > 0, err
 }
 
-// UserProxies 对齐 $user->proxyEntitlements.sku 预加载。
-func (s *adminUserSQLStore) UserProxies(ctx context.Context, userID uint64) ([]UserProxy, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.kind, s.name, e.status, e.expires_at
-		FROM proxy_entitlements e
-		LEFT JOIN proxy_skus s ON s.id = e.sku_id
-		WHERE e.user_id = ?`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []UserProxy{}
-	for rows.Next() {
-		var (
-			p         UserProxy
-			skuName   sql.NullString
-			expiresAt sql.NullTime
-		)
-		if err := rows.Scan(&p.ID, &p.Kind, &skuName, &p.Status, &expiresAt); err != nil {
-			return nil, err
-		}
-		p.SKUName = nullStrPtr(skuName)
-		p.ExpiresAt = nullTimePtr(expiresAt)
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
+// UserProxies 曾在代理商城下线时返回空列表；生产线下线后此方法一并移除。
 
 // PlanByID 取套餐换算需要的列。
 func (s *adminUserSQLStore) UserPlanByID(ctx context.Context, id uint64) (*UserPlan, error) {

@@ -207,34 +207,6 @@ func ensureSchema(db *sql.DB) error {
 			updated_at timestamp NULL DEFAULT NULL,
 			PRIMARY KEY (id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-		// 静态 IP 出口分类（#静态IP）：一个分类 = 一组前置节点 + 一个 webshare 账号。
-		// 纯字典表 —— 升级后保持为空，plans.exit_type 默认 'direct'，老套餐行为完全不变。
-		// provider_id 指向 proxy_providers（多 webshare 账号已支持），本表不复制任何账号字段；
-		// traffic_gb / duration_days / max_thread_count 是「开号时传给上游」的模板值，
-		// 本任务只存不用（购买流程与出站生成是后续任务）。
-		`CREATE TABLE IF NOT EXISTS exit_profiles (
-			id bigint unsigned NOT NULL AUTO_INCREMENT,
-			name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-			provider_id bigint unsigned NOT NULL COMMENT '用哪个 webshare 账号（proxy_providers.id）',
-			traffic_gb int NOT NULL DEFAULT 0 COMMENT '每个用户分多少 GB（传给 webshare proxy_limit）',
-			duration_days int NOT NULL DEFAULT 30 COMMENT '有效期天数',
-			max_thread_count int NOT NULL DEFAULT 0 COMMENT '并发数，0=上游默认',
-			socks_host varchar(190) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '' COMMENT 'webshare 的 socks 入口，如 p.webshare.io',
-			socks_port int NOT NULL DEFAULT 1080,
-			enabled tinyint NOT NULL DEFAULT 1,
-			created_at timestamp NULL DEFAULT NULL,
-			updated_at timestamp NULL DEFAULT NULL,
-			PRIMARY KEY (id),
-			UNIQUE KEY exit_profiles_name_unique (name)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-		// 分类 ↔ 前置节点（多对多）。没有外键：与 nodes/user_nodes 一致，
-		// 节点被删后残留关联由删除接口显式清理，不靠数据库级联（老库升级时加不了外键）。
-		`CREATE TABLE IF NOT EXISTS exit_profile_nodes (
-			profile_id bigint unsigned NOT NULL,
-			node_id bigint unsigned NOT NULL,
-			PRIMARY KEY (profile_id, node_id),
-			KEY idx_exit_profile_node (node_id)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -271,20 +243,9 @@ func ensureSchema(db *sql.DB) error {
 		// 独占 socks 池（#地区功能-17）：三个人共用一条线路的现状保持不变，
 		// 新增 exclusive = 一条只卖一个人。sold_to/sold_at 记录这条卖给了谁、什么时候，
 		// 卖完自动跳到下一条；到期释放（internal/task）把这两列清空，线路重回池子。
-		{"proxy_socks", "allocation", "varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'shared' COMMENT '分配方式：shared=多人共用 / exclusive=一条只卖一人'"},
-		{"proxy_socks", "sold_to", "bigint unsigned DEFAULT NULL COMMENT '独占模式买下这条的用户 id，NULL=还在池子里'"},
-		{"proxy_socks", "sold_at", "timestamp NULL DEFAULT NULL COMMENT '独占模式售出时间'"},
 		// 配置模板（#地区功能-19）：1 = 该节点的入站/出站/路由被单独改过，
 		// 套用模板时默认跳过它（勾「覆盖单独配置」才重写）。套用成功会清回 0。
 		{"nodes", "is_custom_config", "tinyint NOT NULL DEFAULT 0 COMMENT '1=该节点配置已单独改过，不跟随模板'"},
-		// 套餐出口类型（#静态IP）：direct=直连（默认，老套餐就是这个值，行为完全不变）/
-		// static_chain=链式到住宅（节点出站走 webshare socks）/ static_socks=发 socks 凭证。
-		// 用 NOT NULL + 默认值而不是 NULL：读侧不必区分「老行没这列」与「显式 direct」，
-		// 升级后所有老套餐自动是 direct。
-		{"plans", "exit_type", "varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'direct' COMMENT '出口类型：direct/static_chain/static_socks'"},
-		// 套餐绑定的出口分类（#静态IP）：NULL = 不绑（direct/static_socks 套餐就是这样）。
-		// 不建外键：分类被删前由删除接口拒绝（有套餐绑着时不允许删），与地区/套餐的既有做法一致。
-		{"plans", "exit_profile_id", "bigint unsigned DEFAULT NULL COMMENT '出口分类 id（exit_profiles.id），NULL=不绑'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {
@@ -314,10 +275,6 @@ func ensureSchema(db *sql.DB) error {
 		{"user_node_migrations", "idx_batch", "(`batch_id`)"},
 		// 独占 socks 池（#地区功能-17）：每次下单都是「在池子里找一条未售出的」，
 		// 没有这个索引就是全表扫 + 拿不到行锁。
-		{"proxy_socks", "idx_socks_pool", "(`allocation`,`is_active`,`sold_to`)"},
-		// 出口分类（#静态IP）：删除分类前要数「有多少套餐绑着它」，套餐列表也要 JOIN 出分类名，
-		// 没有这个索引就是扫整张 plans 表。
-		{"plans", "idx_plans_exit_profile", "(`exit_profile_id`)"},
 	}
 	for _, idx := range indexes {
 		if err := ensureIndex(db, idx.table, idx.name, idx.definition); err != nil {

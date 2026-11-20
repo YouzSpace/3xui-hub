@@ -23,8 +23,8 @@ import (
 
 // baseSchemaDDL 是 ensureSchema 依赖的「升级前已存在」最小表集合：
 // ensureSchema 除了建新表，还会给 xray_inbounds / users 加列、给 nodes 加列、给 plans 加
-// region_ids 列、给 proxy_socks 加独占池三列和 idx_socks_pool 索引、给 node_api_commands /
-// mail_logs 加索引 —— 缺表会直接报 1146，所以这里必须先把这些表按升级前的样子建出来。
+// region_ids 列、给 node_api_commands / mail_logs 加索引 —— 缺表会直接报 1146，
+// 所以这里必须先把这些表按升级前的样子建出来。
 const baseSchemaDDL = `
 CREATE TABLE users (
   id bigint unsigned NOT NULL AUTO_INCREMENT,
@@ -107,21 +107,6 @@ CREATE TABLE plans (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE proxy_socks (
-  id bigint unsigned NOT NULL AUTO_INCREMENT,
-  name varchar(100) NOT NULL,
-  host varchar(190) NOT NULL,
-  port int unsigned NOT NULL,
-  username varchar(190) DEFAULT NULL,
-  password text,
-  country varchar(16) DEFAULT NULL,
-  city varchar(64) DEFAULT NULL,
-  note varchar(255) DEFAULT NULL,
-  is_active tinyint(1) NOT NULL DEFAULT 1,
-  created_at timestamp NULL DEFAULT NULL,
-  updated_at timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
 // usersOriginalColumns / nodesOriginalColumns 是升级前就有的列。
@@ -337,33 +322,7 @@ func TestEnsureSchemaRegionsIdempotent(t *testing.T) {
 		t.Fatalf("plans.region_ids 必须可空（NULL=不限地区），实际 IS_NULLABLE=%s", regionIDsNullable)
 	}
 
-	// 独占 socks 池（#地区功能-17）：老库升级后 proxy_socks 必须多出三列，
-	// 且 allocation 默认 shared（老线路保持「多人共用」，不会突然变成只卖一人）。
-	defaults := map[string]string{"allocation": "shared", "sold_to": "", "sold_at": ""}
-	columnQ := "SELECT IFNULL(COLUMN_DEFAULT,''), IS_NULLABLE FROM information_schema.COLUMNS " +
-		"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='proxy_socks' AND COLUMN_NAME=?"
-	for column, wantDefault := range defaults {
-		var columnDefault, nullable string
-		if err := db.QueryRow(columnQ, column).Scan(&columnDefault, &nullable); err != nil {
-			t.Fatalf("ensureSchema 没给 proxy_socks 加 %s 列: %v", column, err)
-		}
-		if wantDefault != "" && columnDefault != wantDefault {
-			t.Fatalf("proxy_socks.%s 默认值应为 %q，实际 %q", column, wantDefault, columnDefault)
-		}
-		if wantDefault == "" && nullable != "YES" {
-			t.Fatalf("proxy_socks.%s 必须可空，实际 IS_NULLABLE=%s", column, nullable)
-		}
-	}
-	var poolIndexCols string
-	if err := db.QueryRow(
-		"SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS " +
-			"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='proxy_socks' AND INDEX_NAME='idx_socks_pool'").
-		Scan(&poolIndexCols); err != nil {
-		t.Fatalf("查询 idx_socks_pool 失败: %v", err)
-	}
-	if poolIndexCols != "allocation,is_active,sold_to" {
-		t.Fatalf("idx_socks_pool 列顺序应为 allocation,is_active,sold_to，实际 %q", poolIndexCols)
-	}
+	// 独占 socks 池已随代理商城下线移除，这里不再校验 proxy_socks 的列与索引。
 }
 
 // 零数据迁移：升级前后 users / nodes 的原有列逐行一致，region_id / capacity 全 NULL。

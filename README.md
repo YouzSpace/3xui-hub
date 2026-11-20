@@ -119,6 +119,8 @@ docker-compose up -d --build  # 更新并重启
 curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh | FROM_SOURCE=1 bash
 ```
 
+贡献代码（后端 / 前端 / 文档）之前先读 [CONTRIBUTING.md](CONTRIBUTING.md)：环境、提交前必须通过的命令、代码规范和 PR 要求都在里面。
+
 ## 常见问题
 
 ### 安装失败

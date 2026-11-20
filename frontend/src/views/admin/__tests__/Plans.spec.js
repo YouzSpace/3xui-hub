@@ -37,12 +37,6 @@ const REGIONS = [
   { id: 5, name: '韩国' },
 ]
 
-// 静态 IP 出口分类（「出口类型 = 静态 IP」时的下拉）
-const EXIT_PROFILES = [
-  { id: 9, name: '香港住宅', enabled: true, provider_name: '主力账号' },
-  { id: 10, name: '已停用分类', enabled: false },
-]
-
 const plan = (over) => ({
   price: 19.9,
   reset_price: 5,
@@ -77,7 +71,6 @@ beforeEach(() => {
   adminApi.listRegions = vi.fn(() => Promise.resolve({ regions: REGIONS }))
   adminApi.createPlan = vi.fn(() => Promise.resolve({ id: 100 }))
   adminApi.updatePlan = vi.fn(() => Promise.resolve({}))
-  adminApi.listExitProfiles = vi.fn(() => Promise.resolve(EXIT_PROFILES))
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
 
@@ -123,30 +116,6 @@ const clickFooterButton = async (label) => {
   )
   expect(btn, `弹窗底部没找到「${label}」按钮`).toBeTruthy()
   btn.click()
-  await flushPromises()
-}
-
-/** 出口类型单选（.pl-exit 里一排 radio）：按 value 点 */
-const pickExitType = async (value) => {
-  const radio = [...document.querySelectorAll('.pl-exit input[type="radio"]')].find(
-    (r) => r.value === value,
-  )
-  expect(radio, `没找到出口类型「${value}」`).toBeTruthy()
-  radio.click()
-  await flushPromises()
-}
-
-/** 出口分类下拉：自定义 Select，面板 Teleport 到 body，点完触发器再点选项 */
-const pickExitProfile = async (text) => {
-  const trigger = document.querySelector('.pl-exit-profile .ch-select-trigger')
-  expect(trigger, '出口分类下拉没渲染').toBeTruthy()
-  trigger.click()
-  await flushPromises()
-  const opt = [...document.querySelectorAll('.ch-select-option')].find((o) =>
-    o.textContent.includes(text),
-  )
-  expect(opt, `下拉里没找到「${text}」`).toBeTruthy()
-  opt.click()
   await flushPromises()
 }
 
@@ -231,98 +200,4 @@ describe('Plans.vue — 保存时的 region_ids', () => {
     expect(payload.region_ids).toBeNull()
   })
 })
-
-/**
- * 出口类型 × 出口分类。
- *
- * 守两件事：
- *  1. 出口分类下拉只在「静态 IP」时出现 —— 直连套餐的弹窗里不该有这个字段（变异测试就是
- *     把这个 v-if 去掉，看下面第一条用例变红）；
- *  2. 保存口径：只有静态 IP 才把 exit_profile_id 传上去，直连 / 单独 socks 一律传 null，
- *     不给后端「直连套餐却绑着住宅出口」的机会。
- */
-describe('Plans.vue — 出口类型 / 出口分类', () => {
-  it('直连（默认）不显示出口分类下拉；选「静态 IP」才出现', async () => {
-    const wrapper = await mountPage()
-
-    await rowOf(wrapper, '月度100G').findAll('button')[0].trigger('click')
-    await flushPromises()
-
-    // 默认直连：没有分类下拉
-    expect(document.querySelector('.pl-exit-profile')).toBeNull()
-    // 三个选项都在，且默认选中直连
-    const radios = [...document.querySelectorAll('.pl-exit input[type="radio"]')]
-    expect(radios).toHaveLength(3)
-    expect(radios.find((r) => r.checked)?.value).toBe('direct')
-
-    await pickExitType('static_chain')
-
-    expect(document.querySelector('.pl-exit-profile')).not.toBeNull()
-    expect(document.body.textContent).toContain('出口分类')
-    // 分类列表来自 /exit-profiles，停用的分类不给选
-    expect(adminApi.listExitProfiles).toHaveBeenCalled()
-  })
-
-  it('选静态 IP + 分类 → payload 含 exit_type=static_chain 和 exit_profile_id', async () => {
-    const wrapper = await mountPage()
-
-    await rowOf(wrapper, '月度100G').findAll('button')[0].trigger('click')
-    await flushPromises()
-
-    await pickExitType('static_chain')
-    await pickExitProfile('香港住宅')
-    await clickFooterButton('保存')
-
-    expect(adminApi.updatePlan).toHaveBeenCalledTimes(1)
-    const [id, payload] = adminApi.updatePlan.mock.calls[0]
-    expect(id).toBe(7)
-    expect(payload.exit_type).toBe('static_chain')
-    expect(payload.exit_profile_id).toBe(9)
-  })
-
-  it('从静态 IP 改回直连 → exit_profile_id 传 null（不留旧绑定）', async () => {
-    const wrapper = await mountPage()
-
-    await rowOf(wrapper, '月度100G').findAll('button')[0].trigger('click')
-    await flushPromises()
-
-    await pickExitType('static_chain')
-    await pickExitProfile('香港住宅')
-    // 再改回直连：分类下拉消失，payload 里必须清空绑定
-    await pickExitType('direct')
-    expect(document.querySelector('.pl-exit-profile')).toBeNull()
-
-    await clickFooterButton('保存')
-
-    const [, payload] = adminApi.updatePlan.mock.calls[0]
-    expect(payload.exit_type).toBe('direct')
-    expect(payload.exit_profile_id).toBeNull()
-  })
-
-  it('新建套餐默认直连 → payload 是 direct + null', async () => {
-    const wrapper = await mountPage()
-
-    const createBtn = wrapper.findAll('.pl-head button').find((b) => b.text().includes('新建套餐'))
-    await createBtn.trigger('click')
-    await flushPromises()
-
-    await clickFooterButton('保存')
-
-    const payload = adminApi.createPlan.mock.calls[0][0]
-    expect(payload.exit_type).toBe('direct')
-    expect(payload.exit_profile_id).toBeNull()
-  })
-
-  it('选了静态 IP 却没选分类 → 拦下不提交（避免建出没有出口的套餐）', async () => {
-    const wrapper = await mountPage()
-
-    await rowOf(wrapper, '月度100G').findAll('button')[0].trigger('click')
-    await flushPromises()
-
-    await pickExitType('static_chain')
-    await clickFooterButton('保存')
-
-    expect(toast.error).toHaveBeenCalledWith('出口类型选了静态 IP，请选择出口分类')
-    expect(adminApi.updatePlan).not.toHaveBeenCalled()
-  })
-})
+

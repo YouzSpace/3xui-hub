@@ -29,14 +29,6 @@ type PlanRow struct {
 	ThirdPartySubIDs []int64
 	// RegionIDs 是套餐可用地区（plans.region_ids，JSON 数组）。nil = 不限地区（老套餐/未勾选）。
 	RegionIDs []int64
-	// ExitType 是出口类型（#静态IP）：direct / static_chain / static_socks。
-	// 列是 NOT NULL DEFAULT 'direct'，老套餐升级后自动是 direct。
-	ExitType string
-	// ExitProfileID 是绑定的出口分类（仅 static_chain 有意义）；nil = 不绑。
-	ExitProfileID *uint64
-	// ExitProfileName 是 JOIN exit_profiles 得到的分类名（分类被删时为空）。
-	// 只参加输出，不参加写库。
-	ExitProfileName string
 	CreatedAt       *time.Time
 }
 
@@ -64,14 +56,6 @@ type PlanInput struct {
 	// RegionIDsSet 区分「未传」（改别的字段时保持原值）与「传了空数组」（显式改成不限）。
 	RegionIDs    []int64
 	RegionIDsSet bool
-	// ExitType 是出口类型（#静态IP）。未传 → 保持原值（update）/ 默认 direct（create）。
-	// ExitTypeSet 区分「未传」与「显式传了 direct」—— 后者要清掉 exit_profile_id。
-	ExitType    string
-	ExitTypeSet bool
-	// ExitProfileID 是绑定的出口分类；ExitProfileSet 区分「未传」与「显式 null」。
-	// 只有 exit_type=static_chain 才允许非空（见 validatePlan 的联动清理）。
-	ExitProfileID  *uint64
-	ExitProfileSet bool
 }
 
 // PlanStore 是套餐域对数据库的依赖（SQL 实现见 plan_sqlstore.go）。
@@ -87,8 +71,6 @@ type PlanStore interface {
 	ThirdPartySubExists(ctx context.Context, id int64) (bool, error)
 	// RegionExists 校验 region_ids.* → exists:regions,id（#地区功能-15）。
 	RegionExists(ctx context.Context, id int64) (bool, error)
-	// ExitProfileExists 校验 exit_profile_id → exists:exit_profiles,id（#静态IP）。
-	ExitProfileExists(ctx context.Context, id int64) (bool, error)
 }
 
 // present 对齐 PlanController::present。
@@ -115,11 +97,6 @@ func presentPlan(p *PlanRow) *jsObj {
 		"third_party_sub_ids", int64List(ids),
 		// 空数组 = 不限地区（DB 里存的是 NULL，前端按「一个都没勾 = 不限」渲染）。
 		"region_ids", int64List(p.RegionIDs),
-		// 出口类型（#静态IP）：direct / static_chain / static_socks。
-		// exit_profile_id 只在 static_chain 下非空；exit_profile_name 供列表直接展示。
-		"exit_type", p.ExitType,
-		"exit_profile_id", nullableUint(p.ExitProfileID),
-		"exit_profile_name", p.ExitProfileName,
 		"created_at", nullableISO(p.CreatedAt),
 	)
 }
@@ -153,11 +130,6 @@ func (d *UserDomain) validatePlan(c *gin.Context) (PlanInput, string, bool) {
 	// 可用地区（#地区功能-15）：不传 = 保持原值；传空数组 = 不限地区。
 	v.field("region_ids", "sometimes", "array")
 	v.field("region_ids.*", "integer", "exists:regions,id")
-	// 出口类型（#静态IP）：不传 = 保持原值（create 时落 direct）。
-	// 非法值直接拦下 —— 存进去之后出站生成会把「不认识的值」当直连，静默出错更难查。
-	v.field("exit_type", "sometimes", "in:direct,static_chain,static_socks")
-	// 出口分类：static_chain 套餐才允许绑；nullable 允许显式 null（= 解绑）。
-	v.field("exit_profile_id", "nullable", "integer", "exists:exit_profiles,id")
 
 	if !v.passes() {
 		if err := v.storeFailure(); err != nil {
@@ -238,33 +210,6 @@ func (d *UserDomain) validatePlan(c *gin.Context) (PlanInput, string, bool) {
 		}
 	}
 
-	// 出口类型（#静态IP）：未传 → 不改原值（update）；create 走下面的默认 direct。
-	// 注意这里用 valueOf（校验后的值）而不是 inputInt：非法值已经在 validate 被拦下。
-	in.ExitType = "direct"
-	if raw, ok := v.valueOf("exit_type"); ok && raw != nil {
-		in.ExitType, _ = inputString(raw)
-		in.ExitTypeSet = true
-	}
-	// 出口分类：传了 null = 解绑（指向 NULL），未传 = 不动原值。
-	if raw, ok := v.valueOf("exit_profile_id"); ok {
-		in.ExitProfileSet = true
-		if raw != nil {
-			n := inputInt(raw)
-			if n > 0 {
-				v := uint64(n)
-				in.ExitProfileID = &v
-			}
-		}
-	}
-
-	// 出口类型与分类的联动（#静态IP）：只有 static_chain 才带分类。
-	// 显式传了 exit_type 且不是 static_chain 时把分类清掉（前端从「静态 IP」切回直连
-	// 再保存 = 解绑）；只改价格、没传 exit_type 的 update 不能动已有的绑定。
-	if in.ExitTypeSet && in.ExitType != "static_chain" {
-		in.ExitProfileID = nil
-		in.ExitProfileSet = true
-	}
-
 	// 纯第三方套餐（不勾本地、勾了第三方）：第三方不管流量只管时间 → 强制周期套餐。
 	// 必须在「按类型清理无关字段」之前改 type，否则 type=total 的清理分支会把 months 置 null。
 	if !in.IncludeLocal && len(in.ThirdPartySubIDs) > 0 {
@@ -323,9 +268,6 @@ func (d *UserDomain) planExistsChecker() func(table, column string, value any) (
 		case "regions":
 			// 套餐可用地区（#地区功能-15）：勾的地区必须真实存在。
 			return d.plans.RegionExists(ctx, inputInt(value))
-		case "exit_profiles":
-			// 套餐绑定的出口分类（#静态IP）：分类必须真实存在。
-			return d.plans.ExitProfileExists(ctx, inputInt(value))
 		}
 		return false, nil
 	}
@@ -383,32 +325,10 @@ func (d *UserDomain) planShow(c *gin.Context) {
 	d.success(c, presentPlan(p))
 }
 
-// checkPlanExitBinding 守住「只有 static_chain 套餐才绑出口分类」（#静态IP）。
-//
-// 不放进 validatePlan：update 未传 exit_type 时「有效类型」取决于库里的旧值，
-// 而校验函数看不到那一行（它只拿得到请求体）。currentType 由调用方给出：
-// create 用请求里的值（缺省 direct），update 用查出来的 p.ExitType。
-//
-// 返回非空 = 校验失败文案。
-func checkPlanExitBinding(in PlanInput, currentType string) string {
-	effective := in.ExitType
-	if !in.ExitTypeSet {
-		effective = currentType
-	}
-	if in.ExitProfileID != nil && effective != "static_chain" {
-		return "只有「静态 IP（链式）」套餐才能绑定出口分类"
-	}
-	return ""
-}
-
 func (d *UserDomain) planStore(c *gin.Context) {
 	in, summary, ok := d.validatePlan(c)
 	if !ok {
 		d.failValidation(c, summary)
-		return
-	}
-	if msg := checkPlanExitBinding(in, in.ExitType); msg != "" {
-		d.fail(c, msg, 422)
 		return
 	}
 	p, err := d.plans.CreatePlan(ctxOf(c), in, d.now())
@@ -427,10 +347,6 @@ func (d *UserDomain) planUpdate(c *gin.Context) {
 	in, summary, ok := d.validatePlan(c)
 	if !ok {
 		d.failValidation(c, summary)
-		return
-	}
-	if msg := checkPlanExitBinding(in, p.ExitType); msg != "" {
-		d.fail(c, msg, 422)
 		return
 	}
 	if err := d.plans.UpdatePlan(ctxOf(c), p.ID, in, d.now()); err != nil {

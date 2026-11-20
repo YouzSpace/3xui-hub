@@ -38,8 +38,6 @@ var planRegion15DDL = []string{
 		include_local tinyint(1) NOT NULL DEFAULT 1,
 		third_party_sub_ids text COLLATE utf8mb4_unicode_ci,
 		region_ids json DEFAULT NULL,
-		exit_type varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'direct',
-		exit_profile_id bigint unsigned DEFAULT NULL,
 		created_at timestamp NULL DEFAULT NULL,
 		updated_at timestamp NULL DEFAULT NULL,
 		PRIMARY KEY (id)
@@ -52,23 +50,6 @@ var planRegion15DDL = []string{
 		updated_at timestamp NULL DEFAULT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY regions_name_unique (name)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-	// 出口分类（#静态IP）：套餐读路径 LEFT JOIN 它取 exit_profile_name，
-	// 建表必须与 ensureSchema 同步，否则套餐接口直接 1146。
-	`CREATE TABLE exit_profiles (
-		id bigint unsigned NOT NULL AUTO_INCREMENT,
-		name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-		provider_id bigint unsigned NOT NULL,
-		traffic_gb int NOT NULL DEFAULT 0,
-		duration_days int NOT NULL DEFAULT 30,
-		max_thread_count int NOT NULL DEFAULT 0,
-		socks_host varchar(190) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
-		socks_port int NOT NULL DEFAULT 1080,
-		enabled tinyint NOT NULL DEFAULT 1,
-		created_at timestamp NULL DEFAULT NULL,
-		updated_at timestamp NULL DEFAULT NULL,
-		PRIMARY KEY (id),
-		UNIQUE KEY exit_profiles_name_unique (name)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 }
 

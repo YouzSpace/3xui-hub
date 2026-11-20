@@ -37,15 +37,11 @@ type UserRow struct {
 	// 用户列表接口默认不输出该字段（保持原契约），仅 balance_order 生效时回传。
 	Balance int64
 
-	// ProxyActiveCount 只由列表查询填充（对齐 withCount('proxyEntitlements …')）；
-	// 详情/写响应在 PHP 里拿不到该属性，恒为 0。
-	ProxyActiveCount int64
-
 	// NodeIDs / NodeNames 是用户绑定的节点（#地区功能-26）。
 	//
 	// 只由 /users 列表与 /users/:id 详情填充（一次 IN 查询批量取，不做 N+1）；
 	// 其余写响应（改密/重置流量/续费等）不携带绑定信息，两列留空 —— 与
-	// ProxyActiveCount 同口径，前端拿到 null 字段时显示「—」。
+	// NodeIDs / NodeNames 口径：前端拿到 null 字段时显示「—」。
 	NodeIDs   []int64
 	NodeNames []string
 }
@@ -72,20 +68,6 @@ func (u *UserRow) ClientEmail() string { return "ch_user_" + itoaUint(u.ID) }
 // IsPeriodPlan / IsTotalPlan 对齐 User::isPeriodPlan() / isTotalPlan()（无套餐 → false）。
 func (u *UserRow) IsPeriodPlan() bool { return u.PlanType != nil && *u.PlanType == "period" }
 func (u *UserRow) IsTotalPlan() bool  { return u.PlanType != nil && *u.PlanType == "total" }
-
-// UserProxy 是代理权益明细（presentProxies 的输入）。
-type UserProxy struct {
-	ID        uint64
-	Kind      string
-	SKUName   *string
-	Status    string
-	ExpiresAt *time.Time
-}
-
-// IsActive 对齐 ProxyEntitlement::isActive()。
-func (p *UserProxy) IsActive(now time.Time) bool {
-	return p.Status == KindStatusActive && (p.ExpiresAt == nil || p.ExpiresAt.After(now))
-}
 
 // UserPlan 是套餐换算（applyPlan / create）需要的列。
 type UserPlan struct {
@@ -170,7 +152,6 @@ type AdminUserStore interface {
 	// 目标节点不存在返回 ErrNodeNotFound。
 	MoveUserNode(ctx context.Context, userID uint64, fromNodeID, toNodeID int64, operator *string) error
 	UserExists(ctx context.Context, id uint64) (bool, error)
-	UserProxies(ctx context.Context, userID uint64) ([]UserProxy, error)
 	UserPlanByID(ctx context.Context, id uint64) (*UserPlan, error)
 	PlanExists(ctx context.Context, id uint64) (bool, error)
 	CreateUser(ctx context.Context, in UserCreateInput) (*UserRow, error)

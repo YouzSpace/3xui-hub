@@ -11,6 +11,7 @@ package admin
 //	GET    /admin-api/regions/:region/nodes  该地区的节点（含 bound_users / agree_ratio）
 //	PUT    /admin-api/nodes/:node/region     设置节点归属 {region_id}（null=移出地区）
 //	PUT    /admin-api/nodes/:node/capacity   设置容量 {capacity}（null=不限）
+//	GET    /admin-api/nodes/:node/capacity-recommend  容量建议（按 node_metrics 最近 7 天样本推算）
 //
 // 路由参数名必须叫 :node（不能叫 :id）：NodeDomain 已经注册了 /nodes/:node，
 // gin 的路由树同位置只允许一个通配名，换个名字直接 panic（实测
@@ -39,14 +40,18 @@ const regionNameMaxRunes = 64
 
 // RegionDeps 是地区域的依赖清单。
 type RegionDeps struct {
-	Store  RegionStore
-	Logger loggerLike
+	Store RegionStore
+	// Metrics 是容量建议的数据源（node_metrics 采样 + Recommend 推算）。
+	// 接口化：单测注入固定结果，不必连库造 7 天样本；为 nil 时端点回「未启用」，不 panic。
+	Metrics capacityRecommender
+	Logger  loggerLike
 }
 
 // RegionDomain 是管理端地区域的 HTTP 入口。
 type RegionDomain struct {
-	store  RegionStore
-	logger loggerLike
+	store   RegionStore
+	metrics capacityRecommender
+	logger  loggerLike
 }
 
 // NewRegionDomain 组装地区域。
@@ -58,7 +63,7 @@ func NewRegionDomain(d RegionDeps) *RegionDomain {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &RegionDomain{store: d.Store, logger: logger}
+	return &RegionDomain{store: d.Store, metrics: d.Metrics, logger: logger}
 }
 
 // Register 把地区域路由挂到给定分组（调用方负责 /admin-api 前缀与 admin.auth 中间件）。
@@ -75,6 +80,8 @@ func (d *RegionDomain) Register(r gin.IRouter) {
 	// 节点归属 / 容量：挂在现有 /nodes/:node 之下，只增两条子路径。
 	r.PUT("/nodes/:node/region", d.nodeRegion)
 	r.PUT("/nodes/:node/capacity", d.nodeCapacity)
+	// 容量建议：只读，与上面的 PUT 同前缀不同后缀（静态段在 gin 里不会和 :node 冲突）。
+	r.GET("/nodes/:node/capacity-recommend", d.nodeCapacityRecommend)
 }
 
 // ---- 响应封装（PHP ApiResponse 口径，与返佣/余额域一致）----
@@ -217,6 +224,7 @@ func (d *RegionDomain) regionStore(c *gin.Context) {
 	if v, exists := input["sort"]; exists && v != nil {
 		sort = inputInt(v)
 	}
+	// 静态 IP 分组已随代理生产线下线移除。
 
 	taken, err := d.store.RegionNameTaken(ctxOf(c), name, 0)
 	if err != nil {
@@ -264,6 +272,8 @@ func (d *RegionDomain) regionUpdate(c *gin.Context) {
 		s := inputInt(v)
 		sort = &s
 	}
+
+	// 静态 IP 分组已随代理生产线下线移除。
 
 	if name != nil {
 		taken, err := d.store.RegionNameTaken(ctxOf(c), *name, id)
@@ -432,6 +442,56 @@ func (d *RegionDomain) nodeCapacity(c *gin.Context) {
 	d.success(c, jo("id", nodeID, "capacity", nullableInt(capacity)), "保存成功")
 }
 
+// capacityRecommender 是容量建议需要的最小能力（*metrics.Store 直接满足）。
+//
+// 独立成接口：单测注入固定推荐结果，不必连库造 7 天样本。与 alertSource 一样
+// 「能力缺失不影响其余接口」—— 字段为 nil 时端点回「未启用」，不是 500。
+type capacityRecommender interface {
+	Recommend(ctx context.Context, nodeID int64) (metrics.Recommendation, error)
+}
+
+// nodeCapacityRecommend 对齐 GET /admin-api/nodes/:node/capacity-recommend。
+//
+// 数据来自 node_metrics 最近 7 天的采样（internal/metrics.Recommend 推算），
+// 只读、不改任何配置：填不填看管理员自己决定（前端「一键填入」只是把数字
+// 写进容量输入框，仍需再点保存才会落库）。
+//
+// 三种情况：
+//   - 节点不存在 → 404（与 PUT /nodes/:node/capacity 同口径）。必须先查节点：
+//     Recommend 对不存在的 id 只会回「最近 7 天没有采样数据」，前端会把打错的
+//     id 当成「节点还没上报」；
+//   - 推算不出数（Suggest = 0：样本不足或节点没上报内存）→ suggest 回 null，
+//     不下发建议值，reason 说明原因；
+//   - 正常 → suggest + confidence + basis + per_user_kb + samples + reason。
+func (d *RegionDomain) nodeCapacityRecommend(c *gin.Context) {
+	nodeID, ok := parseUint(c.Param("node"))
+	if !ok {
+		d.notFound(c)
+		return
+	}
+	if _, _, err := d.store.NodeBinding(ctxOf(c), nodeID); err != nil {
+		if d.noRowsToNotFound(c, err) {
+			return
+		}
+		d.failServer(c, "查询节点", err)
+		return
+	}
+	if d.metrics == nil {
+		// 没接入指标存储（单测 / 裁剪部署）：明说「未启用」，别伪装成「样本不足」。
+		d.success(c, presentCapacityRecommendation(metrics.Recommendation{
+			NodeID: int64(nodeID),
+			Reason: "未启用容量建议（没有接入节点指标存储）",
+		}))
+		return
+	}
+	rec, err := d.metrics.Recommend(ctxOf(c), int64(nodeID))
+	if err != nil {
+		d.failServer(c, "推算建议容量", err)
+		return
+	}
+	d.success(c, presentCapacityRecommendation(rec))
+}
+
 // ---- 展示层 ----
 
 // presentRegionSummaries 输出地区统计数组（字段顺序固定，前端契约）。
@@ -505,6 +565,26 @@ func presentAlert(a metrics.Alert) *jsObj {
 // presentAlertCounts 输出告警计数 {warn, critical}：总览与告警列表共用。
 func presentAlertCounts(c metrics.AlertCounts) *jsObj {
 	return jo("warn", c.Warn, "critical", c.Critical)
+}
+
+// presentCapacityRecommendation 输出容量建议（字段顺序固定，前端契约）。
+//
+// suggest 在 Recommend 给不出数（Suggest = 0）时回 null，不是 0：容量列里 0 与
+// NULL 对管理员来说是「不限」的意思，下发 0 前端就会显示「建议 0 人」。
+// per_user_kb 走 phpFloat（0 / 5 / 12.5 这种短表示，不带 12.500000）。
+func presentCapacityRecommendation(r metrics.Recommendation) *jsObj {
+	var suggest any
+	if r.Suggest > 0 {
+		suggest = r.Suggest
+	}
+	return jo(
+		"suggest", suggest,
+		"confidence", r.Confidence,
+		"basis", r.Basis,
+		"per_user_kb", phpFloat(r.PerUserKB),
+		"samples", r.Samples,
+		"reason", r.Reason,
+	)
 }
 
 // regionAgreeRatio = bound_users / capacity；容量无效时 null。

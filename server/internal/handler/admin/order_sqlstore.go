@@ -67,13 +67,12 @@ func (s *orderSQLStore) OrderPage(ctx context.Context, f OrderFilter, page, perP
 	}
 	offset := (page - 1) * perPage
 
-	q := `SELECT o.id, o.order_no, o.user_id, u.email, p.name, s.name,
+	q := `SELECT o.id, o.order_no, o.user_id, u.email, p.name, NULL,
 			o.order_type, o.amount, o.status, pc.name, o.trade_no, o.paid_at, o.created_at,
 			o.payment_driver_type, o.pay_expires_at, dc.code, dc.status
 		FROM orders o
 		LEFT JOIN users u ON u.id = o.user_id
 		LEFT JOIN plans p ON p.id = o.plan_id
-		LEFT JOIN proxy_skus s ON s.id = o.proxy_sku_id
 		LEFT JOIN payment_configs pc ON pc.id = o.payment_config_id
 		LEFT JOIN discount_codes dc ON dc.id = o.discount_code_id
 		WHERE 1=1` + where + `

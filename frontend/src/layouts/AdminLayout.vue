@@ -73,7 +73,6 @@ const groups = [
     items: [
       { to: '/admin/nodes', name: 'admin-nodes', label: '节点列表', icon: 'server' },
       { to: '/admin/regions', name: 'admin-regions', label: '地区与调度', icon: 'server' },
-      { to: '/admin/exit-profiles', name: 'admin-exit-profiles', label: '静态IP出口', icon: 'globe' },
       { to: '/admin/nodes/multiplier', name: 'admin-node-multipliers', label: '流量倍率', icon: 'traffic' },
       { to: '/admin/nodes/xray', name: 'admin-xray', label: 'Xray 高级配置', icon: 'activity' },
       { to: '/admin/geodata', name: 'admin-geodata', label: 'Geo 数据', icon: 'globe' },
@@ -85,9 +84,6 @@ const groups = [
     icon: 'layers',
     items: [
       { to: '/admin/upstream/third-party', name: 'admin-upstream-third-party', label: '第三方机场', icon: 'globe' },
-      { to: '/admin/upstream/webshare', name: 'admin-upstream-webshare', label: 'Webshare 代理', icon: 'server' },
-      { to: '/admin/upstream/proxy-store', name: 'admin-upstream-proxy-store', label: '商城商品', icon: 'cart' },
-      { to: '/admin/upstream/proxy-ops', name: 'admin-upstream-proxy-ops', label: '代理运营', icon: 'shield' },
     ],
   },
   {

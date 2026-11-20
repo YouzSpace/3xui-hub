@@ -121,7 +121,6 @@ const (
 	NameDBBackup             = "db-backup"
 	NameMonitorRollup        = "monitor-rollup"
 	NameExpirePendingOrders  = "expire-pending-orders"
-	NameProxyMaintain        = "proxy-maintain"
 	NameAsyncTaskTimeout     = "async-task-timeout"
 	NameMailNotifyScan       = "mail-notify-scan"
 	NameMailScheduleScan     = "mail-schedule-scan"
@@ -257,11 +256,6 @@ func DefaultJobs(d Deps) []Job {
 			Run: func(ctx context.Context) error {
 				return commands.Run(ctx, "order:expire-pending", nil)
 			},
-		},
-		// 代理商城的维护：回采 webshare 用量 + 到期权益标记 + 到期停用上游子账号。
-		{
-			Name: NameProxyMaintain, Spec: SpecHourly, WithoutOverlap: true,
-			Run: func(ctx context.Context) error { return commands.Run(ctx, "proxy:maintain", nil) },
 		},
 	}
 

@@ -269,7 +269,6 @@ func defaultScheduledEvents() []ScheduledEvent {
 		// 「系统状态 → 定时任务」页看不到它（任务照常跑，只是页面上没有）。
 		{Command: "retention:purge", Expression: "0 4 * * *", HasMutex: true},
 		{Command: "expire-pending-orders", Expression: "0 * * * *", HasMutex: true},
-		{Command: "proxy-maintain", Expression: "0 * * * *", HasMutex: true},
 		{Command: "async-task-timeout", Expression: "*/5 * * * *", HasMutex: true},
 		{Command: "mail-notify-scan", Expression: "*/5 * * * *", HasMutex: true},
 		{Command: "mail-schedule-scan", Expression: "*/5 * * * *", HasMutex: true},

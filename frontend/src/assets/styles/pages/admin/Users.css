@@ -26,22 +26,6 @@
 .au-traffic-cell {
   font-size: var(--text-xs);
 }
-.au-proxy-badge { margin-left: 6px; }
-.au-proxy-box {
-  margin-top: var(--space-2);
-  padding: var(--space-3);
-  border: 1px dashed var(--border-subtle);
-  border-radius: 10px;
-  background: var(--bg-hover);
-}
-.au-proxy-title {
-  display: flex; flex-direction: column; gap: 2px;
-  font-size: var(--text-sm); font-weight: var(--font-medium); margin-bottom: 6px;
-}
-.au-proxy-note { font-weight: 400; color: var(--text-muted); font-size: var(--text-xs); line-height: 1.5; }
-.au-proxy-list { display: flex; flex-direction: column; gap: 6px; }
-.au-proxy-line { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); flex-wrap: wrap; }
-.au-proxy-sku { font-size: var(--text-xs); }
 
 .au-plan-preview {
   background: var(--bg-hover);

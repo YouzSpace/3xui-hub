@@ -24,7 +24,7 @@ import (
 // 全部公开端点（节点安装/注册前无凭据可鉴权）：
 //   GET /node-bin/manifest.json         版本+架构清单（sha256 在此下发）
 //   GET /node-bin/agent/{arch}          节点 agent 二进制（白名单 + sha256 复验）
-//   GET /node-bin/{version}/{arch}.zip  内核二进制（白名单 + sha256 复验）
+//   GET /node-bin/{version}/{arch}.zip  内核二进制（白名单 + sha256 复验；本地缺失按 manifest url 拉取）
 //   GET /node-bin/geo/{file}            geo 数据（geoip.dat / geosite.dat）
 //   GET /node-install.sh                节点安装脚本
 //   GET /node-agent.sh                  节点 agent 脚本
@@ -141,16 +141,9 @@ func (h *AssetHandler) AgentBinary(c *gin.Context) {
 
 	p := filepath.Join(h.Root, "node-bin", "agent", asset.File)
 
-	// 本地可用（含离线/内网）→ 维持现状。
-	if !localAssetMatches(p, asset.SHA256) && strings.TrimSpace(asset.URL) != "" {
-		if err := h.fetchAgentAsset(asset, p); err != nil {
-			status := http.StatusBadGateway
-			if errors.Is(err, errAssetChecksum) {
-				status = http.StatusInternalServerError
-			}
-			jsonError(c, status, err.Error())
-			return
-		}
+	// 本地可用（含离线/内网）→ 维持现状；否则按 manifest 的 url 拉取。
+	if !h.ensureRemoteAsset(c, p, asset) {
+		return
 	}
 
 	h.serveVerified(c, p, asset, "application/octet-stream",
@@ -181,6 +174,13 @@ func (h *AssetHandler) Binary(c *gin.Context) {
 	}
 
 	p := filepath.Join(h.Root, "node-bin", version, asset.File)
+
+	// 内核 zip 同样不进 git（20MB+，issue #138）：本地可用就直接下发（离线/内网照旧）；
+	// 缺失/被污染且 manifest 带 url → 从上游下载 → sha256 复验 → 落盘缓存。
+	if !h.ensureRemoteAsset(c, p, asset) {
+		return
+	}
+
 	h.serveVerified(c, p, asset, "application/zip",
 		"asset missing on panel", "asset checksum mismatch, refusing to serve")
 }
@@ -329,6 +329,25 @@ func (h *AssetHandler) serveVerified(c *gin.Context, filePath string, asset *man
 // errAssetChecksum 表示下载内容与 manifest 的 sha256 不符（防投毒，绝不落盘/下发）。
 var errAssetChecksum = errors.New("asset checksum mismatch, refusing to serve")
 
+// ensureRemoteAsset 保证 filePath 处有一份 sha256 对得上的资产：
+// 本地已一致 → 直接用（离线/内网部署不联网）；本地缺失/被污染且 manifest 带 url →
+// 下载 + 复验 + 落盘缓存，后续请求命中本地不再重复下载。
+// 返回 false 表示失败，响应已由本函数写好（agent 二进制与内核 zip 共用这套逻辑）。
+func (h *AssetHandler) ensureRemoteAsset(c *gin.Context, filePath string, asset *manifestAsset) bool {
+	if localAssetMatches(filePath, asset.SHA256) || strings.TrimSpace(asset.URL) == "" {
+		return true
+	}
+	if err := h.fetchRemoteAsset(asset, filePath); err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, errAssetChecksum) {
+			status = http.StatusInternalServerError
+		}
+		jsonError(c, status, err.Error())
+		return false
+	}
+	return true
+}
+
 // localAssetMatches 判断本地文件存在且 sha256 与 manifest 一致。
 func localAssetMatches(filePath, wantSHA string) bool {
 	info, err := os.Stat(filePath)
@@ -342,14 +361,14 @@ func localAssetMatches(filePath, wantSHA string) bool {
 	return wantSHA != "" && strings.EqualFold(sum, wantSHA)
 }
 
-// fetchAgentAsset 从 asset.URL 下载 agent 二进制并缓存到本地原路径。
+// fetchRemoteAsset 从 asset.URL 下载资产（agent 二进制 / 内核 zip 共用）并缓存到本地原路径。
 //
 // 边下边算 sha256，只有与 manifest 一致才写盘：临时文件 + 原子 rename，
 // 中途失败或内容不符都不会留下半截缓存（后续请求照旧走本地 serveVerified）。
-func (h *AssetHandler) fetchAgentAsset(asset *manifestAsset, target string) error {
+func (h *AssetHandler) fetchRemoteAsset(asset *manifestAsset, target string) error {
 	req, err := http.NewRequest(http.MethodGet, asset.URL, nil)
 	if err != nil {
-		return fmt.Errorf("download agent asset from release failed: %v", err)
+		return fmt.Errorf("download asset from upstream failed: %w", err)
 	}
 	req.Header.Set("User-Agent", "ControlHub-Asset/1.0")
 
@@ -359,21 +378,21 @@ func (h *AssetHandler) fetchAgentAsset(asset *manifestAsset, target string) erro
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
-		return fmt.Errorf("download agent asset from release failed: %v", err)
+		return fmt.Errorf("download asset from upstream failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("download agent asset from release failed: HTTP %d", resp.StatusCode)
+		return fmt.Errorf("download asset from upstream failed: HTTP %d", resp.StatusCode)
 	}
 
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("cache agent asset failed: %v", err)
+		return fmt.Errorf("cache asset failed: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".agent-download-*")
+	tmp, err := os.CreateTemp(dir, ".asset-download-*")
 	if err != nil {
-		return fmt.Errorf("cache agent asset failed: %v", err)
+		return fmt.Errorf("cache asset failed: %w", err)
 	}
 	tmpPath := tmp.Name()
 	discard := func(err error) error {
@@ -384,11 +403,11 @@ func (h *AssetHandler) fetchAgentAsset(asset *manifestAsset, target string) erro
 
 	hash := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(tmp, hash), resp.Body); err != nil {
-		return discard(fmt.Errorf("download agent asset from release failed: %v", err))
+		return discard(fmt.Errorf("download asset from upstream failed: %w", err))
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("cache agent asset failed: %v", err)
+		return fmt.Errorf("cache asset failed: %w", err)
 	}
 	if sum := hex.EncodeToString(hash.Sum(nil)); !strings.EqualFold(sum, asset.SHA256) {
 		_ = os.Remove(tmpPath)
@@ -398,7 +417,7 @@ func (h *AssetHandler) fetchAgentAsset(asset *manifestAsset, target string) erro
 	_ = os.Chmod(tmpPath, 0o644)
 	if err := os.Rename(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("cache agent asset failed: %v", err)
+		return fmt.Errorf("cache asset failed: %w", err)
 	}
 	return nil
 }

@@ -1,7 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAdminStore } from '@/stores/admin'
-import { useSiteConfigStore } from '@/stores/siteConfig'
 
 const routes = [
   // ===== 用户端 =====
@@ -64,16 +63,6 @@ const routes = [
         component: () => import('@/views/user/Orders.vue'),
       },
       {
-        path: 'proxy',
-        name: 'user-proxy',
-        component: () => import('@/views/user/ProxyShop.vue'),
-      },
-      {
-        path: 'proxy/mine',
-        name: 'user-proxy-mine',
-        component: () => import('@/views/user/ProxyMine.vue'),
-      },
-      {
         path: 'tutorials',
         name: 'user-tutorials',
         component: () => import('@/views/user/Tutorials.vue'),
@@ -115,14 +104,10 @@ const routes = [
       { path: 'nodes', name: 'admin-nodes', component: () => import('@/views/admin/Nodes.vue') },
       // 地区与调度：地区列表 + 展开看节点 + 容量水位 + 迁移/均衡入口
       { path: 'regions', name: 'admin-regions', component: () => import('@/views/admin/Regions.vue') },
-      // 静态 IP 出口分类：前置节点组 + webshare 账号，套餐绑分类
-      { path: 'exit-profiles', name: 'admin-exit-profiles', component: () => import('@/views/admin/ExitProfiles.vue') },
+      // 流量倍率：按节点设置实际/显示倍率
       { path: 'nodes/multiplier', name: 'admin-node-multipliers', component: () => import('@/views/admin/NodeMultipliers.vue') },
-      // 上游（外部货源接入）：第三方机场订阅 / Webshare 代理
+      // 上游（外部货源接入）：第三方机场订阅
       { path: 'upstream/third-party', name: 'admin-upstream-third-party', component: () => import('@/views/admin/ThirdParty.vue') },
-      { path: 'upstream/webshare', name: 'admin-upstream-webshare', component: () => import('@/views/admin/UpstreamWebshare.vue') },
-      { path: 'upstream/proxy-store', name: 'admin-upstream-proxy-store', component: () => import('@/views/admin/ProxyStore.vue') },
-      { path: 'upstream/proxy-ops', name: 'admin-upstream-proxy-ops', component: () => import('@/views/admin/ProxyOps.vue') },
       // xray 高级配置：四个子页收进一个容器（顶部 Tab 切换），旧路径重定向保留
       { path: 'nodes/xray', name: 'admin-xray', component: () => import('@/views/admin/XrayAdvanced.vue') },
       { path: 'nodes/xray-inbounds', redirect: { path: '/admin/nodes/xray', query: { tab: 'inbounds' } } },
@@ -173,15 +158,6 @@ router.beforeEach(async (to) => {
     if (!auth.ready) await auth.fetchMe()
     if (!auth.user) return { name: 'user-login', query: { redirect: to.fullPath } }
 
-    // 代理商城默认关闭：直接输 URL 也进不去（后端接口同样会拒，
-    // 这里只是别让用户看到空页面 / 报错弹窗）
-    // 只拦「代理商城」页；「我的代理」不拦 —— 开关关闭只是停售，
-    // 已购买的用户仍要能进去看凭据和 IP。
-    if (to.name === 'user-proxy') {
-      const siteConfig = useSiteConfigStore()
-      if (!siteConfig.loaded) await siteConfig.fetch()
-      if (!siteConfig.proxyStoreEnabled) return { name: 'user-dashboard' }
-    }
   }
 
   if (to.meta.requiresAdmin) {

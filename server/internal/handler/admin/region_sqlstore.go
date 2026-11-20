@@ -100,8 +100,8 @@ func (s *regionSQLStore) RegionCreate(ctx context.Context, name string, sort int
 // 新旧值完全相同时 MySQL 的 RowsAffected 是 0（默认非 FOUND_ROWS 模式），
 // 不能用它判断「地区不存在」—— 0 行时再查一次，查不到才回 sql.ErrNoRows。
 func (s *regionSQLStore) RegionUpdate(ctx context.Context, id uint64, name *string, sort *int64) (*RegionRecord, error) {
-	sets := make([]string, 0, 3)
-	args := make([]any, 0, 4)
+	sets := make([]string, 0, 2)
+	args := make([]any, 0, 3)
 	if name != nil {
 		sets = append(sets, "name = ?")
 		args = append(args, *name)

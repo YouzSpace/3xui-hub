@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	discountstatus "controlhub-server/internal/discount"
@@ -172,65 +171,13 @@ func (s *PaymentSQLStore) EnabledPaymentConfigs(ctx context.Context) ([]PaymentC
 
 // ---- plans ----
 
-// planExitColumnsReady 缓存「plans 表有没有 exit_type / exit_profile_id」。
-//
-// 这两列由并行任务建（cmd/server/schema.go 的 ensureColumn）。支付包不持有 schema 责任，
-// 但升级窗口里可能遇到「二进制已更新、迁移还没跑」的库：缺列时退回只读老列，
-// 按 direct 语义处理（老套餐本来就是 direct），而不是让整条下单/回调链路报 1054。
-var (
-	planExitColumnsMu    sync.Mutex
-	planExitColumnsKnown bool
-	planExitColumnsValue bool
-)
-
-func (s *PaymentSQLStore) planExitColumnsReady(ctx context.Context) (bool, error) {
-	planExitColumnsMu.Lock()
-	if planExitColumnsKnown {
-		v := planExitColumnsValue
-		planExitColumnsMu.Unlock()
-		return v, nil
-	}
-	planExitColumnsMu.Unlock()
-
-	var n int
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM information_schema.COLUMNS
-		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'plans'
-		  AND COLUMN_NAME IN ('exit_type','exit_profile_id')`).Scan(&n); err != nil {
-		return false, err
-	}
-	ok := n == 2
-	planExitColumnsMu.Lock()
-	planExitColumnsKnown = true
-	planExitColumnsValue = ok
-	planExitColumnsMu.Unlock()
-	return ok, nil
-}
-
 func (s *PaymentSQLStore) PlanForPayment(ctx context.Context, id uint64) (*PlanRow, error) {
 	var (
 		p            PlanRow
 		isActive     int
 		includeLocal sql.NullInt64
 	)
-	hasExit, cErr := s.planExitColumnsReady(ctx)
-	if cErr != nil {
-		return nil, cErr
-	}
-	if hasExit {
-		err := s.db.QueryRowContext(ctx,
-			`SELECT id, name, type, is_active, months, monthly_traffic, period_traffic, total_traffic,
-			        price, reset_price, include_local, exit_type, exit_profile_id
-			 FROM plans WHERE id = ?`, id).
-			Scan(&p.ID, &p.Name, &p.Type, &isActive, &p.Months, &p.MonthlyTraffic, &p.PeriodTraffic,
-				&p.TotalTraffic, &p.Price, &p.ResetPrice, &includeLocal, &p.ExitType, &p.ExitProfileID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		if err != nil {
-			return nil, err
-		}
-	} else {
+	{
 		err := s.db.QueryRowContext(ctx,
 			`SELECT id, name, type, is_active, months, monthly_traffic, period_traffic, total_traffic,
 			        price, reset_price, include_local
@@ -246,15 +193,12 @@ func (s *PaymentSQLStore) PlanForPayment(ctx context.Context, id uint64) (*PlanR
 	}
 	p.IsActive = isActive != 0
 	p.IncludeLocal = !includeLocal.Valid || includeLocal.Int64 != 0
-	if p.ExitType == "" {
-		p.ExitType = "direct"
-	}
 	return &p, nil
 }
 
 // ---- orders ----
 
-const orderColumns = `id, order_no, user_id, order_type, plan_id, proxy_sku_id, amount,
+const orderColumns = `id, order_no, user_id, order_type, plan_id, amount,
 	original_amount, discount_code_id, discount_amount, status, payment_config_id,
 	trade_no, paid_at, pay_ip, pay_url, pay_expires_at, created_at`
 
@@ -269,7 +213,7 @@ func scanOrder(row interface{ Scan(...any) error }) (*Order, error) {
 		status         sql.NullString
 		createdAt      sql.NullTime
 	)
-	err := row.Scan(&o.ID, &o.OrderNo, &o.UserID, &orderType, &o.PlanID, &o.ProxySkuID, &amount,
+	err := row.Scan(&o.ID, &o.OrderNo, &o.UserID, &orderType, &o.PlanID, &amount,
 		&originalAmount, &o.DiscountCodeID, &discountAmount, &status, &o.PaymentConfigID,
 		&o.TradeNo, &o.PaidAt, &o.PayIP, &o.PayURL, &o.PayExpiresAt, &createdAt)
 	if err != nil {
@@ -332,17 +276,16 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 	if limit <= 0 {
 		limit = 20
 	}
-	// 与 PHP 的 ->with(['plan','proxySku']) 等价：两个 LEFT JOIN 取展示名。
+	// 与 PHP 的 ->with('plan') 等价：LEFT JOIN 取套餐展示名。
 	// 用 LEFT JOIN 而不是两次查询，避免 20 行 × 2 次的 N+1。
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT o.id, o.order_no, o.user_id, o.order_type, o.plan_id, o.proxy_sku_id, o.amount,
+		`SELECT o.id, o.order_no, o.user_id, o.order_type, o.plan_id, o.amount,
 		        o.original_amount, o.discount_code_id, o.discount_amount, o.status,
 		        o.payment_config_id, o.trade_no, o.paid_at, o.pay_ip, o.pay_url, o.pay_expires_at,
 		        o.created_at,
-		        p.name AS plan_name, ps.name AS sku_name
+		        p.name AS plan_name
 		 FROM orders o
 		 LEFT JOIN plans p ON p.id = o.plan_id
-		 LEFT JOIN proxy_skus ps ON ps.id = o.proxy_sku_id
 		 WHERE o.user_id = ?
 		 ORDER BY o.id DESC
 		 LIMIT ?`, userID, limit)
@@ -362,11 +305,11 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 			status         sql.NullString
 			createdAt      sql.NullTime
 		)
-		if err := rows.Scan(&row.ID, &row.OrderNo, &row.UserID, &orderType, &row.PlanID, &row.ProxySkuID,
+		if err := rows.Scan(&row.ID, &row.OrderNo, &row.UserID, &orderType, &row.PlanID,
 			&amount, &originalAmount, &row.DiscountCodeID, &discountAmount, &status,
 			&row.PaymentConfigID, &row.TradeNo, &row.PaidAt, &row.PayIP, &row.PayURL,
 			&row.PayExpiresAt, &createdAt,
-			&row.PlanName, &row.ProxySkuName); err != nil {
+			&row.PlanName); err != nil {
 			return nil, err
 		}
 		row.OrderType = orderType.String

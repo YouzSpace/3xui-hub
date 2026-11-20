@@ -38,9 +38,6 @@ type PaymentService struct {
 	proxyOrders     ProxyOrderCompleter
 	assignUserNodes UserNodeAssigner
 	pruneUserNodes  UserNodePruner
-	// staticChain 是「static_chain 套餐 → 开 webshare 子账号 + 绑前置节点」的开通接缝（#静态IP-02）。
-	// 为空时该类型套餐只记日志、不分配地区节点（绝不退回直连分配）。
-	staticChain      StaticChainProvisioner
 	cache            PaymentCache
 	siteConfigs      SiteConfigReader
 	returnURL        func(ctx context.Context) string
@@ -105,7 +102,6 @@ func NewPaymentService(store PaymentStore, opts PaymentServiceOptions, logger lo
 		proxyOrders:      opts.ProxyOrders,
 		assignUserNodes:  opts.AssignUserNodes,
 		pruneUserNodes:   opts.PruneUserNodes,
-		staticChain:      opts.StaticChain,
 		cache:            opts.Cache,
 		siteConfigs:      opts.SiteConfigs,
 		returnURL:        opts.ReturnURL,
@@ -769,7 +765,6 @@ func (s *PaymentService) afterPaid(ctx context.Context, order *Order) error {
 	user.ExpiredAt = fields.ExpiredAt
 
 	// 续费后总是启用 3x-ui client（PHP: if (!$user->enabled) enabled=true）。
-	// 放在静态 IP 分支之前：过期被禁用的用户买 static_chain 套餐同样要恢复启用。
 	if !user.Enabled {
 		if err := s.store.SetUserEnabled(ctx, user.ID, true); err != nil {
 			return err
@@ -777,18 +772,6 @@ func (s *PaymentService) afterPaid(ctx context.Context, order *Order) error {
 		user.Enabled = true
 	}
 
-	// ── 静态 IP 套餐（#静态IP-02）：不走地区分配 ──
-	//
-	// 链式出口的入口只能是 exit_profiles 里的前置节点（节点侧按 user_nodes + 分类
-	// 渲染专属 socks 出站）。这里刻意 return：既不做地区 assign、也不做地区 prune ——
-	// 否则会给他绑上直连节点，订阅里就会多出用户在直连网上连不上的入口。
-	//
-	// static_socks 与本任务无关，按 direct 走（下面原有逻辑，不加分支）；
-	// exit_type 为空/未知值同样按 direct（安全降级）。
-	// 任何失败只记日志：钱已经收了，订单必须保持 paid（网关会无限重推回调）。
-	if plan.IsStaticChain() {
-		return s.afterPaidStaticChain(ctx, order, user, plan)
-	}
 	// 换套餐的地区收敛（#地区功能-15）：新套餐可能不允许旧套餐某些地区的节点。
 	//
 	// 只删「新套餐不允许地区」的绑定（不整表清空、不碰允许地区，避免无谓断线），
@@ -831,43 +814,6 @@ func (s *PaymentService) afterPaid(ctx context.Context, order *Order) error {
 	if s.panel != nil {
 		if err := s.panel.DeliverUser(ctx, user); err != nil {
 			s.logf("下发节点失败 user=%d: %v", user.ID, err)
-		}
-	}
-	return nil
-}
-
-// afterPaidStaticChain 是 static_chain 套餐「钱已到账 + 套餐已落库」之后的专用收尾。
-//
-// 只做两件事：开/续 webshare 子账号 + 分配前置节点（都在 StaticChainProvisioner 里，
-// 顺序：先节点、后开号 —— 没节点就别白占上游子账号）。
-//
-// 不走地区分配、也不下发全量 client：订阅/nodeapi 按 user_nodes 过滤后，这个用户
-// 只会出现在他被绑定的那台前置节点上（下一轮 pull 时生效）。
-//
-// 所有失败只记日志，绝不返回错误 —— 回调返回 FAIL 会让网关无限重推。
-func (s *PaymentService) afterPaidStaticChain(ctx context.Context, order *Order, user *User, plan *PlanRow) error {
-	if !plan.ExitProfileID.Valid || plan.ExitProfileID.Int64 <= 0 {
-		s.logf("静态 IP 套餐未绑定出口分类，跳过开通 order_no=%s plan_id=%d", order.OrderNo, plan.ID)
-		return nil
-	}
-	profileID := uint64(plan.ExitProfileID.Int64)
-
-	if s.staticChain == nil {
-		s.logf("静态 IP 开通链路未接线，跳过开号与前置节点分配 order_no=%s user_id=%d profile_id=%d"+
-			"（订单保持 paid，接线/补开后可用管理端重试）", order.OrderNo, user.ID, profileID)
-		return nil
-	}
-	if err := s.staticChain.Provision(ctx, user.ID, order.ID, profileID); err != nil {
-		s.logf("静态 IP 套餐开通失败（用户已付款，订单保持 paid，需补处理）order_no=%s user_id=%d profile_id=%d: %v",
-			order.OrderNo, user.ID, profileID, err)
-		return nil
-	}
-
-	// 开号成功、前置节点已绑定：把「清流量 + 开 client」交给节点侧。
-	// 放在最后一步，后台任务读到的才是最终状态（与 direct 分支同一口径）。
-	if s.panel != nil {
-		if err := s.panel.DeliverUser(ctx, user); err != nil {
-			s.logf("静态 IP 下发节点失败 user=%d: %v", user.ID, err)
 		}
 	}
 	return nil

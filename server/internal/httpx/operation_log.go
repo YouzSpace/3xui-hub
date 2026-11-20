@@ -27,6 +27,14 @@ import (
 // 让操作审计页面能查到真实报错，而不是前端 toast 消失后无从追溯）。
 const OpLogErrorKey = "admin.oplog_error"
 
+// OpLogSkipKey 是 gin.Context 的键：置 true 后本次请求不写 operation_logs 明细。
+//
+// 给「handler 自己聚合」的场景用 —— 管理端登录失败（含限流 429）由 login_guard
+// 按来源 IP 的失败窗口汇总成一条 type='system' 审计，明细不再逐条落库。
+// 否则一次爆破就能在审计表里灌出上万行同名记录（issue #142 第 3 条：
+// operation_logs 20,269 行里 18,756 行是登录失败，占 92.5%，真正的系统事件被埋）。
+const OpLogSkipKey = "admin.oplog_skip"
+
 // operationLogActionMap 是 describeAction 的前缀映射表（逐字复制 PHP 的 $map）。
 var operationLogActionMap = []struct{ prefix, desc string }{
 	{"admin-api/login", "登录"},
@@ -118,6 +126,13 @@ func (m *OperationLogMiddleware) Handler() gin.HandlerFunc {
 		c.Writer = rec
 
 		c.Next()
+
+		// handler 自己聚合了审计（如管理端登录失败）→ 本次不再落明细。
+		if v, ok := c.Get(OpLogSkipKey); ok {
+			if skip, ok2 := v.(bool); ok2 && skip {
+				return
+			}
+		}
 
 		status := rec.status
 		if status == 0 {

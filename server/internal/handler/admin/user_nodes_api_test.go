@@ -100,15 +100,6 @@ var region26DDL = []string{
 		PRIMARY KEY (id),
 		KEY idx_user (user_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-	// 列表响应里的 proxy_active_count 子查询要读这张表。
-	`CREATE TABLE proxy_entitlements (
-		id bigint unsigned NOT NULL AUTO_INCREMENT,
-		user_id bigint unsigned NOT NULL,
-		status varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active',
-		expires_at timestamp NULL DEFAULT NULL,
-		PRIMARY KEY (id),
-		KEY idx_pe_user (user_id)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 }
 
 // newRegion26DB 建一个干净的测试库 + 7 张表，跑完自动 DROP。

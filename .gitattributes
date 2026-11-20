@@ -1,0 +1,29 @@
+# 统一 LF（Windows 上 git 会自动转 CRLF 到工作区，但仓库里存 LF）
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.zip binary
+*.gz binary
+*.exe binary
+
+# 脚本必须 LF（在 Linux 上跑）
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows 侧脚本用 CRLF（批处理 / PowerShell）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 锁文件不要 diff（噪音）
+package-lock.json -diff
+go.sum -diff

@@ -80,9 +80,4 @@ export const userApi = {
   resetSubscription: () => client.post('/api/reset-subscription').then((r) => r),
 
   // 代理商城（与节点套餐完全独立）
-  proxyProducts: () => client.get('/api/proxy-store/products'),
-  createProxyOrder: (skuId, paymentConfigId) =>
-    client.post('/api/proxy-store/orders', { sku_id: skuId, payment_config_id: paymentConfigId }).then((r) => r),
-  proxyEntitlements: () => client.get('/api/proxy-store/entitlements'),
-  proxyIps: (id) => client.get(`/api/proxy-store/entitlements/${id}/proxies`),
 }

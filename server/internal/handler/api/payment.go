@@ -416,14 +416,11 @@ func (h *PaymentHandlers) handlePaymentOrders(c *gin.Context) {
 	for i := range rows {
 		row := &rows[i]
 
-		// $o->plan?->name ?? ($o->proxySku ? '代理 · '.$o->proxySku->name : '-')
+		// $o->plan?->name ?? '-'
 		var planName any
-		switch {
-		case row.PlanName.Valid:
+		if row.PlanName.Valid {
 			planName = row.PlanName.String
-		case row.ProxySkuName.Valid:
-			planName = "代理 · " + row.ProxySkuName.String
-		default:
+		} else {
 			planName = "-"
 		}
 

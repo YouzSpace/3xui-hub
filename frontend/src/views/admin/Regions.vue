@@ -20,13 +20,24 @@ import Icon from '@/components/ui/Icon.vue'
 import ProgressBar from '@/components/ui/ProgressBar.vue'
 import { adminApi } from '@/api/admin'
 import { useToast } from '@/components/ui/Toast.vue'
+import { useAsyncData } from '@/composables/useAsyncData'
+import { useConfirm } from '@/composables/useConfirm'
+import { useCrudForm } from '@/composables/useCrudForm'
 
 const toast = useToast()
+const { confirm } = useConfirm()
 
-const loading = ref(false)
-const regions = ref([])
+// 页面主体数据（地区列表 + 节点全量）交给 useAsyncData：切页 abort 旧请求、
+// keep-alive 退场后不落数据、卸载后不写 ref —— 这几个边界不用每个页面各想一遍。
+const {
+  data: pageData,
+  loading,
+  error: loadError,
+  run: runLoad,
+} = useAsyncData(fetchPage, { initial: { regions: [], nodes: [] }, fallbackMessage: '加载失败' })
+const regions = computed(() => pageData.value?.regions ?? [])
 // 节点全量列表：未归属节点块 + 迁移时的目标节点都从这里取
-const nodesAll = ref([])
+const nodesAll = computed(() => pageData.value?.nodes ?? [])
 // /regions/overview 的原始响应；取不到时用地区列表兜底（并行开发期间后端可能还没这个接口）
 const overview = ref(null)
 
@@ -170,30 +181,34 @@ const refreshExpanded = async () => {
   if (expandedId.value) await loadRegionNodes(expandedId.value)
 }
 
+/**
+ * 整页数据装载：主体（地区 + 节点）失败就整页报错；总览 / 告警 / 建议容量各自降级，
+ * 接口没就绪时只少一块，不影响列表。
+ */
+async function fetchPage() {
+  const [rs, ns] = await Promise.all([adminApi.listRegions(), adminApi.listNodes({ all: 1 })])
+  // 后端 /regions 返回 { regions: [...] }，/nodes 直接返回数组 —— 两种形态都要兼容
+  const nextRegions = Array.isArray(rs) ? rs : (rs?.regions ?? [])
+  const nextNodes = Array.isArray(ns) ? ns : []
+  await loadOverview()
+  await loadAlerts()
+  // 未归属节点表一进页面就渲染，它的建议容量也要问（地区内的节点等展开时再问）
+  await loadRecs(nextNodes.filter((n) => n.region_id == null))
+  // 展开的地区可能已被删掉，收起；还在就刷新它的节点
+  if (expandedId.value && !nextRegions.some((r) => r.id === expandedId.value)) {
+    expandedId.value = null
+    regionNodes.value = []
+  } else {
+    await refreshExpanded()
+  }
+  return { regions: nextRegions, nodes: nextNodes }
+}
+
 const load = async () => {
   if (loading.value) return
-  loading.value = true
-  try {
-    const [rs, ns] = await Promise.all([adminApi.listRegions(), adminApi.listNodes({ all: 1 })])
-    // 后端 /regions 返回 { regions: [...] }，/nodes 直接返回数组 —— 两种形态都要兼容
-    regions.value = Array.isArray(rs) ? rs : (rs?.regions ?? [])
-    nodesAll.value = Array.isArray(ns) ? ns : []
-    await loadOverview()
-    await loadAlerts()
-    // 未归属节点表一进页面就渲染，它的建议容量也要问（地区内的节点等展开时再问）
-    await loadRecs(unassignedNodes.value)
-    // 展开的地区可能已被删掉，收起；还在就刷新它的节点
-    if (expandedId.value && !regions.value.some((r) => r.id === expandedId.value)) {
-      expandedId.value = null
-      regionNodes.value = []
-    } else {
-      await refreshExpanded()
-    }
-  } catch (e) {
-    toast.error(e.message || '加载失败')
-  } finally {
-    loading.value = false
-  }
+  await runLoad()
+  // 失败不吞：把具体原因弹出来（哪个接口、后端给的原话）
+  if (loadError.value) toast.error(loadError.value)
 }
 
 const toggle = async (r) => {
@@ -209,42 +224,49 @@ const toggle = async (r) => {
 
 // ===== 地区新建 / 编辑 / 删除 =====
 const formOpen = ref(false)
-const form = ref({ id: null, name: '', sort: 0 })
-const saving = ref(false)
 
-const openCreate = () => {
-  form.value = { id: null, name: '', sort: regions.value.length }
-  formOpen.value = true
-}
-const openEdit = (r) => {
-  form.value = { id: r.id, name: r.name, sort: r.sort ?? 0 }
-  formOpen.value = true
-}
-
-const saveRegion = async () => {
-  const name = String(form.value.name || '').trim()
-  if (!name) {
-    toast.error('地区名不能为空')
-    return
-  }
-  const sort = Number(form.value.sort)
-  const payload = { name, sort: Number.isFinite(sort) ? sort : 0 }
-  saving.value = true
-  try {
-    if (form.value.id) await adminApi.updateRegion(form.value.id, payload)
+// 表单状态（值、校验、提交中、回填）交给 useCrudForm；toast 措辞留在页面里
+const {
+  form,
+  submitting: saving,
+  submit: saveRegion,
+  reset: resetForm,
+  setForm,
+} = useCrudForm({
+  initial: () => ({ id: null, name: '', sort: 0 }),
+  validate: (f) => ({ name: String(f.name ?? '').trim() ? '' : '地区名不能为空' }),
+  onInvalid: (errs) => toast.error(Object.values(errs)[0]),
+  onSubmit: async (f) => {
+    const name = String(f.name ?? '').trim()
+    const sort = Number(f.sort)
+    const payload = {
+      name,
+      sort: Number.isFinite(sort) ? sort : 0,
+    }
+    if (f.id) await adminApi.updateRegion(f.id, payload)
     else await adminApi.createRegion(payload)
+  },
+  onSuccess: async () => {
     toast.success(form.value.id ? '已保存' : '已新建地区')
     formOpen.value = false
     await load()
-  } catch (e) {
-    toast.error(e.message || '保存失败')
-  } finally {
-    saving.value = false
-  }
+  },
+  onError: (e) => toast.error(e?.message || '保存失败'),
+})
+
+const openCreate = () => {
+  resetForm()
+  // 新建默认排到最后一个
+  setForm({ sort: regions.value.length })
+  formOpen.value = true
+}
+const openEdit = (r) => {
+  setForm({ id: r.id, name: r.name, sort: r.sort ?? 0 })
+  formOpen.value = true
 }
 
 const removeRegion = async (r) => {
-  if (!confirm(`删除地区「${r.name}」？`)) return
+  if (!(await confirm({ title: '删除地区', message: `删除地区「${r.name}」？`, danger: true }))) return
   try {
     await adminApi.deleteRegion(r.id)
     toast.success('已删除')
@@ -372,7 +394,7 @@ const balance = async (r) => {
       toast.info('当前没有需要均衡的用户')
       return
     }
-    if (!confirm(`计划迁移 ${count} 个用户，确定执行？`)) return
+    if (!(await confirm({ title: '均衡用户', message: `计划迁移 ${count} 个用户，确定执行？` }))) return
     const res = await adminApi.balanceRegion(r.id, { dry: false, limit: count })
     await startJob(res?.job_id, '均衡')
   } catch (e) {

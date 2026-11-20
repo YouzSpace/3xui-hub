@@ -23,12 +23,6 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   const keywords = computed(() => config.value.site_keywords || '')
   const logo = computed(() => config.value.site_logo || '')
   const favicon = computed(() => config.value.site_favicon || '')
-  // 代理商城总开关：默认关闭，后台「商城商品」页打开后才在用户端出现入口
-  const proxyStoreEnabled = computed(
-    () => config.value.proxy_store_enabled === true ||
-      config.value.proxy_store_enabled === '1' ||
-      config.value.proxy_store_enabled === 1
-  )
   const registerEmailVerify = computed(() => config.value.register_email_verify === true || config.value.register_email_verify === '1' || config.value.register_email_verify === 1)
 
   async function fetch() {
@@ -88,5 +82,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
 
   // loaded 要导出：公开首页（不走 UserLayout）需要在 onMounted 里判断
   // 「配置是否已就位」，否则会读到 store 的初始空值。
-  return { config, title, subtitle, description, keywords, logo, favicon, registerEmailVerify, proxyStoreEnabled, loaded, fetch, updateConfig }
+  return { config, title, subtitle, description, keywords, logo, favicon, registerEmailVerify, loaded, fetch, updateConfig }
 })

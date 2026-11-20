@@ -172,8 +172,6 @@ var siteConfigKeys = []string{
 	"sub_show_flag", "sub_rename_enabled", "sub_rename_regex", "sub_rename_replacement",
 	// 自定义公开首页：前端读到空值就走默认首页，老面板行为不变
 	"home_custom_html", "home_custom_css",
-	// 代理商城总开关（默认关闭；用户端据此隐藏「代理」入口）
-	"proxy_store_enabled",
 }
 
 // handleSiteConfig 对齐 SiteConfig::getMany：缺失键补空串，且只输出白名单内的键。

@@ -22,7 +22,6 @@ const toast = useToast()
 const plans = ref([])
 const thirdSubs = ref([]) // 第三方订阅选项（勾选进套餐用）
 const regions = ref([]) // 地区列表（套餐「可用地区」多选用）
-const exitProfiles = ref([]) // 静态 IP 出口分类（套餐「出口类型 = 静态 IP」时选）
 
 const { page, loading, loadError, pagination, hasPrev, hasNext, prev, next, fetchPage } = usePagedList()
 
@@ -41,22 +40,12 @@ const form = ref({
   total_traffic_gb: 0,
   include_local: true,
   third_ids: [],
-  region_ids: [],
-  exit_type: 'direct',
-  exit_profile_id: null,
-})
+  region_ids: [],})
 const GB = 1024 * 1024 * 1024
 const typeOptions = [
   { label: '周期套餐', value: 'period' },
   { label: '总量套餐', value: 'total' },
 ]
-// 出口类型：直连（默认，走节点自身出口）/ 静态 IP（链式到住宅）/ 单独 socks（发 socks 凭证）
-const exitTypeOptions = [
-  { value: 'direct', label: '直连（默认）' },
-  { value: 'static_chain', label: '静态 IP（配置好链式，用户连节点自动走住宅）' },
-  { value: 'static_socks', label: '单独 socks（用户直接拿 socks 凭证，走代理商城）' },
-]
-
 // 纯第三方套餐（没勾本地节点、勾了第三方线路）：第三方不管流量只管时间
 //  → 锁定为周期套餐，流量字段藏掉归零，只改天数
 const pureThird = computed(() => !form.value.include_local && form.value.third_ids.length > 0)
@@ -112,22 +101,6 @@ const loadRegions = async () => {
 
 const regionName = (id) => regions.value.find((r) => r.id === id)?.name || ''
 
-// 静态 IP 出口分类（「出口类型 = 静态 IP」时的下拉）。
-// 后端未合入时 404 —— 下拉为空并提示先去建分类，不影响套餐本身保存（直连套餐完全不受影响）。
-const loadExitProfiles = async () => {
-  try {
-    const data = await adminApi.listExitProfiles()
-    const list = Array.isArray(data) ? data : (data?.items ?? data?.profiles ?? [])
-    exitProfiles.value = list.filter((p) => p.enabled !== false)
-  } catch {
-    exitProfiles.value = []
-  }
-}
-
-const exitProfileOptions = computed(() =>
-  exitProfiles.value.map((p) => ({ value: p.id, label: p.name })),
-)
-
 // 列表列口径：不勾 = 全部；超过 3 个只列前 3 个再补「+N」
 const regionLabel = (p) => {
   const ids = p?.region_ids ?? []
@@ -155,12 +128,9 @@ const openCreate = () => {
     include_local: true,
     third_ids: [],
     region_ids: [],
-    exit_type: 'direct',
-    exit_profile_id: null,
   }
   loadThirdSubs()
   loadRegions()
-  loadExitProfiles()
   modalOpen.value = true
 }
 
@@ -177,28 +147,16 @@ const openEdit = (p) => {
     total_traffic_gb: p.total_traffic ? Math.round((p.total_traffic / GB) * 100) / 100 : 0,
     include_local: p.include_local !== false,
     third_ids: [...(p.third_party_sub_ids ?? [])],
-    region_ids: [...(p.region_ids ?? [])],
-    // 老套餐没有这两个字段（后端升级前）→ 一律按直连处理
-    exit_type: p.exit_type || 'direct',
-    exit_profile_id: p.exit_profile_id ?? null,
-  }
+    region_ids: [...(p.region_ids ?? [])],  }
   loadThirdSubs()
   loadRegions()
-  loadExitProfiles()
   modalOpen.value = true
 }
 
 const save = async () => {
   if (saving.value || saved.value) return
   saving.value = true
-  try {
-    // 静态 IP 必须选分类：链式出口靠分类里的前置节点 + webshare 账号生成，
-    // 没分类的静态套餐用户连上也不会有住宅出口
-    if (form.value.exit_type === 'static_chain' && form.value.exit_profile_id == null) {
-      toast.error('出口类型选了静态 IP，请选择出口分类')
-      return
-    }
-    const payload = {
+  try {    const payload = {
       name: form.value.name,
       price: Number(form.value.price),
       reset_price: Number(form.value.reset_price),
@@ -207,15 +165,7 @@ const save = async () => {
       third_party_sub_ids: [...form.value.third_ids],
       // 不勾地区 = 不限地区，显式传 null（后端按 null 处理「全部地区」，
       // 传 [] 在后端会变成「一个地区都不许用」的空集合语义）
-      region_ids: form.value.region_ids.length ? [...form.value.region_ids] : null,
-      // 出口类型：只有「静态 IP」才带分类；直连 / 单独 socks 显式清空分类，
-      // 免得残留的 id 让后端把套餐又链回住宅出口
-      exit_type: form.value.exit_type || 'direct',
-      exit_profile_id:
-        form.value.exit_type === 'static_chain' && form.value.exit_profile_id != null
-          ? form.value.exit_profile_id
-          : null,
-    }
+      region_ids: form.value.region_ids.length ? [...form.value.region_ids] : null,    }
     if (form.value.type === 'period') {
       payload.months = Number(form.value.months)
       payload.monthly_traffic = Math.round(Number(form.value.monthly_traffic_gb) * GB)
@@ -444,31 +394,7 @@ onActivated(load)
             <router-link to="/admin/regions" class="pl-link">「地区」页</router-link>
             建一个（不建也不影响：套餐默认对所有地区可用）。
           </p>
-        </div>
-
-        <!-- 出口类型：直连（走节点自身出口）/ 静态 IP（链式到住宅）/ 单独 socks（发凭证走代理商城） -->
-        <div class="pl-exit">
-          <span class="pl-nodes-title">出口类型</span>
-          <label v-for="o in exitTypeOptions" :key="o.value" class="pl-nodes-row">
-            <input type="radio" name="exit_type" :value="o.value" v-model="form.exit_type" />
-            <span>{{ o.label }}</span>
-          </label>
-          <!-- 只有「静态 IP」才需要选分类：链式出口按分类里的前置节点 + webshare 账号生成 -->
-          <label v-if="form.exit_type === 'static_chain'" class="pl-field pl-exit-profile">
-            <span>出口分类</span>
-            <Select
-              v-model="form.exit_profile_id"
-              :options="exitProfileOptions"
-              placeholder="选择出口分类"
-            />
-            <span v-if="!exitProfileOptions.length" class="pl-hint">
-              还没有出口分类，先去
-              <router-link to="/admin/exit-profiles" class="pl-link">「静态IP出口」页</router-link>
-              建一个。
-            </span>
-          </label>
-        </div>
-      </div>
+        </div>      </div>
       <template #footer>
         <Button variant="secondary" size="sm" @click="modalOpen = false">取消</Button>
         <Button variant="primary" size="sm" :disabled="saving" :success="saved" @click="save">{{ saving ? '保存中...' : '保存' }}</Button>

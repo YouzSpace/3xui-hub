@@ -5,6 +5,8 @@
  */
 import Toast from '@/components/ui/Toast.vue'
 import { useToast } from '@/components/ui/Toast.vue'
+// 全局确认弹窗：和 Toast 一样只挂一次，任何页面 useConfirm() 都能 await 到结果
+import { ConfirmHost } from '@/composables/useConfirm'
 import { provide, ref, onMounted } from 'vue'
 import { useSiteConfigStore } from '@/stores/siteConfig'
 import { version } from '../package.json'
@@ -27,6 +29,7 @@ onMounted(async () => {
   </div>
   <RouterView v-else />
   <Toast />
+  <ConfirmHost />
   <div class="app-version">v{{ version }}</div>
 </template>
 

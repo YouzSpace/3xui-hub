@@ -68,15 +68,7 @@ type PlanRow struct {
 	Price          string
 	ResetPrice     string
 	IncludeLocal   bool
-	// ExitType 是出口类型（#静态IP）：direct / static_chain / static_socks。
-	// 列是 NOT NULL DEFAULT 'direct'；老套餐（升级前建的行）读出来就是 direct。
-	ExitType string
-	// ExitProfileID 是绑定的出口分类（仅 static_chain 有意义）；NULL = 不绑。
-	ExitProfileID sql.NullInt64
 }
-
-// IsStaticChain 判定「链式静态 IP」套餐（购买流程要开号 + 绑前置节点）。
-func (p *PlanRow) IsStaticChain() bool { return p != nil && p.ExitType == "static_chain" }
 
 // IsPeriod 对齐 Plan::isPeriod()。
 func (p *PlanRow) IsPeriod() bool { return p.Type == "period" }
@@ -94,9 +86,8 @@ type Order struct {
 	ID              uint64
 	OrderNo         string
 	UserID          uint64
-	OrderType       string // plan | proxy
+	OrderType       string // plan
 	PlanID          sql.NullInt64
-	ProxySkuID      sql.NullInt64
 	Amount          string
 	OriginalAmount  sql.NullString
 	DiscountCodeID  sql.NullInt64
@@ -158,11 +149,10 @@ func (d *DiscountCode) Usable(now time.Time) bool {
 	return true
 }
 
-// OrderListRow 是「我的订单」列表一行（含 plan / proxy_sku 的展示名）。
+// OrderListRow 是「我的订单」列表一行（含 plan 的展示名）。
 type OrderListRow struct {
 	Order
-	PlanName     sql.NullString
-	ProxySkuName sql.NullString
+	PlanName sql.NullString
 }
 
 // PaymentStore 是支付域对数据库的全部依赖。
@@ -339,9 +329,6 @@ type PaymentServiceOptions struct {
 	// PruneUserNodes 在换套餐后清掉「新套餐不允许地区」的绑定（#地区功能-15）；为空时跳过。
 	// 排在 AssignUserNodes 之前：先清违规绑定、再按新套餐补齐。失败同样只记日志。
 	PruneUserNodes UserNodePruner
-	// StaticChain 是 static_chain 套餐的开通链路（#静态IP-02）：开 webshare 子账号 + 绑前置节点。
-	// 为空时该类套餐只记日志：**不会**退回地区分配（链式出口的入口必须是分类里的前置节点）。
-	StaticChain StaticChainProvisioner
 	// Cache 用于恢复邮件通知标记（restoreReminders）；为空时跳过。
 	Cache PaymentCache
 	// SiteConfigs 读 site_configs（invite_discount / redeem_discount / invite_enabled 等）。

@@ -354,10 +354,8 @@ CREATE TABLE `orders` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `order_no` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '订单号',
   `user_id` bigint unsigned NOT NULL,
-  `order_type` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'plan' COMMENT '订单类型：plan=节点套餐 / proxy=代理套餐',
+  `order_type` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'plan' COMMENT '订单类型：plan=节点套餐',
   `plan_id` bigint unsigned DEFAULT NULL,
-  `proxy_sku_id` bigint unsigned DEFAULT NULL COMMENT '代理规格 id（仅代理订单）',
-  `proxy_renewal` tinyint(1) NOT NULL DEFAULT '0' COMMENT '代理订单：true=续费（不占库存），false=新开通',
   `amount` decimal(10,2) NOT NULL COMMENT '订单金额(元)',
   `original_amount` decimal(10,2) DEFAULT NULL COMMENT '原价',
   `discount_code_id` bigint unsigned DEFAULT NULL COMMENT '使用的折扣码 id',
@@ -428,124 +426,6 @@ CREATE TABLE `plans` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Table: proxy_accounts
-CREATE TABLE `proxy_accounts` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `provider_id` bigint unsigned NOT NULL,
-  `upstream_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Webshare subuser id（字符串化，防供应商改类型）',
-  `user_id` bigint unsigned DEFAULT NULL,
-  `sku_id` bigint unsigned DEFAULT NULL COMMENT '购买的代理规格（手动开的号为空）',
-  `label` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '子用户备注（Webshare 侧 label）',
-  `username` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '代理用户名',
-  `password` text COLLATE utf8mb4_unicode_ci COMMENT '代理密码（encrypted cast 加密存储）',
-  `proxy_limit` decimal(8,2) NOT NULL DEFAULT '0.00' COMMENT '带宽上限 GB，0=不限量',
-  `traffic_limit_bytes` bigint unsigned DEFAULT NULL COMMENT '本账号流量上限（字节，= SKU 的 traffic_gb）',
-  `expires_at` timestamp NULL DEFAULT NULL COMMENT '到期时间（手动开的号为空 = 不过期）',
-  `order_id` bigint unsigned DEFAULT NULL COMMENT '首次开通订单 id（续费不覆盖）',
-  `max_thread_count` int unsigned NOT NULL DEFAULT '0' COMMENT '并发线程上限',
-  `proxy_countries` json DEFAULT NULL COMMENT '国家池 {"US":500,...}',
-  `used_bytes` bigint unsigned NOT NULL DEFAULT '0' COMMENT '已用流量（字节，上游回采）',
-  `status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active' COMMENT 'active/disabled',
-  `last_synced_at` timestamp NULL DEFAULT NULL COMMENT '最近一次用量回采时间',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `proxy_accounts_provider_id_upstream_id_unique` (`provider_id`,`upstream_id`),
-  KEY `proxy_accounts_user_id_status_index` (`user_id`,`status`),
-  CONSTRAINT `proxy_accounts_provider_id_foreign` FOREIGN KEY (`provider_id`) REFERENCES `proxy_providers` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `proxy_accounts_user_id_foreign` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Table: proxy_entitlements
-CREATE TABLE `proxy_entitlements` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `user_id` bigint unsigned NOT NULL COMMENT '购买人',
-  `order_id` bigint unsigned DEFAULT NULL COMMENT '开通/续费的订单',
-  `sku_id` bigint unsigned NOT NULL COMMENT '购买的规格',
-  `kind` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '凭据类型：webshare=独占子账号 / socks=共享 socks',
-  `account_id` bigint unsigned DEFAULT NULL COMMENT 'proxy_accounts.id（webshare）',
-  `socks_id` bigint unsigned DEFAULT NULL COMMENT 'proxy_socks.id（共享）',
-  `expires_at` timestamp NULL DEFAULT NULL COMMENT '到期时间',
-  `status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active' COMMENT 'active / expired / disabled',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `proxy_entitlements_user_id_status_index` (`user_id`,`status`),
-  KEY `proxy_entitlements_status_expires_at_index` (`status`,`expires_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Table: proxy_products
-CREATE TABLE `proxy_products` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '商品名（对外展示）',
-  `subtitle` varchar(200) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '一句话卖点',
-  `description` text COLLATE utf8mb4_unicode_ci COMMENT '详情（支持纯文本/简单 Markdown）',
-  `image_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '封面图地址',
-  `is_active` tinyint(1) NOT NULL DEFAULT '1' COMMENT '上架开关',
-  `sort_order` int unsigned NOT NULL DEFAULT '0' COMMENT '排序，小的在前',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `proxy_products_is_active_sort_order_index` (`is_active`,`sort_order`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Table: proxy_providers
-CREATE TABLE `proxy_providers` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '管理员备注名（仅后台可见）',
-  `driver` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'webshare' COMMENT '上游类型，当前只有 webshare',
-  `api_token` text COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '上游 API Token（encrypted cast 加密存储）',
-  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否参与开号/同步',
-  `last_status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending' COMMENT 'pending/success/failed',
-  `last_error` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '最近一次失败原因',
-  `last_checked_at` timestamp NULL DEFAULT NULL COMMENT '最近一次检查时间',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Table: proxy_skus
-CREATE TABLE `proxy_skus` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `product_id` bigint unsigned NOT NULL COMMENT '所属商品',
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '规格名，如 100G/30天',
-  `source_type` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'webshare' COMMENT '货源类型：webshare / socks',
-  `allocation` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'exclusive' COMMENT '分配方式：exclusive=独占账号 / shared=多人共用',
-  `source_id` bigint unsigned DEFAULT NULL COMMENT '关联货源：webshare=proxy_providers.id；socks=proxy_socks.id',
-  `region` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地区（US/GB/ZZ=不限），null = 不限',
-  `traffic_gb` int unsigned NOT NULL COMMENT '流量额度（GB，建号时写进上游 proxy_limit）',
-  `duration_days` int unsigned NOT NULL DEFAULT '30' COMMENT '有效期天数',
-  `max_thread_count` int unsigned NOT NULL DEFAULT '0' COMMENT '并发线程数，0 = 上游默认',
-  `price` decimal(10,2) NOT NULL DEFAULT '0.00' COMMENT '售价',
-  `cost_price` decimal(10,2) NOT NULL DEFAULT '0.00' COMMENT '成本价（算毛利，不对外）',
-  `stock_total` int unsigned NOT NULL DEFAULT '0' COMMENT '可售总数（= 上游可开子用户数）',
-  `stock_locked` int unsigned NOT NULL DEFAULT '0' COMMENT '待支付占用',
-  `stock_sold` int unsigned NOT NULL DEFAULT '0' COMMENT '已售出',
-  `is_active` tinyint(1) NOT NULL DEFAULT '1' COMMENT '规格启用',
-  `sort_order` int unsigned NOT NULL DEFAULT '0' COMMENT '排序',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `proxy_skus_product_id_is_active_sort_order_index` (`product_id`,`is_active`,`sort_order`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Table: proxy_socks
-CREATE TABLE `proxy_socks` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '备注名，如 美国住宅 socks 池',
-  `host` varchar(190) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '地址（IP 或域名）',
-  `port` int unsigned NOT NULL COMMENT '端口',
-  `username` varchar(190) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '认证账号（无认证留空）',
-  `password` text COLLATE utf8mb4_unicode_ci COMMENT '认证密码（encrypted cast）',
-  `country` varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '国家代码，如 US',
-  `city` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '城市',
-  `note` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '备注',
-  `is_active` tinyint(1) NOT NULL DEFAULT '1' COMMENT '启用',
-  `created_at` timestamp NULL DEFAULT NULL,
-  `updated_at` timestamp NULL DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `proxy_socks_is_active_index` (`is_active`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Table: scheduled_task_runs
 CREATE TABLE `scheduled_task_runs` (

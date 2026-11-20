@@ -23,145 +23,13 @@ func (h *Handler) NoRouteHandler() gin.HandlerFunc {
 	return func(c *gin.Context) { h.notFoundRoute(c) }
 }
 
-// Handler 持有管理端商店域所需的依赖。
+// Register 把管理端剩余路由挂到给定分组。
 //
-// Store 是接口（SQL 实现在 sqlstore.go，测试用内存实现）；Upstream 是访问 Webshare 的接缝
-// （真实实现走 HTTP，测试注入假客户端）—— 因此包内单测不连库、不发外网请求。
-type Handler struct {
-	store    Store
-	upstream UpstreamClient
-	cfg      Config
-
-	// now 供测试注入固定时钟（PHP 侧全部用 now()，时区 UTC）。
-	now func() time.Time
-
-	logger *log.Logger
-}
-
-// Config 是本域需要的站点配置项（来自 .env / 环境变量，不是 site_configs 表）。
-type Config struct {
-	// WebshareProxy / WebshareCABundle 对齐 config/panel.php 的 webshare 段：
-	// 国内机房访问 proxy.webshare.io 需要出口代理或自带 CA。
-	WebshareProxy    string
-	WebshareCABundle string
-
-	// DiscountRateDefaults 是优惠码校验限流的 config/panel.php 默认值，
-	// invite-settings 在 site_configs 为空时必须回落到这里（不是 0）。
-	DiscountRateDefaults DiscountRateDefaults
-}
-
-// DiscountRateDefaults 对齐 config/panel.php 的 ratelimit 段（优惠码相关的 5 项）。
-type DiscountRateDefaults struct {
-	PerMinute    int64
-	FailPerDay   int64
-	IPFailHourly int64
-	MaxAttempts  int64
-	LockSeconds  int64
-}
-
-// DefaultDiscountRateDefaults 是 config/panel.php 的出厂值（.env 未覆盖时）。
-func DefaultDiscountRateDefaults() DiscountRateDefaults {
-	return DiscountRateDefaults{
-		PerMinute:    10,
-		FailPerDay:   50,
-		IPFailHourly: 100,
-		MaxAttempts:  10,
-		LockSeconds:  900,
-	}
-}
-
-// Deps 是 New 的依赖清单（显式传参，避免测试构造半吊子 Handler）。
-type Deps struct {
-	Store    Store
-	Upstream UpstreamClient
-	Config   Config
-	Now      func() time.Time
-	Logger   *log.Logger
-}
-
-// New 组装 Handler。
-func New(d Deps) *Handler {
-	if d.Store == nil {
-		panic("admin: Store 不能为空")
-	}
-	now := d.Now
-	if now == nil {
-		now = time.Now
-	}
-	logger := d.Logger
-	if logger == nil {
-		logger = log.Default()
-	}
-	cfg := d.Config
-	if cfg.DiscountRateDefaults == (DiscountRateDefaults{}) {
-		cfg.DiscountRateDefaults = DefaultDiscountRateDefaults()
-	}
-	return &Handler{
-		store:    d.Store,
-		upstream: d.Upstream,
-		cfg:      cfg,
-		now:      now,
-		logger:   logger,
-	}
-}
-
-// Register 把管理端商店域路由挂到给定分组。
-//
-// 路由清单逐条对齐 backend/routes/web.php 的 admin.auth 段（见各 handler 顶部注释）。
+// 代理商城（proxy-store / proxy-ops）与 Webshare 上游（upstream/webshare）产品线已下线，
+// 这三段路由连同其 handler 一起移除，这里只保留教程 / 优惠码 / 站点配置。
 // 调用方负责挂 AdminAuth 中间件与 /admin-api 前缀；这里只声明相对路径，
 // 便于测试与 cmd/server/routes.go 各自组合。
-//
-// ⚠️ 静态段必须排在参数路由之前（Gin 与 Laravel 同一约束，但两边都支持同级共存，
-// 这里按 PHP 的书写顺序排列以便逐条对照）。
 func (h *Handler) Register(r gin.IRouter) {
-	// 代理商城 · 总开关 / 商品 / 规格
-	r.GET("/proxy-store/settings", h.proxyStoreSettings)
-	r.POST("/proxy-store/settings", h.updateProxyStoreSettings)
-	r.GET("/proxy-store/products", h.listProducts)
-	r.POST("/proxy-store/products", h.createProduct)
-	r.PUT("/proxy-store/products/:product", h.updateProduct)
-	r.DELETE("/proxy-store/products/:product", h.deleteProduct)
-	r.POST("/proxy-store/products/:product/skus", h.createSKU)
-	r.PUT("/proxy-store/skus/:sku", h.updateSKU)
-	r.DELETE("/proxy-store/skus/:sku", h.deleteSKU)
-
-	// 手工 socks 货源
-	r.GET("/proxy-store/socks", h.listSocks)
-	r.POST("/proxy-store/socks/import", h.importSocks)
-	r.PUT("/proxy-store/socks/:sock", h.updateSock)
-	r.DELETE("/proxy-store/socks/:sock", h.deleteSock)
-
-	// 代理运营
-	r.GET("/proxy-ops/overview", h.opsOverview)
-	r.GET("/proxy-ops/accounts", h.opsAccounts)
-	r.GET("/proxy-ops/socks-groups", h.opsSocksGroups)
-	r.GET("/proxy-ops/pending", h.opsPending)
-	r.POST("/proxy-ops/accounts/:account/pull", h.opsPull)
-	r.POST("/proxy-ops/accounts/:account/disable", h.opsDisable)
-	r.POST("/proxy-ops/accounts/:account/reset-password", h.opsResetPassword)
-	r.GET("/proxy-ops/accounts/:account/proxies", h.opsProxies)
-	r.DELETE("/proxy-ops/accounts/:account", h.opsDeleteAccount)
-	r.POST("/proxy-ops/entitlements/:entitlement/extend", h.opsExtend)
-	r.POST("/proxy-ops/entitlements/:entitlement/move-socks", h.opsMoveSocks)
-	r.POST("/proxy-ops/orders/:order/retry", h.opsRetryOrder)
-
-	// 上游 · Webshare
-	r.GET("/upstream/webshare/providers", h.listProviders)
-	r.POST("/upstream/webshare/providers", h.createProvider)
-	r.POST("/upstream/webshare/accounts/:account/disable", h.disableUpstreamAccount)
-	r.POST("/upstream/webshare/accounts/:account/usage", h.pullUpstreamUsage)
-	r.POST("/upstream/webshare/accounts/:account/credential", h.upstreamCredential)
-	r.DELETE("/upstream/webshare/accounts/:account", h.deleteUpstreamAccount)
-	r.GET("/upstream/webshare/providers/:provider/plans", h.upstreamPlans)
-	r.POST("/upstream/webshare/providers/:provider/test", h.testProvider)
-	r.POST("/upstream/webshare/providers/:provider/usage", h.pullUsageBatch)
-	r.GET("/upstream/webshare/providers/:provider/accounts", h.listProviderAccounts)
-	r.GET("/upstream/webshare/providers/:provider/proxies", h.providerProxies)
-	r.POST("/upstream/webshare/providers/:provider/accounts", h.createProviderAccount)
-	r.POST("/upstream/webshare/providers/:provider/accounts/sync", h.syncAccounts)
-	r.PUT("/upstream/webshare/providers/:provider", h.updateProvider)
-	r.DELETE("/upstream/webshare/providers/:provider", h.deleteProvider)
-
 	// 教程
 	r.GET("/tutorials", h.listTutorials)
 	r.POST("/tutorials", h.createTutorial)
@@ -195,9 +63,81 @@ func (h *Handler) Register(r gin.IRouter) {
 	r.PUT("/app-version-settings", h.updateAppVersionSettings)
 }
 
-// ---- 响应封装（PHP ApiResponse 口径）----
+// Handler 持有管理端商店域所需的依赖。
+//
+// 代理商城下线后，Store 接口与 Webshare 上游客户端一并移除；
+// 这里只保留各管理域共用的响应/参数辅助。
+type Handler struct {
+	store *sqlStore
+	cfg   Config
 
-// success 对齐 ApiResponse::success($data, $msg='ok')。
+	// now 供测试注入固定时钟（PHP 侧全部用 now()，时区 UTC）。
+	now func() time.Time
+
+	logger *log.Logger
+}
+
+// Config 是本域需要的站点配置项（来自 .env / 环境变量，不是 site_configs 表）。
+type Config struct {
+	// DiscountRateDefaults 是优惠码校验限流的 config/panel.php 默认值，
+	// invite-settings 在 site_configs 为空时必须回落到这里（不是 0）。
+	DiscountRateDefaults DiscountRateDefaults
+}
+
+// DiscountRateDefaults 对齐 config/panel.php 的 ratelimit 段（优惠码相关的 5 项）。
+type DiscountRateDefaults struct {
+	PerMinute    int64
+	FailPerDay   int64
+	IPFailHourly int64
+	MaxAttempts  int64
+	LockSeconds  int64
+}
+
+// DefaultDiscountRateDefaults 是 config/panel.php 的出厂值（.env 未覆盖时）。
+func DefaultDiscountRateDefaults() DiscountRateDefaults {
+	return DiscountRateDefaults{
+		PerMinute:    10,
+		FailPerDay:   50,
+		IPFailHourly: 100,
+		MaxAttempts:  10,
+		LockSeconds:  900,
+	}
+}
+
+// Deps 是 New 的依赖清单（显式传参，避免测试构造半吊子 Handler）。
+type Deps struct {
+	Store    *sqlStore
+	Config   Config
+	Now      func() time.Time
+	Logger   *log.Logger
+}
+
+// New 组装 Handler。
+func New(d Deps) *Handler {
+	if d.Store == nil {
+		panic("admin: Store 不能为空")
+	}
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	logger := d.Logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	cfg := d.Config
+	if cfg.DiscountRateDefaults == (DiscountRateDefaults{}) {
+		cfg.DiscountRateDefaults = DefaultDiscountRateDefaults()
+	}
+	return &Handler{
+		store:    d.Store,
+		cfg:      cfg,
+		now:      now,
+		logger:   logger,
+	}
+}
+
+
 func (h *Handler) success(c *gin.Context, data any, msg ...string) {
 	m := "ok"
 	if len(msg) > 0 && msg[0] != "" {

@@ -20,17 +20,13 @@ import (
 
 // presentUser 对齐 UserController::present。
 //
-// token/uuid/proxies 只在 full=true（详情与写响应）时输出；列表里 proxies 为 null。
-func presentUser(u *UserRow, full bool, proxies jsArr) *jsObj {
+// token/uuid 只在 full=true（详情与写响应）时输出。
+func presentUser(u *UserRow, full bool) *jsObj {
 	token := any(nil)
 	uuid := any(nil)
 	if full {
 		token = u.Token
 		uuid = u.UUID
-	}
-	proxiesOut := any(nil)
-	if full {
-		proxiesOut = proxies
 	}
 	return jo(
 		"id", u.ID,
@@ -50,12 +46,9 @@ func presentUser(u *UserRow, full bool, proxies jsArr) *jsObj {
 		"expired_at", nullableISO(u.ExpiredAt),
 		"enabled", u.Enabled,
 		"created_at", nullableISO(u.CreatedAt),
-		"proxy_active_count", u.ProxyActiveCount,
-		// 绑定节点（#地区功能-26）：列表与详情填充，其余写响应为空数组（同
-		// proxy_active_count 的口径）。恒为数组，前端不必判 null。
+		// 绑定节点（#地区功能-26）：列表与详情填充，其余写响应为空数组。恒为数组，前端不必判 null。
 		"node_ids", nodeIDsJSON(u.NodeIDs),
 		"node_names", u.NodeNames,
-		"proxies", proxiesOut,
 	)
 }
 
@@ -65,41 +58,6 @@ func nodeIDsJSON(ids []int64) jsArr {
 	out := make(jsArr, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, id)
-	}
-	return out
-}
-
-// presentProxies 对齐 UserController::presentProxies（按 id 降序）。
-func presentProxies(list []UserProxy, now time.Time) jsArr {
-	sorted := make([]UserProxy, len(list))
-	copy(sorted, list)
-	// sortByDesc('id')
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].ID > sorted[i].ID {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
-	out := make(jsArr, 0, len(sorted))
-	for i := range sorted {
-		p := &sorted[i]
-		kindLabel := "独享账号"
-		if p.Kind == "socks" {
-			kindLabel = "共享 socks"
-		}
-		status := p.Status
-		if p.IsActive(now) {
-			status = "active"
-		}
-		out = append(out, jo(
-			"id", p.ID,
-			"kind", p.Kind,
-			"kind_label", kindLabel,
-			"sku_name", nullableStr(p.SKUName),
-			"status", status,
-			"expires_at", nullableISO(p.ExpiresAt),
-		))
 	}
 	return out
 }
@@ -213,7 +171,7 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 	d.fillUserNodes(ctxOf(c), rows)
 	items := make([]any, 0, len(rows))
 	for i := range rows {
-		item := presentUser(&rows[i], false, nil)
+		item := presentUser(&rows[i], false)
 		// 余额只在按余额排序时回传：默认列表契约保持不变（不强塞新字段），
 		// 而余额页拿到后可直接显示，不必再逐行发 50 个余额请求。
 		if balanceOrder != "" {
@@ -239,12 +197,7 @@ func (d *UserDomain) userShow(c *gin.Context) {
 	rows := []UserRow{*u}
 	d.fillUserNodes(ctxOf(c), rows)
 	u = &rows[0]
-	proxies, err := d.users.UserProxies(ctxOf(c), u.ID)
-	if err != nil {
-		d.failServer(c, "查询代理权益", err)
-		return
-	}
-	d.success(c, presentUser(u, true, presentProxies(proxies, d.now())))
+	d.success(c, presentUser(u, true))
 }
 
 // userStore 对齐 UserController::store + UserAdminService::create。
@@ -330,8 +283,7 @@ func (d *UserDomain) userStore(c *gin.Context) {
 	if err != nil {
 		full = created
 	}
-	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
-	d.success(c, presentUser(full, true, presentProxies(proxies, now)), "创建成功")
+	d.success(c, presentUser(full, true), "创建成功")
 }
 
 // userUpdate 对齐 UserController::update（含套餐切换的 applyPlan + 面板开关）。
@@ -465,8 +417,7 @@ func (d *UserDomain) userUpdate(c *gin.Context) {
 		_ = d.ops.SetClientEnabled(ctxOf(c), full, *patch.Enabled)
 	}
 
-	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
-	d.success(c, presentUser(full, true, presentProxies(proxies, now)), "更新成功")
+	d.success(c, presentUser(full, true), "更新成功")
 }
 
 // deliverPlanChangeSync 是「后台队列不可用」时的同步兜底，行为与异步化之前一致：
@@ -529,8 +480,7 @@ func (d *UserDomain) userResetTraffic(c *gin.Context) {
 		d.failServer(c, "读取用户", err)
 		return
 	}
-	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
-	d.success(c, presentUser(full, true, presentProxies(proxies, d.now())), "流量已重置")
+	d.success(c, presentUser(full, true), "流量已重置")
 }
 
 // userResetPassword 对齐 UserController::resetPassword：改密 + 作废全部登录态。
@@ -642,8 +592,7 @@ func (d *UserDomain) userRenew(c *gin.Context) {
 		d.failServer(c, "读取用户", err)
 		return
 	}
-	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
-	d.success(c, presentUser(full, true, presentProxies(proxies, d.now())), "续费成功")
+	d.success(c, presentUser(full, true), "续费成功")
 }
 
 // userSwitcherProtocols 是「用户可切换到的协议」白名单，与 validateUser 的 in: 规则同源。
@@ -694,8 +643,7 @@ func (d *UserDomain) userSwitchProtocol(c *gin.Context) {
 		d.failServer(c, "读取用户", err)
 		return
 	}
-	proxies, _ := d.users.UserProxies(ctxOf(c), full.ID)
-	d.success(c, presentUser(full, true, presentProxies(proxies, d.now())), "切换成功")
+	d.success(c, presentUser(full, true), "切换成功")
 }
 
 // ---- 业务（UserAdminService）----

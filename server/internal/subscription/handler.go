@@ -39,8 +39,9 @@ type Handler struct {
 	cache *renderCache
 	// now 是时钟（测试注入固定时刻；limiter/cache 通过闭包读它，替换后立即生效）。
 	now func() time.Time
-	// generator 是实际生成入口，默认 Service.Generate；测试用它统计真实生成次数。
-	generator func(ctx context.Context, user *User, format Format) (string, error)
+	// generator 是实际生成入口，默认 Service.generate；
+	// 测试用它统计真实生成次数，或构造「残缺」结果验证不写缓存。
+	generator func(ctx context.Context, user *User, format Format) (generateOutcome, error)
 }
 
 // NewHandler 构造 handler。
@@ -53,7 +54,7 @@ type Handler struct {
 // 多实例部署时各自独立计数（没有共享存储）。
 func NewHandler(repo Repository) *Handler {
 	svc := NewService(repo)
-	h := &Handler{Service: svc, Repo: repo, now: time.Now, generator: svc.Generate}
+	h := &Handler{Service: svc, Repo: repo, now: time.Now, generator: svc.generate}
 	h.limiter = newTokenLimiter(envInt64("SUB_RATE_LIMIT_PER_HOUR", 60), clockOf(&h.now))
 	h.cache = newRenderCache(envInt64("SUB_CACHE_SECONDS", 60), clockOf(&h.now))
 	return h
@@ -214,24 +215,28 @@ func (h *Handler) GenerateForToken(ctx context.Context, token string, format For
 	return h.renderCached(ctx, token, user, format)
 }
 
-// generate 调实际生成入口（generator 未注入时回落到 Service.Generate）。
-func (h *Handler) generate(ctx context.Context, user *User, format Format) (string, error) {
+// generate 调实际生成入口（generator 未注入时回落到 Service.generate）。
+func (h *Handler) generate(ctx context.Context, user *User, format Format) (generateOutcome, error) {
 	if h.generator != nil {
 		return h.generator(ctx, user, format)
 	}
-	return h.Service.Generate(ctx, user, format)
+	return h.Service.generate(ctx, user, format)
 }
 
 // renderCached 走缓存生成；cache 为 nil（SUB_CACHE_SECONDS=0）时直连生成器。
 //
-// 只缓存**成功**的结果：业务错误（403/404）与服务器错误都不缓存，
-// 否则一次瞬时故障会把用户钉在错误页面上整整一个 TTL。
+// 只缓存**完整且成功**的结果：业务错误（403/404）与服务器错误都不缓存，
+// 否则一次瞬时故障会把用户钉在错误页面上整整一个 TTL；
+// 残缺正文（有节点取数失败，见 generateOutcome.partial）同样不缓存 ——
+// 否则用户在整个 TTL 内反复拿到少节点的订阅，重试也不会恢复（issue #141）。
 func (h *Handler) renderCached(ctx context.Context, token string, user *User, format Format) (string, error) {
 	if h.cache == nil {
-		return h.generate(ctx, user, format)
+		out, err := h.generate(ctx, user, format)
+		return out.body, err
 	}
-	return h.cache.load(cacheKey(token, format), func() (string, error) {
-		return h.generate(ctx, user, format)
+	return h.cache.load(cacheKey(token, format), func() (string, bool, error) {
+		out, err := h.generate(ctx, user, format)
+		return out.body, !out.partial, err
 	})
 }
 
@@ -403,10 +408,14 @@ func newRenderCache(ttlSeconds int64, now func() time.Time) *renderCache {
 	}
 }
 
-// load 返回键对应的正文：命中直接返回，未命中调用 gen 并缓存成功结果。
-func (c *renderCache) load(key string, gen func() (string, error)) (string, error) {
+// load 返回键对应的正文：命中直接返回，未命中调用 gen 并缓存「成功且完整」的结果。
+//
+// gen 的第二个返回值 cacheable=false 表示这次结果不能进缓存（例如正文残缺：
+// 有节点取数失败），此时照样返回正文给本次请求，但不落缓存 —— 下一次请求必须重新取。
+func (c *renderCache) load(key string, gen func() (string, bool, error)) (string, error) {
 	if c == nil || c.ttl <= 0 {
-		return gen()
+		body, _, err := gen()
+		return body, err
 	}
 
 	now := c.now()
@@ -427,12 +436,13 @@ func (c *renderCache) load(key string, gen func() (string, error)) (string, erro
 	c.flight[key] = f
 	c.mu.Unlock()
 
-	body, err := gen()
+	body, cacheable, err := gen()
 
 	c.mu.Lock()
 	f.body, f.err = body, err
 	delete(c.flight, key)
-	if err == nil {
+	// 只有「成功且完整」的结果才落缓存：错误、残缺正文都不写。
+	if err == nil && cacheable {
 		c.storeLocked(key, body, c.now())
 	}
 	c.mu.Unlock()
