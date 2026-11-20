@@ -117,8 +117,10 @@ export const adminApi = {
   updateUsername: (data) => client.post('/admin-api/update-username', data),
 
   // Google 2FA
+  // enable 必须带 secret：后端要靠它算出 TOTP 并与 otp 比对，再落库。
+  // 只传 otp 会被后端判「请先生成密钥」——这是曾经的真 bug（见 PR 说明）。
   google2faGenerate: () => client.post('/admin-api/google2fa/generate'),
-  google2faEnable: (otp) => client.post('/admin-api/google2fa/enable', { otp }),
+  google2faEnable: (secret, otp) => client.post('/admin-api/google2fa/enable', { secret, otp }),
   google2faDisable: (password) => client.post('/admin-api/google2fa/disable', { password }),
 
   // 支付配置

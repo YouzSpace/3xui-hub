@@ -2,7 +2,7 @@
 /**
  * Admin 设置页：修改管理员用户名 + 密码 + 谷歌二步验证。
  */
-import { ref, onMounted, onActivated } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
@@ -29,6 +29,14 @@ const tfaQrUrl = ref('')
 const tfaOtp = ref('')
 const tfaDisablePassword = ref('')
 const tfaStep = ref('idle') // idle | scan | verify
+// 二维码优先用后端给的 otpauth:// 链接；后端没给（旧版）时回落到本地按 secret 拼，
+// 保证任何部署组合下都能出可扫的码，而不是拿空串去请求二维码服务（扫出来是空码）。
+const tfaQrDisplay = computed(() => {
+  if (tfaQrUrl.value) return tfaQrUrl.value
+  if (!tfaSecret.value) return ''
+  return `otpauth://totp/${encodeURIComponent('ControlHub:' + (admin.value?.username || 'admin'))}`
+    + `?secret=${encodeURIComponent(tfaSecret.value)}&issuer=ControlHub`
+})
 
 const load = async () => {
   try {
@@ -104,13 +112,18 @@ const generate2fa = async () => {
 }
 
 const enable2fa = async () => {
+  if (!tfaSecret.value) {
+    toast.error('请先点击「开启谷歌验证」生成密钥')
+    return
+  }
   if (!tfaOtp.value || tfaOtp.value.length !== 6) {
     toast.error('请输入6位验证码')
     return
   }
   saving.value = true
   try {
-    await adminApi.google2faEnable(tfaOtp.value)
+    // 必须把 secret 一起提交：后端用它算 TOTP 并落库，只传 otp 会「请先生成密钥」
+    await adminApi.google2faEnable(tfaSecret.value, tfaOtp.value)
     toast.success('谷歌验证已启用')
     admin.value.google2fa_enabled = true
     tfaStep.value = 'idle'
@@ -222,7 +235,12 @@ onActivated(load)
         <div v-if="tfaStep === 'scan'" class="st-tfa-setup">
           <p class="st-info">1. 用 Google Authenticator 扫描下方二维码：</p>
           <div class="st-tfa-qr">
-            <img :src="`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(tfaQrUrl)}`" alt="2FA QR" />
+            <img
+              v-if="tfaQrDisplay"
+              :src="`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(tfaQrDisplay)}`"
+              alt="2FA QR"
+            />
+            <p v-else class="st-info">二维码生成失败，请用下方密钥手动添加。</p>
           </div>
           <p class="st-info">2. 或手动输入密钥：<code class="st-tfa-secret">{{ tfaSecret }}</code></p>
           <p class="st-info">3. 输入应用显示的6位验证码：</p>
