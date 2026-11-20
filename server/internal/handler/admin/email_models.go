@@ -23,6 +23,8 @@ var emailConfigKeys = []string{
 	"smtp_from_name",
 	"email_template",
 	"register_email_verify",
+	"register_email_allowed_domains", // 注册邮箱域名白名单（逗号分隔，空=不限制）
+	"register_email_blocked_domains", // 一次性邮箱黑名单（逗号分隔，优先于白名单）
 	"mail_rate_limit_enabled",
 	"mail_rate_per_minute",
 	"mail_send_interval_ms", // 串行 worker 两封之间的间隔（毫秒，默认 0 = 不等）

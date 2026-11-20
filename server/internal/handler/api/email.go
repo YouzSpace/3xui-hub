@@ -80,12 +80,22 @@ func (h *Handler) handleEmailVerifySend(c *gin.Context) {
 		h.logger.Printf("email-verify/send 记数失败: %v", err)
 	}
 
-	configs, err := h.store.SiteConfigMany(ctx, append([]string{"register_email_verify"}, smtpConfigKeys...))
+	configs, err := h.store.SiteConfigMany(ctx, append([]string{
+		"register_email_verify",
+		cfgRegisterEmailAllowedDomains,
+		cfgRegisterEmailBlockedDomains,
+	}, smtpConfigKeys...))
 	if err != nil {
 		h.logger.Printf("email-verify/send 读取配置失败: %v", err)
 	}
 	if !phpTruthy(configs["register_email_verify"]) {
 		failStatus(c, msgEmailNotEnabled, 400, http.StatusBadRequest)
+		return
+	}
+	// 与注册同一口径：一次性 / 不在白名单的域名连验证码都不发，
+	// 避免用户「收到码、填完码，注册时才被拒」的糟糕体验。
+	if !emailDomainAllowed(configs, email) {
+		failStatus(c, msgEmailDomainDenied, 400, http.StatusBadRequest)
 		return
 	}
 	if configs["smtp_host"] == "" {

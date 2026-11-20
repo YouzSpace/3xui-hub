@@ -1,7 +1,7 @@
 <template>
   <div class="email-page">
     <div class="email-head">
-      <h1 class="ch-page-title-semi">邮箱配置</h1>
+      <h1 class="email-title">邮箱配置</h1>
       <span class="email-autosave-hint">修改自动保存</span>
     </div>
 
@@ -32,6 +32,39 @@
 
       </div>
       <p class="email-hint"><Badge variant="info">提示</Badge> 开启后，用户注册将通过邮箱接收验证码，关闭则使用图形验证码。</p>
+
+      <!-- 注册邮箱域名策略：白名单 / 黑名单。两个都空 = 不限制（行为同以前）。 -->
+      <div class="email-domain-policy">
+        <div class="email-switch-row">
+          <span class="email-switch-label">邮箱域名白名单</span>
+          <span class="email-switch-hint">{{ form.register_email_allowed_domains ? '仅允许名单内域名' : '不限制' }}</span>
+        </div>
+        <Input
+          v-model="form.register_email_allowed_domains"
+          placeholder="qq.com,163.com,gmail.com,outlook.com"
+          mono
+        />
+        <p class="email-hint">
+          <Badge variant="info">说明</Badge>
+          逗号分隔，<b>子域自动匹配</b>（填 <code>qq.com</code> 即含 <code>vip.qq.com</code>）。
+          留空 = 不限制。用于挡住一次性 / 临时邮箱（如 euploading.com）。
+          <button type="button" class="email-link-btn" @click="fillDefaultDomains">填入常用邮箱</button>
+        </p>
+
+        <div class="email-switch-row email-domain-gap">
+          <span class="email-switch-label">邮箱域名黑名单</span>
+          <span class="email-switch-hint">{{ form.register_email_blocked_domains ? '名单内一律拒绝' : '未启用' }}</span>
+        </div>
+        <Input
+          v-model="form.register_email_blocked_domains"
+          placeholder="mailinator.com,euploading.com,smtp.is"
+          mono
+        />
+        <p class="email-hint">
+          <Badge variant="warning">注意</Badge>
+          <b>优先于白名单</b>：命中即拒，防止误把一次性域名加进白名单时被放行。留空 = 未启用。
+        </p>
+      </div>
     </Card>
 
       <!-- 其余卡片（发送测试/SMTP/模板/批量发信）两栏均分，归「设置」Tab，仍受邮箱验证开关控制 -->
@@ -130,22 +163,17 @@
                 <label class="email-label">收件人（邮箱或用户 ID）</label>
                 <Input v-model="batch.single_query" placeholder="a@example.com 或 12" />
               </div>
-              <template v-else-if="batch.mode === 'filter'">
+              <template v-else>
                 <div>
                   <label class="email-label">用户状态</label>
                   <Select v-model="batch.user_status" :options="userStatusOptions" />
                 </div>
                 <div>
-                  <label class="email-label">限定套餐（可多选，不选=不限）</label>
-                  <MultiSelect v-model="batch.plan_ids" :options="batchPlanOptions" placeholder="不限套餐" />
+                  <label class="email-label">限定套餐（可选）</label>
+                  <Select v-model="batch.plan_id" :options="batchPlanOptions" />
                 </div>
               </template>
             </div>
-
-            <!-- 全部：说明单独一行，纯文字，避免被网格挤变形 -->
-            <p v-if="batch.mode === 'all'" class="email-all-note email-mt">
-              发送给<strong>所有已启用的用户</strong>（含未购买套餐 / 已过期 / 已超量，不含被封禁的账号）。
-            </p>
 
             <div class="email-mt">
               <label class="email-label">邮件标题</label>
@@ -474,21 +502,17 @@
             <label class="email-label">收件人（邮箱或用户 ID）</label>
             <Input v-model="schedule.config.single_query" placeholder="a@example.com 或 12" />
           </div>
-          <template v-else-if="schedule.config.mode === 'filter'">
+          <template v-else>
             <div>
               <label class="email-label">用户状态</label>
               <Select v-model="schedule.config.user_status" :options="userStatusOptions" />
             </div>
             <div>
-              <label class="email-label">限定套餐（可多选，不选=不限）</label>
-              <MultiSelect v-model="schedule.config.plan_ids" :options="batchPlanOptions" placeholder="不限套餐" />
+              <label class="email-label">限定套餐（可选）</label>
+              <Select v-model="schedule.config.plan_id" :options="batchPlanOptions" />
             </div>
           </template>
         </div>
-
-        <p v-if="schedule.config.mode === 'all'" class="email-all-note email-mt">
-          发送给<strong>所有已启用的用户</strong>（含未购买套餐 / 已过期 / 已超量，不含被封禁的账号）。
-        </p>
 
         <div class="email-mt">
           <label class="email-label">邮件标题</label>
@@ -626,7 +650,6 @@ import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
-import MultiSelect from '@/components/ui/MultiSelect.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Icon from '@/components/ui/Icon.vue'
 import Modal from '@/components/ui/Modal.vue'
@@ -688,6 +711,9 @@ const form = ref({
   smtp_password: '',
   smtp_from_name: 'ControlHub',
   register_email_verify: false,
+  // 注册邮箱域名策略：白名单空=不限制；黑名单空=未启用（黑名单优先于白名单）
+  register_email_allowed_domains: '',
+  register_email_blocked_domains: '',
   email_template: '',
   // 发信速度限制（「限制」页配置，批量与定时共用）
   mail_rate_limit_enabled: false,
@@ -714,6 +740,19 @@ const testTo = ref('')
 // 点眼睛就会让 JSON 快照变化，触发一次毫无意义的自动保存。
 const smtpPwdVisible = ref(false)
 const loading = ref(false)
+
+// 常用邮箱基线：与后端 api 包 defaultAllowedEmailDomains 同一份口径。
+// 「填入常用邮箱」只在输入框为空或用户明确点击时覆盖，不做隐式默认值 ——
+// 隐式默认会让「本来想不限」的站点被静默收紧成白名单。
+const DEFAULT_ALLOWED_DOMAINS =
+  'qq.com,vip.qq.com,foxmail.com,163.com,126.com,yeah.net,188.com,' +
+  'sina.com,sina.cn,sohu.com,139.com,189.cn,aliyun.com,' +
+  'gmail.com,googlemail.com,outlook.com,hotmail.com,live.com,msn.com,' +
+  'icloud.com,me.com,yahoo.com,protonmail.com,proton.me'
+
+const fillDefaultDomains = () => {
+  form.value.register_email_allowed_domains = DEFAULT_ALLOWED_DOMAINS
+}
 // 读取已存的邮件配置（老 UI 行为：读失败不阻塞页面）。
 // 不做「加载失败就禁用保存」的前端门禁——后端 save() 已挡空值覆盖，
 // 前端再拦一层只会误伤正常操作。
@@ -1090,10 +1129,10 @@ const saveNotifyCfg = async () => {
 
 // ============ 批量发信 ============
 const batch = ref({
-  mode: 'filter',        // all=全部注册用户 / filter=按条件群发 / single=单发
+  mode: 'filter',        // filter=按条件群发 / single=单发
   subject: '',
   body: '',
-  plan_ids: [],          // 限定套餐（可多选），空 = 不限
+  plan_id: '',
   user_status: 'normal',
   single_query: '',
 })
@@ -1216,8 +1255,7 @@ const onBatchSend = async () => {
   try {
     const res = await adminApi.batchSendEmail({
       ...batch.value,
-      plan_id: null,
-      plan_ids: (batch.value.plan_ids || []).map(Number),
+      plan_id: batch.value.plan_id || null,
     })
     batchResult.value = res
     toast.success(`已加入发送队列，共 ${res.total} 封`)
@@ -1237,7 +1275,7 @@ const schedule = ref({
   config: {
     mode: 'filter',
     user_status: 'normal',
-    plan_ids: [],
+    plan_id: '',
     single_query: '',
     subject: '',
     body: '',
@@ -1257,9 +1295,11 @@ const loadSchedule = async () => {
     schedule.value.time = data.time || '09:00'
     const c = data.config || {}
     schedule.value.config = {
-      mode: c.mode === 'single' ? 'single' : (c.mode === 'all' ? 'all' : 'filter'),
+      // 'all' 在下拉里没有对应项（旧默认值），归一为「按条件群发」显示；
+      // 后端对 all/filter 的处理本来就相同（都按 user_status 过滤）
+      mode: c.mode === 'single' ? 'single' : 'filter',
       user_status: c.user_status || 'normal',
-      plan_ids: Array.isArray(c.plan_ids) ? c.plan_ids : (c.plan_id ? [c.plan_id] : []),
+      plan_id: c.plan_id || '',
       single_query: c.single_query || '',
       subject: c.subject || '',
       body: c.body || '',
@@ -1276,7 +1316,7 @@ const buildSchedulePayload = () => ({
   time: schedule.value.time,
   config: {
     ...schedule.value.config,
-    plan_ids: (schedule.value.config.plan_ids || []).map(Number),
+    plan_id: schedule.value.config.plan_id || null,
   },
 })
 
@@ -1337,14 +1377,14 @@ const recipientOptions = [
 ]
 
 const sendModeOptions = [
-  { label: '全部（所有已启用用户）', value: 'all' },
   { label: '按条件群发', value: 'filter' },
   { label: '单发（指定一个人）', value: 'single' },
 ]
 
 const userStatusOptions = [
   { label: '正常（未过期、未超量）', value: 'normal' },
-  { label: '已耗尽（过期或超量）', value: 'depleted' },
+  { label: '流量超量', value: 'over' },
+  { label: '已过期', value: 'expired' },
 ]
 
 const logTypeOptions = [
@@ -1361,10 +1401,11 @@ const logStatusOptions = [
   { label: '失败', value: 'failed' },
 ]
 
-// 批量发信「限定套餐」（多选）：不再有「全部套餐」占位项 —— 不选即「不限」
-const batchPlanOptions = computed(() =>
-  planOptions.value.map((p) => ({ label: p.name, value: p.id })),
-)
+// 批量发信「限定套餐」：与套餐下拉同源
+const batchPlanOptions = computed(() => [
+  { label: '全部套餐', value: '' },
+  ...planOptions.value.map((p) => ({ label: p.name, value: p.id })),
+])
 
 const logSceneText = {
   traffic_exhausted: '流量用尽',

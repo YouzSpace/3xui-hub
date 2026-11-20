@@ -2,7 +2,7 @@
 /**
  * 用户注册 — 精致优雅风格
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import Input from '@/components/ui/Input.vue'
 import Icon from '@/components/ui/Icon.vue'
@@ -29,7 +29,13 @@ const emailCode = ref('')
 const emailCodeSending = ref(false)
 const emailCodeSent = ref(false)
 const emailCodeCountdown = ref(0)
+// emailError：邮箱域名相关的常驻错误（白名单外 / 一次性邮箱），显示在邮箱输入框下方。
+// 与 toast 的区别：toast 几秒就消失，用户回头看只会觉得"点了没反应"。
+const emailError = ref('')
 let emailCodeTimer = null
+
+// 用户改了邮箱就清掉旧的域名错误——否则改对了红字还挂着，自相矛盾
+watch(email, () => { emailError.value = '' })
 
 const useEmailVerify = computed(() => siteConfig.registerEmailVerify)
 
@@ -78,6 +84,8 @@ const onRegister = async () => {
 const sendEmailCode = async () => {
   if (!email.value.trim()) { toast.error('请输入邮箱'); return }
   if (!useEmailVerify.value) { toast.error('未启用邮箱验证'); return }
+  // 重发前清掉上一次的错误：用户改了邮箱后旧红字不该继续挂着
+  emailError.value = ''
   emailCodeSending.value = true
   try {
     await userApi.sendEmailVerifyCode(email.value.trim())
@@ -92,7 +100,14 @@ const sendEmailCode = async () => {
     }, 1000)
     toast.success('验证码已发送')
   } catch (e) {
-    toast.error(e.message || '发送失败')
+    const msg = e?.message || '发送失败'
+    // 域名不符 / 一次性邮箱：错误常驻在邮箱输入框下方，不用 toast
+    // （后端返回的文案本身就是完整的可执行提示，直接展示即可）
+    if (msg.includes('常用邮箱') || msg.includes('一次性') || msg.includes('临时邮箱')) {
+      emailError.value = msg
+    } else {
+      toast.error(msg)
+    }
   } finally { emailCodeSending.value = false }
 }
 </script>
@@ -120,6 +135,8 @@ const sendEmailCode = async () => {
         <label class="reg-field">
           <span>邮箱</span>
           <Input v-model="email" type="email" placeholder="name@example.com" :disabled="loading" />
+          <!-- 邮箱域名不在白名单等错误：常驻红字，不用 toast（toast 几秒就消失，用户看不到为什么发不出去） -->
+          <span v-if="emailError" class="reg-field-error">{{ emailError }}</span>
         </label>
         <label class="reg-field"><span>密码</span><Input v-model="password" type="password" placeholder="至少 6 位" :disabled="loading" /></label>
         <label class="reg-field"><span>确认密码</span><Input v-model="confirmPassword" type="password" placeholder="再次输入密码" :disabled="loading" /></label>
@@ -138,7 +155,7 @@ const sendEmailCode = async () => {
           <div class="reg-captcha-row">
             <Input v-model="emailCode" placeholder="输入邮箱验证码" :disabled="loading" class="reg-captcha-input" />
             <button type="button" class="reg-send-code-btn" :disabled="emailCodeSending || emailCodeCountdown > 0" @click="sendEmailCode">
-              {{ emailCodeCountdown > 0 ? `${emailCodeCountdown}s` : '发送验证码' }}
+              {{ emailCodeCountdown > 0 ? '重新获取' : (emailCodeSent ? '重新发送' : '发送验证码') }}
             </button>
           </div>
         </label>

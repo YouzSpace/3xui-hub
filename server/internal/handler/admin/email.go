@@ -133,6 +133,8 @@ func (d *MailDomain) mailSave(c *gin.Context) {
 	v.field("smtp_from_name", "nullable", "string", "max:100")
 	v.field("email_template", "nullable", "string", "max:65535")
 	v.field("register_email_verify", "nullable", "boolean")
+	v.field("register_email_allowed_domains", "nullable", "string", "max:4000")
+	v.field("register_email_blocked_domains", "nullable", "string", "max:4000")
 	v.field("mail_rate_limit_enabled", "nullable", "boolean")
 	v.field("mail_rate_per_minute", "nullable", "integer", "min:1", "max:600")
 	v.field("mail_send_interval_ms", "nullable", "integer", "min:0")

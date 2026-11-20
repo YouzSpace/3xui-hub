@@ -205,3 +205,12 @@ html.dark .email-warn-note { color: #fbbf24; }
 /* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
 .email-cols { align-items: start; }
 .email-cols .email-label { min-height: 2.6em; display: flex; align-items: flex-end; margin-bottom: 0; }
+
+/* 注册邮箱域名策略（PR #144）：白名单/黑名单块间距 + 行内文字按钮 */
+.email-domain-gap { margin-top: var(--space-4); }
+.email-link-btn:hover { opacity: .85; }
+
+/* 注册邮箱域名策略（PR #144）：白名单/黑名单块 + 行内文字按钮 */
+.email-domain-policy { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
+.email-link-btn { background: none; border: none; padding: 0; color: var(--accent); font-size: var(--text-xs); cursor: pointer; text-decoration: underline; }
+.email-title { font-size: var(--text-xl); font-weight: var(--font-semibold); margin-bottom: var(--space-5); }

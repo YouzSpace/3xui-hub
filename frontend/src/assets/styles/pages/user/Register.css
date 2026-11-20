@@ -21,6 +21,9 @@
 .reg-field span { font-size: 13px; font-weight: 600; color: #1d1d1f; }
 .reg-field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .reg-field-tip { font-size: 12px; font-weight: 400; color: #ef4444; }
+/* 邮箱域名被拒等"常驻错误"：紧贴邮箱输入框下方。
+   必须覆盖 .reg-field span 的黑色加粗（那是给字段标题用的），否则红字会被染黑。 */
+.reg-field .reg-field-error { font-size: 12px; font-weight: 400; color: #ef4444; line-height: 1.5; margin-top: -2px; }
 
 
 
@@ -58,6 +61,7 @@ html.dark .reg-title { color: #fff; }
 html.dark .reg-sub { color: #86868b; }
 html.dark .reg-field span { color: #e5e5e5; }
 html.dark .reg-field-tip { color: #f87171; }
+html.dark .reg-field .reg-field-error { color: #f87171; }
 html.dark .reg-captcha-img { border-color: rgba(255,255,255,0.08); }
 html.dark .reg-btn { background: #fff; color: #0a0a0a; }
 html.dark .reg-btn:hover { background: #e5e5e5; box-shadow: 0 8px 30px rgba(255,255,255,0.1); }
