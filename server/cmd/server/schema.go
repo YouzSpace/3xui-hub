@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"database/sql"
@@ -246,6 +246,10 @@ func ensureSchema(db *sql.DB) error {
 		// 配置模板（#地区功能-19）：1 = 该节点的入站/出站/路由被单独改过，
 		// 套用模板时默认跳过它（勾「覆盖单独配置」才重写）。套用成功会清回 0。
 		{"nodes", "is_custom_config", "tinyint NOT NULL DEFAULT 0 COMMENT '1=该节点配置已单独改过，不跟随模板'"},
+		// SMTP 账号池的「默认账号」标记：挑号时优先用 is_default=1 的那个（仍受
+		// 日限额 / 冷却 / 停用约束），它不可用时才按「最久未用」轮换其它号。
+		// 默认账号只允许有一个；接口里「设为默认」会把其它行清零。
+		{"smtp_accounts", "is_default", "tinyint(1) NOT NULL DEFAULT 0 COMMENT '1=默认优先使用的账号'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {

@@ -71,14 +71,6 @@ func postJSON(t *testing.T, r *gin.Engine, path string, body any) map[string]any
 	return out
 }
 
-func dataOf(t *testing.T, out map[string]any) map[string]any {
-	t.Helper()
-	d, ok := out["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("响应缺少 data 对象: %#v", out)
-	}
-	return d
-}
 
 func codeOf(out map[string]any) int {
 	if f, ok := out["code"].(float64); ok {
@@ -87,10 +79,6 @@ func codeOf(out map[string]any) int {
 	return -1
 }
 
-func msgOf(out map[string]any) string {
-	s, _ := out["msg"].(string)
-	return s
-}
 
 // ---- 用例 ----
 

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="email-page">
     <div class="email-head">
       <h1 class="email-title">邮箱配置</h1>
@@ -74,52 +74,27 @@
         <div class="email-col">
 
           <Card class="email-card">
-            <template #header><h2>SMTP 服务器</h2></template>
-            <div class="email-grid">
-              <div>
-                <label class="email-label">SMTP 服务器</label>
-                <Input v-model="form.smtp_host" placeholder="smtp.example.com" required />
-              </div>
-              <div>
-                <label class="email-label">端口</label>
-                <Input v-model="form.smtp_port" type="number" placeholder="465" />
-              </div>
-              <div>
-                <label class="email-label">加密方式</label>
-                <Select v-model="form.smtp_encryption" :options="encryptionOptions" />
-              </div>
-              <div>
-                <label class="email-label">发件邮箱</label>
-                <Input v-model="form.smtp_username" placeholder="noreply@example.com" required />
-                <p class="email-rate-desc">发件地址与邮箱账号相同（邮箱服务商要求）</p>
-              </div>
-              <div>
-                <label class="email-label">授权码</label>
-                <div class="email-pwd">
-                  <Input
-                    v-model="form.smtp_password"
-                    :type="smtpPwdVisible ? 'text' : 'password'"
-                    placeholder="QQ 邮箱需用授权码"
-                    required
-                  />
-                  <button
-                    type="button"
-                    class="email-pwd-toggle"
-                    :class="{ 'email-pwd-toggle--on': smtpPwdVisible }"
-                    :title="smtpPwdVisible ? '隐藏密码' : '显示密码'"
-                    :aria-label="smtpPwdVisible ? '隐藏密码' : '显示密码'"
-                    :aria-pressed="smtpPwdVisible"
-                    @click="smtpPwdVisible = !smtpPwdVisible"
-                  >
-                    <Icon name="eye-off" :size="16" />
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label class="email-label">发件名称</label>
-                <Input v-model="form.smtp_from_name" placeholder="ControlHub" />
-              </div>
+            <template #header><h2>验证码发送</h2></template>
+
+            <!-- 验证码（注册 / 找回密码）用哪个账号发 -->
+            <div class="email-verify-sender">
+              <label class="email-label">验证码用哪个账号发</label>
+              <Select v-model="form.verify_mail_sender" :options="verifySenderOptions" />
+              <p class="email-rate-desc">
+                选「自动：走账号池」= 从下方账号池里挑号轮换（最久未用优先，失败自动换号），
+                池里没有可用号时才回落到下面的 SMTP 配置。也可以直接指定某个号。
+              </p>
+              <p v-if="verifySenderHint" class="email-hint">
+                <Badge :variant="verifySenderHint.variant">{{ verifySenderHint.label }}</Badge>
+                {{ verifySenderHint.text }}
+              </p>
             </div>
+
+            <!-- 账号池是唯一发信来源，站点默认 SMTP 不再在界面暴露（后端保留兜底，不参与日常配置） -->
+            <p class="email-hint">
+              <Badge variant="info">说明</Badge>
+              验证码统一从「账号池」发送，账号的服务器 / 密码 / 限额都在「账号池」页维护。
+            </p>
           </Card>
 
           <Card class="email-card">
@@ -135,7 +110,7 @@
               </div>
               <Button :loading="loading" @click="onTest" class="self-end">发送测试</Button>
             </div>
-            <p class="email-rate-desc">选「站点默认账号」= 用上方 SMTP 配置发；选池里的号 = 用该号发，可用来验证池号是否真的通。</p>
+            <p class="email-rate-desc">选「账号池自动挑号」= 走账号池轮换；选具体某个号 = 只用该号发，可用来验证池号是否真的通。</p>
           </Card>
 
           <Card class="email-card">
@@ -359,6 +334,7 @@
                 <th>状态</th>
                 <th>冷却到</th>
                 <th>连续失败</th>
+                <th>默认</th>
                 <th class="email-pool-actions-col">操作</th>
               </tr>
             </thead>
@@ -381,6 +357,10 @@
                   <span :class="{ 'email-pool-err': a.error_count > 0 }">{{ a.error_count }}</span>
                 </td>
                 <td>
+                  <Badge v-if="a.is_default" variant="success">默认</Badge>
+                  <span v-else class="email-pool-dash">—</span>
+                </td>
+                <td>
                   <div class="email-pool-actions">
                     <Button variant="ghost" size="sm" @click="openPoolEdit(a)">编辑</Button>
                     <Button
@@ -389,6 +369,18 @@
                       @click="togglePoolStatus(a)"
                     >{{ a.status === 'active' ? '停用' : '启用' }}</Button>
                     <Button variant="ghost" size="sm" @click="resetToday(a)">重置今日</Button>
+                    <Button
+                      v-if="!a.is_default"
+                      variant="ghost"
+                      size="sm"
+                      @click="setDefaultAccount(a)"
+                    >设为默认</Button>
+                    <Button
+                      v-else
+                      variant="ghost"
+                      size="sm"
+                      @click="clearDefaultAccount(a)"
+                    >取消默认</Button>
                     <Button variant="ghost" size="sm" @click="removePool(a)">删除</Button>
                   </div>
                 </td>
@@ -603,12 +595,12 @@
           <Select v-model="poolForm.encryption" :options="encryptionOptions" />
         </div>
         <div>
-          <label class="email-label">{{ poolEditing ? '密码 / 授权码（留空 = 不修改）' : '密码 / 授权码' }}</label>
+          <label class="email-label">密码 / 授权码</label>
           <div class="email-pwd">
             <Input
               v-model="poolForm.password"
               :type="poolPwdVisible ? 'text' : 'password'"
-              :placeholder="poolEditing ? '留空保持原密码' : 'QQ 邮箱需用授权码'"
+              :placeholder="poolEditing ? '已填好原密码，改就直接覆盖' : 'QQ 邮箱需用授权码'"
             />
             <button
               type="button"
@@ -714,6 +706,8 @@ const form = ref({
   // 注册邮箱域名策略：白名单空=不限制；黑名单空=未启用（黑名单优先于白名单）
   register_email_allowed_domains: '',
   register_email_blocked_domains: '',
+  // 验证码发信用哪个账号：'pool' = 走账号池自动挑号（默认账号优先）；数字串 = 指定池账号 id
+  verify_mail_sender: 'pool',
   email_template: '',
   // 发信速度限制（「限制」页配置，批量与定时共用）
   mail_rate_limit_enabled: false,
@@ -894,8 +888,9 @@ const resetPoolForm = (a) => {
     host: a.host || '',
     port: a.port || 587,
     username: a.username || '',
-    // 密码不回显：留空 = 保持原密码（后端同口径）
-    password: '',
+    // 密码回显：后端在鉴权组内返回解密后的明文（与站点默认账号同口径）。
+    // 这样管理员点「眼睛」能看到原密码，不会因为「留空=不修改」而永远看不到配置。
+    password: a.password || '',
     encryption: a.encryption || 'tls',
     from_name: a.from_name || '',
     daily_limit: a.daily_limit ?? 0,
@@ -959,8 +954,28 @@ const savePool = async () => {
   }
 }
 
-const togglePoolStatus = async (a) => {
-  const next = a.status === 'active' ? 'disabled' : 'active'
+// 设为默认 / 取消默认：挑号时优先用默认账号（它不可用才轮换其它号）
+const setDefaultAccount = async (a) => {
+  try {
+    await adminApi.setSmtpAccountDefault(a.id)
+    toast.success(`已把「${a.username || a.host}」设为默认账号`)
+    await loadPool()
+  } catch (e) {
+    toast.error(e?.message || '设置失败')
+  }
+}
+
+const clearDefaultAccount = async (a) => {
+  try {
+    await adminApi.setSmtpAccountDefault(0)
+    toast.success('已取消默认账号，恢复纯轮换')
+    await loadPool()
+  } catch (e) {
+    toast.error(e?.message || '取消失败')
+  }
+}
+
+const togglePoolStatus = async (a) => {  const next = a.status === 'active' ? 'disabled' : 'active'
   try {
     await adminApi.setSmtpAccountStatus(a.id, next)
     toast.success(next === 'active' ? '已启用' : '已停用')
@@ -996,15 +1011,45 @@ const removePool = async (a) => {
 const poolStatusText = { active: '启用', cooling: '冷却中', disabled: '已停用' }
 const poolStatusVariant = { active: 'success', cooling: 'warning', disabled: 'danger' }
 
-// 测试发送的「用哪个号发」：空 = 站点默认账号
+// 测试发送的「用哪个号发」：空 = 走账号池（默认账号优先 / 轮换）
 const testAccount = ref('')
 const testAccountOptions = computed(() => [
-  { label: '站点默认账号', value: '' },
+  { label: '账号池自动（默认账号优先）', value: '' },
   ...pool.value.map((a) => ({
-    label: `${a.username || a.host}（${a.host}:${a.port}）`,
+    label: `${a.username || a.host}（${a.host}:${a.port}）${a.is_default ? ' ★默认' : ''}`,
     value: a.id,
   })),
 ])
+
+// 验证码发信账号：'pool' 走池轮换，或指定某个池账号。
+// 注意 Select 的 value 类型要和 form 里的字符串保持一致（后端存的是字符串），
+// 所以这里把 id 也转成字符串，避免「pool」与数字混用导致选中态不显示。
+const verifySenderOptions = computed(() => [
+  { label: '自动：走账号池（推荐）', value: 'pool' },
+  ...pool.value.map((a) => ({
+    label: `${a.username || a.host}（${a.host}:${a.port}）`,
+    value: String(a.id),
+  })),
+])
+
+// 一句状态提示：让管理员一眼看出当前到底走哪条路、有没有隐患。
+const verifySenderHint = computed(() => {
+  const usable = pool.value.filter((a) => a.status === 'active')
+  const senderId = String(form.value.verify_mail_sender || 'pool')
+  if (senderId !== 'pool') {
+    const acc = pool.value.find((a) => String(a.id) === senderId)
+    if (!acc) return { variant: 'danger', label: '账号不存在', text: '指定的账号已不在池中，会自动退回走账号池。' }
+    if (acc.status !== 'active') return { variant: 'warning', label: '账号不可用', text: `${acc.username || acc.host} 当前状态为 ${acc.status}，会自动退回走账号池。` }
+    return { variant: 'success', label: '已指定', text: `验证码只从这个账号发出：${acc.username || acc.host}。` }
+  }
+  if (pool.value.length === 0) {
+    return { variant: 'warning', label: '账号池为空', text: '还没加账号，验证码会走下面的兜底 SMTP 配置。建议先到「账号池」加号。' }
+  }
+  if (usable.length === 0) {
+    return { variant: 'warning', label: '无可用账号', text: '池里账号都不是启用状态，验证码会走下面的兜底 SMTP 配置。' }
+  }
+  return { variant: 'success', label: '自动挑号', text: `将从 ${usable.length} 个可用账号中挑最久未用的轮换发送。` }
+})
 
 // 时间显示：后端 ISO 串；空值回 —（冷却到/最近使用在多数行都是空）
 const fmtTime = (iso) => {

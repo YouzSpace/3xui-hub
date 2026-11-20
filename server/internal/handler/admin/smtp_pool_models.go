@@ -45,8 +45,11 @@ type SMTPAccount struct {
 	Status        string
 	CooldownUntil *time.Time
 	ErrorCount    int
-	CreatedAt     *time.Time
-	UpdatedAt     *time.Time
+	// IsDefault 标记「默认优先使用的账号」（池里最多一个）。
+	// 挑号时先试它；它不可用（停用/冷却/超日限额）才按最久未用轮换其它号。
+	IsDefault bool
+	CreatedAt *time.Time
+	UpdatedAt *time.Time
 }
 
 // Settings 把账号转成一次发信用的参数（与单一 smtp_* 配置同构）。
@@ -117,6 +120,9 @@ type SMTPAccountStore interface {
 	// ResetSMTPAccountToday 手动把今日已发与连续失败清零（不动状态/冷却）：
 	// sent_today 到 daily_limit 后不想等到跨天时的逃生口。
 	ResetSMTPAccountToday(ctx context.Context, id uint64, now time.Time) error
+	// SetSMTPAccountDefault 设置/清除「默认优先使用」的账号（id=0 表示清除默认）。
+	// 池里默认账号唯一：实现里先把其它行 is_default 清零再置目标行。
+	SetSMTPAccountDefault(ctx context.Context, id uint64, now time.Time) error
 }
 
 // smtpFailure 是一次失败的分类（决定「换号 / 冷却 / 直接失败」）。

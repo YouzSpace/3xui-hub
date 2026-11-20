@@ -1,4 +1,4 @@
-package admin
+﻿package admin
 
 // 管理端邮件（/admin-api/email…）：SMTP 配置 + 自动通知 + 批量发信 + 定时发信 + 日志。
 //
@@ -135,6 +135,8 @@ func (d *MailDomain) mailSave(c *gin.Context) {
 	v.field("register_email_verify", "nullable", "boolean")
 	v.field("register_email_allowed_domains", "nullable", "string", "max:4000")
 	v.field("register_email_blocked_domains", "nullable", "string", "max:4000")
+	// 验证码发信账号：pool（默认，走池轮换）或池账号 id（指定某个号发）
+	v.field("verify_mail_sender", "nullable", "string", "max:32")
 	v.field("mail_rate_limit_enabled", "nullable", "boolean")
 	v.field("mail_rate_per_minute", "nullable", "integer", "min:1", "max:600")
 	v.field("mail_send_interval_ms", "nullable", "integer", "min:0")

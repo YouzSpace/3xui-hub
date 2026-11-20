@@ -52,12 +52,10 @@ html.dark .email-warn-note { color: #fbbf24; }
 
 /* 1280px 以下并成一列：两栏时每栏太窄，输入框会被挤到换行 */
 @media (max-width: 1280px) {
-  .email-cols { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 窄屏：卡片内边距收一点，避免输入框被挤 */
 @media (max-width: 640px) {
-  .email-page { max-width: 100%; }
 }
 .email-card { margin-bottom: var(--space-5); }
 /* 通栏卡（自动通知/发信日志）：不在两栏网格内，本身就是块级，宽度自然撑满。
@@ -71,10 +69,20 @@ html.dark .email-warn-note { color: #fbbf24; }
 .email-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 1100px) { .email-grid--3 { grid-template-columns: 1fr 1fr; } }
 /* 8 项刚好 4 行两列，不需要按开关数量切换列数 */
-@media (max-width: 640px) { .email-grid, .email-grid--3 { grid-template-columns: 1fr; } }
 .email-label { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-secondary); display: block; margin-bottom: var(--space-1); }
 
-.email-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); }
+.email-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+/* 注册邮箱域名策略块：与上方开关留出间隔；黑名单段单独留白，避免两段粘在一起 */
+.email-domain-policy { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
+.email-domain-gap { margin-top: var(--space-4); }
+/* 验证码发送卡片：发送账号下拉 + 状态提示；下面是「兜底 SMTP」小标题 */
+.email-verify-sender { margin-bottom: var(--space-4); }
+.email-fallback-head { display: flex; align-items: baseline; gap: var(--space-2); margin: var(--space-2) 0 var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
+.email-sub-title { margin: 0; font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--text-primary); }
+.email-hint-inline { font-size: var(--text-xs); color: var(--text-muted); }
+/* 行内文字按钮：用于「填入常用邮箱」，不抢主按钮视觉权重 */
+.email-link-btn { background: none; border: none; padding: 0; color: var(--accent); font-size: var(--text-xs); cursor: pointer; text-decoration: underline; }
+.email-link-btn:hover { opacity: .85; }
 .email-hint code { background: var(--bg-hover); padding: 0 4px; border-radius: var(--radius-sm); font-size: var(--text-xs); }
 /* 「全部」发送方式的说明：单独一行纯文字，正常换行 */
 .email-all-note { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; margin: 0; }
@@ -83,7 +91,6 @@ html.dark .email-warn-note { color: #fbbf24; }
 .email-test-row { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
 /* 「用哪个账号发」下拉定宽：Select 默认 width:100%，不定宽会把收件邮箱挤没 */
 .email-test-account { width: 220px; flex: 0 0 auto; min-width: 0; }
-@media (max-width: 640px) { .email-test-account { width: 100%; } }
 /* flex 工具类：模板里给「发送测试」行贴了这两个名字，但项目里没有全局定义，
    缺了输入框就不撑满、按钮不贴底。定义在本地 scoped 里，别去动 main.css。 */
 .flex-1 { flex: 1 1 0%; min-width: 0; }
@@ -127,7 +134,6 @@ html.dark .email-warn-note { color: #fbbf24; }
 .email-switch-input:checked + .email-switch-slider { background: var(--switch-on, #2563eb); box-shadow: inset 0 0 0 0 rgba(0,0,0,0); }
 .email-switch-input:checked + .email-switch-slider::before { transform: translateX(21px); }
 .email-save-wrap { margin-top: var(--space-4); display: flex; justify-content: flex-end; }
-@media (max-width: 640px) { .email-save-wrap { justify-content: stretch; } .email-save-wrap > button { width: 100%; } }
 /* 自动通知：变量提示 + 场景卡 */
 .email-vars { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0; }
 .email-vars-label { font-size: var(--text-xs); color: var(--text-muted); }
@@ -137,7 +143,6 @@ html.dark .email-warn-note { color: #fbbf24; }
    两列后高度砍半，且展开正文框时两栏仍有余量。 */
 /* 行内卡片默认 stretch 等高：展开一侧时另一侧跟随对齐，避免「犬牙交错」 */
 .email-scenes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-@media (max-width: 1100px) { .email-scenes { grid-template-columns: 1fr; } }
 .email-scene { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); min-width: 0; }
 .email-scene .email-switch-row { margin-bottom: var(--space-2); }
 /* 场景行标题不换行 + 下拉定宽：Select 默认 width:100%，不定宽会把标题挤到折行 */
@@ -203,14 +208,9 @@ html.dark .email-warn-note { color: #fbbf24; }
 .email-pager-info { font-size: var(--text-xs); color: var(--text-muted); }
 
 /* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.email-cols { align-items: start; }
 .email-cols .email-label { min-height: 2.6em; display: flex; align-items: flex-end; margin-bottom: 0; }
 
 /* 注册邮箱域名策略（PR #144）：白名单/黑名单块间距 + 行内文字按钮 */
-.email-domain-gap { margin-top: var(--space-4); }
-.email-link-btn:hover { opacity: .85; }
 
 /* 注册邮箱域名策略（PR #144）：白名单/黑名单块 + 行内文字按钮 */
-.email-domain-policy { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
-.email-link-btn { background: none; border: none; padding: 0; color: var(--accent); font-size: var(--text-xs); cursor: pointer; text-decoration: underline; }
 .email-title { font-size: var(--text-xl); font-weight: var(--font-semibold); margin-bottom: var(--space-5); }

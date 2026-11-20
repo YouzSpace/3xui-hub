@@ -268,6 +268,8 @@ export const adminApi = {
   setSmtpAccountStatus: (id, status) =>
     client.put(`/admin-api/email/smtp-accounts/${id}/status`, { status }),
   resetSmtpAccountToday: (id) => client.put(`/admin-api/email/smtp-accounts/${id}/reset-today`),
+  // 设为默认账号（挑号时优先用它）；id=0 = 清除默认
+  setSmtpAccountDefault: (id) => client.put(`/admin-api/email/smtp-accounts/${id}/default`),
   // 自动通知（开关全部默认关闭，管理员自行开启）
   getEmailNotify: () => client.get('/admin-api/email/notify'),
   saveEmailNotify: (data) => client.put('/admin-api/email/notify', data),

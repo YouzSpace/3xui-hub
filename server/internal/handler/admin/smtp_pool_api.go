@@ -1,4 +1,4 @@
-package admin
+﻿package admin
 
 // 多 SMTP 账号池的管理端 API（只做后端端点，前端列表另做）。
 //
@@ -28,6 +28,8 @@ func (d *MailDomain) registerSMTPAccountRoutes(r gin.IRouter) {
 	r.PUT("/email/smtp-accounts/:account/status", d.setSMTPAccountStatus)
 	// 今日计数清零（sent_today / error_count）。放在 :account 静态段之后不影响既有路由匹配。
 	r.PUT("/email/smtp-accounts/:account/reset-today", d.resetSMTPAccountToday)
+	// 设为默认账号（挑号时优先用它）；传 0 表示清除默认。
+	r.PUT("/email/smtp-accounts/:account/default", d.setSMTPAccountDefault)
 }
 
 // paramID / notFoundRoute 与 Handler 同口径（邮件域是独立 Domain，不复用 *Handler）。
@@ -54,7 +56,17 @@ func presentSMTPAccount(a *SMTPAccount) *jsObj {
 		"status", a.Status,
 		"cooldown_until", nullableISO(a.CooldownUntil),
 		"error_count", a.ErrorCount,
+		"is_default", a.IsDefault,
+		// has_password：是否已配置密码（前端据此提示「留空=不修改」）。
 		"has_password", a.Password != "",
+		// password：回显**解密后的明文**，供后台「眼睛」按钮切换查看。
+		//
+		// 为什么回显明文（管理端的取舍，与前台接口无关）：
+		//   - 这个接口在 AdminAuth 鉴权组内，只有管理员能读；
+		//   - 站点默认 SMTP 密码一直就是这么回显的（见 mailShow 的 decryptSmtpPassword），
+		//     池账号若不同口径，管理员改配置时看不到原密码，等于丢配置；
+		//   - 落库仍是 password_enc 密文，只在此处解密返回，不改变存储安全边界。
+		"password", a.Password,
 		"created_at", nullableISO(a.CreatedAt),
 		"updated_at", nullableISO(a.UpdatedAt),
 	)
@@ -282,4 +294,32 @@ func (d *MailDomain) resetSMTPAccountToday(c *gin.Context) {
 		return
 	}
 	d.success(c, presentSMTPAccount(acc), "今日计数已重置")
+}
+
+// setSMTPAccountDefault 设为默认账号（挑号时优先用它）。id=0 表示清除默认。
+func (d *MailDomain) setSMTPAccountDefault(c *gin.Context) {
+	id, ok := d.paramID(c, "account")
+	if !ok {
+		d.notFoundRoute(c)
+		return
+	}
+	if id > 0 {
+		if _, err := d.store.SMTPAccountByID(ctxOf(c), id); err != nil {
+			if err == sql.ErrNoRows {
+				d.notFoundRoute(c)
+				return
+			}
+			d.failServer(c, "查询 SMTP 账号", err)
+			return
+		}
+	}
+	if err := d.store.SetSMTPAccountDefault(ctxOf(c), id, d.now().UTC()); err != nil {
+		d.failServer(c, "设置默认 SMTP 账号", err)
+		return
+	}
+	msg := "已设为默认账号"
+	if id == 0 {
+		msg = "已清除默认账号"
+	}
+	d.success(c, nil, msg)
 }

@@ -1,6 +1,7 @@
-package api
+﻿package api
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -51,6 +52,22 @@ var smtpConfigKeys = []string{
 	"smtp_encryption", "smtp_from_name", "email_template",
 }
 
+// mailChannelReady 报告验证码邮件通道是否可用。
+//
+// 口径：优先看账号池有没有可用号（验证码统一走池）；池不可用再看站点 smtp_host。
+// 保持向后兼容：早期只配站点 smtp_* 的部署依然判为可用。
+func (h *Handler) mailChannelReady(ctx context.Context) bool {
+	if pm, ok := h.mailer.(interface{ Configured(context.Context) bool }); ok {
+		return pm.Configured(ctx)
+	}
+	// 非 SMTPMailer 实现（测试桩等）：退回旧口径，只看站点配置。
+	cfg, err := h.store.SiteConfigMany(ctx, []string{"smtp_host"})
+	if err != nil {
+		return false
+	}
+	return phpTrimSpaceOnly(cfg["smtp_host"]) != ""
+}
+
 // handleEmailVerifySend 对齐 EmailVerifyController::sendCode。
 //
 // 注意它**不**做防枚举（注册验证码本来就只发给「还没注册的邮箱」这件事由注册接口兜住）：
@@ -98,7 +115,9 @@ func (h *Handler) handleEmailVerifySend(c *gin.Context) {
 		failStatus(c, msgEmailDomainDenied, 400, http.StatusBadRequest)
 		return
 	}
-	if configs["smtp_host"] == "" {
+	// 邮件通道可用性：账号池有可用号即可（验证码统一走池），
+	// 池不可用时才回落到站点 smtp_host 判断。见 SMTPMailer.Configured。
+	if !h.mailChannelReady(ctx) {
 		failStatus(c, msgSMTPNotConfigured, 500, http.StatusInternalServerError)
 		return
 	}
@@ -221,12 +240,8 @@ func (h *Handler) handlePasswordResetSend(c *gin.Context) {
 		return
 	}
 
-	configs, err := h.store.SiteConfigMany(ctx, []string{"smtp_host"})
-	if err != nil {
-		h.logger.Printf("password-reset/send 读取配置失败: %v", err)
-	}
-	if configs["smtp_host"] == "" {
-		h.logger.Printf("password reset skipped: smtp not configured: %s", emailLogTag(email))
+	if !h.mailChannelReady(ctx) {
+		h.logger.Printf("password reset skipped: 邮件通道未配置/无可用账号: %s", emailLogTag(email))
 		success(c, nil, msgResetSent)
 		return
 	}
