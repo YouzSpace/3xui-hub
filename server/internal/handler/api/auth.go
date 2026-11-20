@@ -211,9 +211,19 @@ func (h *Handler) handleRegister(c *gin.Context) {
 		return
 	}
 
-	configs, cfgErr := h.store.SiteConfigMany(ctx, []string{"register_email_verify"})
+	configs, cfgErr := h.store.SiteConfigMany(ctx, []string{
+		"register_email_verify",
+		cfgRegisterEmailAllowedDomains,
+		cfgRegisterEmailBlockedDomains,
+	})
 	if cfgErr != nil {
 		h.logger.Printf("register 读取站点配置失败: %v", cfgErr)
+	}
+	// 邮箱域名白名单 / 一次性邮箱拦截：必须在「格式校验之后、发码或建号之前」，
+	// 也让一次性邮箱连发码都拿不到。配置为空时不启用（行为同升级前）。
+	if !emailDomainAllowed(configs, email) {
+		fail(c, msgEmailDomainDenied, 400)
+		return
 	}
 	useEmailVerify := phpTruthy(configs["register_email_verify"])
 
