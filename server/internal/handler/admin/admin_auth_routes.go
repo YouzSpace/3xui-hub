@@ -34,6 +34,9 @@ type AdminAuthRoutes struct {
 	// lookupAdmin 按用户名取登录所需凭据；查不到返回 (nil, nil)。
 	// 默认实现查 admins 表，单测替换成内存实现（不连库）。
 	lookupAdmin func(ctx context.Context, username string) (*adminCredentials, error)
+	// lookupSiteTitle 取站点标题作为 2FA 二维码的 issuer。
+	// 白标铁律：这里绝不能硬编码品牌名，必须读站点配置；nil 时回落查 site_configs。
+	lookupSiteTitle func(ctx context.Context) (string, error)
 }
 
 // adminCredentials 是登录校验要用到的管理员凭据快照。
@@ -292,7 +295,8 @@ func (h *AdminAuthRoutes) Google2faGenerate(c *gin.Context) {
 		h.fail(c, "生成密钥失败", 500)
 		return
 	}
-	issuer, label := otpAccountInfo(admin.Username)
+	issuer := h.otpIssuer(ctxOf(c))
+	label := otpAccountLabel(issuer, admin.Username)
 	writeJSON(c, phpEncode(jo("code", 0, "msg", "ok", "data", jo(
 		"secret", secret,
 		"qr_url", buildOTPAuthURL(issuer, label, secret),
@@ -301,19 +305,41 @@ func (h *AdminAuthRoutes) Google2faGenerate(c *gin.Context) {
 	))))
 }
 
-// otpIssuer 是写入 otpauth:// 的服务名（验证器里显示的名字）。
-const otpIssuer = "无界云 ControlHub"
+// otpDefaultIssuer 是没配站点标题时的兜底值：只允许用项目自己的名字，不允许出现任何客户品牌。
+const otpDefaultIssuer = "ControlHub"
 
-// otpAccountInfo 返回 (issuer, accountLabel)。
+// otpIssuer 返回写进 otpauth:// 的服务名：优先站点标题（白标），兜底项目名。
 //
-// accountLabel 用「issuer:用户名」的完整形式：Authenticator 里以冒号分段显示，
-// 多个站点都叫 admin 时也能分清是哪一家。
-func otpAccountInfo(username string) (issuer, label string) {
+// 优先级：单测注入的 lookupSiteTitle → site_configs.site_title → otpDefaultIssuer。
+func (h *AdminAuthRoutes) otpIssuer(ctx context.Context) string {
+	if h.lookupSiteTitle != nil {
+		if v, err := h.lookupSiteTitle(ctx); err == nil {
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		}
+		return otpDefaultIssuer
+	}
+	if h.db != nil {
+		var v sql.NullString
+		if err := h.db.QueryRowContext(ctx, "SELECT value FROM site_configs WHERE `key` = 'site_title'").Scan(&v); err == nil && v.Valid {
+			if s := strings.TrimSpace(v.String); s != "" {
+				return s
+			}
+		}
+	}
+	return otpDefaultIssuer
+}
+
+// otpAccountLabel 返回「issuer:用户名」。
+//
+// Authenticator 里以冒号分段显示，多个站点都叫 admin 时也能分清是哪一家。
+func otpAccountLabel(issuer, username string) string {
 	u := strings.TrimSpace(username)
 	if u == "" {
 		u = "admin"
 	}
-	return otpIssuer, otpIssuer + ":" + u
+	return issuer + ":" + u
 }
 
 // buildOTPAuthURL 拼标准 otpauth://totp URI（RFC 3952 / Google Authenticator Key Uri Format）。

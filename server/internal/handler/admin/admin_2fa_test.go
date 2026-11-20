@@ -135,8 +135,8 @@ func TestGoogle2faGenerateReturnsSecretAndOTPAuthURL(t *testing.T) {
 	if q.Get("algorithm") != "SHA1" || q.Get("digits") != "6" || q.Get("period") != "30" {
 		t.Fatalf("TOTP 参数必须与 verifyTOTP 一致（SHA1/6/30），实际 %q", q.Encode())
 	}
-	if q.Get("issuer") == "" {
-		t.Fatal("qr_url 必须带 issuer")
+	if q.Get("issuer") != otpDefaultIssuer {
+		t.Fatalf("未配置站点标题时 issuer 必须是项目名 %q（白标：不许硬编码品牌），实际 %q", otpDefaultIssuer, q.Get("issuer"))
 	}
 	// label 段保留字面冒号（otpauth 分段符），不能整体转义成 %3A
 	if !strings.Contains(u.Path, ":") {
@@ -144,6 +144,40 @@ func TestGoogle2faGenerateReturnsSecretAndOTPAuthURL(t *testing.T) {
 	}
 	if !strings.Contains(u.Path, "zoe") {
 		t.Fatalf("label 应包含管理员用户名，实际 path=%q", u.Path)
+	}
+}
+
+// TestGoogle2faGenerateIssuerFollowsSiteTitle 钉死白标口径：
+// issuer 必须来自站点标题（客户可改），任何情况下都不得出现硬编码的客户/品牌名。
+func TestGoogle2faGenerateIssuerFollowsSiteTitle(t *testing.T) {
+	h := &AdminAuthRoutes{
+		now: time.Now,
+		lookupSiteTitle: func(context.Context) (string, error) {
+			return "  客户面板 A  ", nil
+		},
+	}
+	r := newTestRouter("/admin-api/google2fa/generate",
+		withAdmin(&httpx.AdminIdentity{ID: 1, Username: "zoe"},
+			func(c *gin.Context) { h.Google2faGenerate(c) }))
+
+	out := postJSON(t, r, "/admin-api/google2fa/generate", nil)
+	if codeOf(out) != 0 {
+		t.Fatalf("generate 应成功，实际 code=%v msg=%v", out["code"], out["msg"])
+	}
+	d := dataOf(t, out)
+	qr, _ := d["qr_url"].(string)
+	u, err := url.Parse(qr)
+	if err != nil {
+		t.Fatalf("qr_url 不是合法 URL: %v (%q)", err, qr)
+	}
+	if got := u.Query().Get("issuer"); got != "客户面板 A" {
+		t.Fatalf("issuer 必须取站点标题（去首尾空格），实际 %q", got)
+	}
+	if iss, _ := d["issuer"].(string); iss != "客户面板 A" {
+		t.Fatalf("data.issuer 必须与 qr_url 一致，实际 %q", iss)
+	}
+	if strings.Contains(qr, "无界云") {
+		t.Fatalf("qr_url 里不允许出现硬编码品牌名：%q", qr)
 	}
 }
 
