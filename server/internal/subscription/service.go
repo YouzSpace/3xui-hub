@@ -459,21 +459,6 @@ type PanelInbound struct {
 	Port int64
 }
 
-// linkMatchesAnyPort 对应 linkMatchesAnyPort()：取 @host:port 的端口比较。
-func linkMatchesAnyPort(link string, ports []int64) bool {
-	m := linkPortPattern.FindStringSubmatch(link)
-	if m == nil {
-		return false
-	}
-	port := parseIntPrefix(m[1])
-	for _, p := range ports {
-		if p == port {
-			return true
-		}
-	}
-	return false
-}
-
 // multiplierSuffix 对应 SubscriptionService::multiplierSuffix()：`-1.25x` / `-2x`。
 //
 // 两位小数：nodes.traffic_multiplier 是 decimal(6,2)，计费值最多两位 ——

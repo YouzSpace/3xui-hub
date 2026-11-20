@@ -7,9 +7,7 @@ package admin
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -501,13 +498,3 @@ func (o *RealNodeOps) Manifest(ctx context.Context) (*ManifestAgent, error) {
 	return nil, nil
 }
 
-// opsSHA256Hex 计算 SHA-256 十六进制。
-func opsSHA256Hex(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
-}
-
-// formatPort 端口转字符串。
-func formatPort(port int64) string {
-	return strconv.FormatInt(port, 10)
-}

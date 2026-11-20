@@ -134,20 +134,6 @@ func percentDecode(s string) string {
 	return b.String()
 }
 
-// parseHysteriaPassword 对应 parseHysteriaPassword()：base64(密码[:/aead]) → 明文密码。
-// aead 后缀（/gch、/aead）是拥塞控制/混淆方式，客户端自动处理，不进密码字段。
-func parseHysteriaPassword(userPart string) (string, bool) {
-	decoded, ok := decodeBase64URL(userPart)
-	if !ok || decoded == "" {
-		return "", false
-	}
-	decoded = hysteriaAeadPattern.ReplaceAllString(decoded, "")
-	if decoded == "" {
-		return "", false
-	}
-	return decoded, true
-}
-
 // parseHysteriaAuth 是 hy2 链接 userinfo 的读取口径：**先试 base64，回落到明文**。
 //
 // hysteria2 生态里两种写法并存：3x-ui 等面板发 base64（老 PHP 行为），而官方文档与

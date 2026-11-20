@@ -206,16 +206,3 @@ func presentTutorial(t *Tutorial) *jsObj {
 	)
 }
 
-// presentTutorialFresh 是「刚创建/刚保存」后的模型属性顺序（updated_at 先写入）。
-func presentTutorialFresh(t *Tutorial) *jsObj {
-	return jo(
-		"title", t.Title,
-		"category", t.Category,
-		"content", t.Content,
-		"sort", t.Sort,
-		"enabled", t.Enabled,
-		"updated_at", nullableEloq(t.UpdatedAt),
-		"created_at", nullableEloq(t.CreatedAt),
-		"id", t.ID,
-	)
-}

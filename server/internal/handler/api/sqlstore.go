@@ -24,8 +24,6 @@ type sqlStore struct{ db *sql.DB }
 // NewSQLStore 用已有连接池构造 Store。
 func NewSQLStore(db *sql.DB) Store { return &sqlStore{db: db} }
 
-var errNoRows = sql.ErrNoRows
-
 const userColumns = `id, email, password, token, protocol, plan_id,
 	traffic_limit, traffic_used, monthly_traffic_used, monthly_traffic_limit,
 	next_traffic_reset_at, expired_at, enabled`

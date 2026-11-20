@@ -310,5 +310,3 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// resetClockForTest 用于测试里注入固定时钟。
-func (c *DBCache) resetClockForTest(now func() time.Time) { c.now = now }

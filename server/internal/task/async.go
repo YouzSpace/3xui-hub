@@ -158,9 +158,6 @@ func (s *Service) now() time.Time {
 	return time.Now().UTC()
 }
 
-// dbDateTime 是 MySQL datetime 列的写入格式（Laravel toDateTimeString，UTC 字面量）。
-func dbDateTime(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
-
 // SummaryFor 对齐 AsyncTaskService::summaryFor()。
 func SummaryFor(taskType string) string {
 	switch taskType {

@@ -32,8 +32,6 @@ const (
 	defaultHopProbePool = "20000-50000"
 	// defaultHopProbeCount 是默认申请的连续端口数。
 	defaultHopProbeCount = 200
-	// hopProbeMaxCount 与 agent 侧 hopCountMax 对齐，超了不必打扰节点。
-	hopProbeMaxCount = 4096
 	// hopExcludeMaxPorts 是 exclude 展开跳跃区间的上限（指令 payload 不能无限大）。
 	hopExcludeMaxPorts = 4096
 	// autoHopProbeWait 是「入站保存时自动分配区间」的等待上限（秒）。

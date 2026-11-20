@@ -23,9 +23,6 @@ import (
 
 const codeInvalidMsg = "优惠码无效或不可用"
 
-// inviteMaxUses 对齐 DiscountCodeService::INVITE_MAX_USES（邀请码按「每人一次」限用，码本身不设总量上限）。
-const inviteMaxUses = 999999
-
 // discountCheckResult 对齐 validateAndApply 的返回数组。
 type discountCheckResult struct {
 	Discount money
@@ -244,23 +241,6 @@ func (s *PaymentService) generateDiscountCode(ctx context.Context, prefix string
 		}
 	}
 	return "", NewPaymentError("生成兑换码失败：连续冲突")
-}
-
-// ---- 未使用但保留：与 PHP 同口径的「每用户次数复核」 ----
-
-// countPaidOrdersWithCode 是 CountPaidOrdersWithCode 的薄封装（consume 路径用）。
-func (s *PaymentService) countPaidOrdersWithCode(ctx context.Context, codeID, userID int64, excludeOrderID uint64) (int64, error) {
-	return s.store.CountPaidOrdersWithCode(ctx, codeID, userID, excludeOrderID)
-}
-
-// consumeDiscount 对齐 DiscountCodeService::consume（加锁 → 次数复核 → used_count+1）。
-//
-// 返回 (是否成功, 错误)。「码已用满」对调用方是**可吞掉**的业务失败：
-// 用户钱已经付了，订单必须照常完成，只记日志（见 CompleteOrder）。
-func (s *PaymentService) consumeDiscount(ctx context.Context, code *DiscountCode, user *User, excludeOrderID uint64) error {
-	// 每用户次数复核与 used_count+1 在同一个事务/行锁里完成（见 PaymentStore.ConsumeDiscountCode）。
-	_, err := s.store.ConsumeDiscountCode(ctx, code.ID, int64(user.ID), excludeOrderID)
-	return err
 }
 
 // _ 保留 sql 包的引用（sql.NullString 在签名里出现）。

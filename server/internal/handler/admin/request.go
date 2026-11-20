@@ -3,7 +3,6 @@ package admin
 import (
 	"encoding/json"
 	"io"
-	"net"
 	"strconv"
 	"strings"
 
@@ -137,18 +136,6 @@ func neverTrimKey(key string) bool {
 		return true
 	}
 	return false
-}
-
-// clientIP 对齐 Laravel Request::ip()（无 TrustProxies 时取直连地址）。
-func clientIP(c *gin.Context) string {
-	if ip := c.ClientIP(); ip != "" {
-		return ip
-	}
-	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-	if err != nil {
-		return c.Request.RemoteAddr
-	}
-	return host
 }
 
 // queryString 取 query 参数（去空白后为空 → nil，对齐 Laravel 的 filled() 口径）。

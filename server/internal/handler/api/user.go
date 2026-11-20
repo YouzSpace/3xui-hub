@@ -378,7 +378,3 @@ func hashPassword(plain string, cost int) (string, error) {
 	return string(hash), nil
 }
 
-// verifyPassword 对齐 Hash::check。
-func verifyPassword(hash, plain string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)) == nil
-}

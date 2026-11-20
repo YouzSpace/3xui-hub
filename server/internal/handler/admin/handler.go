@@ -179,32 +179,6 @@ func (h *Handler) notFoundRoute(c *gin.Context) {
 	h.fail(c, "接口不存在", 404)
 }
 
-// successPage 对齐 ApiResponse::successPage：data 为当前页数组，pagination 在顶层。
-func (h *Handler) successPage(c *gin.Context, items []any, page, perPage, total int64) {
-	lastPage := (total + perPage - 1) / perPage
-	if lastPage < 1 {
-		lastPage = 1
-	}
-	if page < 1 {
-		page = 1
-	}
-	if page > lastPage {
-		// 越界夹回最后一页（与 PHP 的 paginate 二次查询同口径）。
-		page = lastPage
-	}
-	writeJSON(c, phpEncode(jo(
-		"code", 0,
-		"msg", "ok",
-		"data", jsArr(items),
-		"pagination", jo(
-			"current_page", page,
-			"last_page", lastPage,
-			"total", total,
-			"per_page", perPage,
-		),
-	)))
-}
-
 // writeJSON 输出 HTTP 200 + 给定 JSON 字节。
 func writeJSON(c *gin.Context, body []byte) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)

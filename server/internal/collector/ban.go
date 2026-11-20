@@ -34,8 +34,6 @@ const (
 	banReasonExpired = "expired"
 	// banReasonQuota 超量（周期套餐当月超量或总流量超量）。
 	banReasonQuota = "quota"
-	// banReasonDisabled 旧常量保留给历史引用，等价「需要关闭」的任意非空值。
-	banReasonDisabled = "disable"
 )
 
 // banReasonAt 复刻 BanService::banReason()：返回关闭原因（非空）或 ""（正常）。
@@ -493,24 +491,6 @@ func (c *Collector) inboundIDsFor(ctx context.Context, nodeID int64, protocol st
 		out = append(out, id)
 	}
 	return out, rows.Err()
-}
-
-// checkAfterSync 复刻 BanService::checkAfterSync()：流量同步后内联检查。
-//
-// 与 BanCheckJob / SyncTrafficCommand 同一规则：已确认关闭且未超时效 → 早退（0 次 HTTP）。
-func (c *Collector) checkAfterSync(ctx context.Context, userID int64) error {
-	user, err := c.loadUser(ctx, userID)
-	if err != nil || user == nil {
-		return err
-	}
-	if isRecentlyDisabled(*user, c.now()) {
-		return nil
-	}
-	if banReasonAt(*user, c.now()) == "" {
-		return nil
-	}
-	_, err = c.toggleClient(ctx, userID, false, true)
-	return err
 }
 
 // needsDisable 复刻 BanService::needsDisable()：命中关闭条件且未处于「已确认关闭」时效内。

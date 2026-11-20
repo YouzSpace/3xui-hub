@@ -352,28 +352,6 @@ func inputString(v any) (string, bool) {
 	return phpStringValue(v)
 }
 
-// phpURLEncode 对齐 PHP urlencode()：字母数字与 "-_." 原样，空格转 '+'，其余 %XX（大写）。
-// 注意 Go 的 url.QueryEscape 不转义 '~'，PHP 会转成 %7E —— 第三方节点名走的就是这条。
-func phpURLEncode(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
-			c == '-', c == '_', c == '.':
-			b.WriteByte(c)
-		case c == ' ':
-			b.WriteByte('+')
-		default:
-			b.WriteByte('%')
-			b.WriteByte(upperHex(c >> 4))
-			b.WriteByte(upperHex(c & 0xF))
-		}
-	}
-	return b.String()
-}
-
 // phpURLDecode 对齐 PHP urldecode()：'+' 转空格，%XX 解码，非法转义原样保留。
 func phpURLDecode(s string) string {
 	var b strings.Builder
@@ -396,13 +374,6 @@ func phpURLDecode(s string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
-}
-
-func upperHex(b byte) byte {
-	if b < 10 {
-		return '0' + b
-	}
-	return 'A' + b - 10
 }
 
 func unhex(c byte) (byte, bool) {

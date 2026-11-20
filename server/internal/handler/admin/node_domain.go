@@ -362,18 +362,6 @@ func nodeFloatPtr(v *string) any {
 	return phpFloat(f)
 }
 
-// nodeIntFromString 按 PHP (int) 读 decimal 字符串（解析失败 → 0）。
-func nodeIntFromString(v *string) int64 {
-	if v == nil {
-		return 0
-	}
-	f, err := strconv.ParseFloat(*v, 64)
-	if err != nil {
-		return 0
-	}
-	return int64(f)
-}
-
 // ptrStringOf 便于写 `&x`。
 func ptrStringOf(v string) *string { return &v }
 

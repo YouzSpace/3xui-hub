@@ -120,6 +120,8 @@ const routes = [
       { path: 'orders', name: 'admin-orders', component: () => import('@/views/admin/Orders.vue') },
       { path: 'settings', name: 'admin-settings', component: () => import('@/views/admin/Settings.vue') },
       { path: 'domains', name: 'admin-domains', component: () => import('@/views/admin/Domains.vue') },
+      // TLS 证书库：列表 + 续期检查/执行 + 本机目录同步
+      { path: 'certificates', name: 'admin-certificates', component: () => import('@/views/admin/Certificates.vue') },
       { path: 'payments', name: 'admin-payments', component: () => import('@/views/admin/Payments.vue') },
       { path: 'backup', name: 'admin-backup', component: () => import('@/views/admin/Backup.vue') },
       { path: 'announcement', name: 'admin-announcement', component: () => import('@/views/admin/Announcement.vue') },

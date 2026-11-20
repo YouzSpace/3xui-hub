@@ -211,11 +211,3 @@ func difference(a, b []int64) []int64 {
 	return out
 }
 
-// noopProvisioner 是「没有配置队列时」的容错实现：派发即失败，注册照常成功（只记日志）。
-// 真实实现见 cmd/server/provisioner.go 的 queueProvisioner（走 P9 task.Queue）。
-type noopProvisioner struct{}
-
-// Dispatch 恒返回错误，触发 handler 的「只记日志」分支 —— 与 PHP 里 dispatch 抛异常时的行为一致。
-func (noopProvisioner) Dispatch(context.Context, *User) error {
-	return fmt.Errorf("异步队列未配置")
-}

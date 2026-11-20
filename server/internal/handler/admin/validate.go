@@ -99,22 +99,6 @@ func (v *validator) summary() string {
 // storeFailure 返回校验过程中查库失败的错误（handler 据此回 500）。
 func (v *validator) storeFailure() error { return v.storeErr }
 
-// validated 返回通过校验的字段值，**按规则声明顺序**（对齐 Laravel validated()）。
-// 缺失的字段不出现（对应 data_get 得到 $missingValue 的分支）。
-func (v *validator) validated() (names []string, values []any) {
-	for _, f := range v.fields {
-		if strings.Contains(f.field, "*") {
-			// 通配字段（ids.*）由调用方用 valuesOf 单独取。
-			continue
-		}
-		if val, ok := v.data[f.field]; ok {
-			names = append(names, f.field)
-			values = append(values, val)
-		}
-	}
-	return names, values
-}
-
 // valueOf 取一个已通过校验的字段值。
 func (v *validator) valueOf(name string) (any, bool) {
 	val, ok := v.data[name]

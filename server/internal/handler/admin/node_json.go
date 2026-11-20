@@ -314,16 +314,3 @@ func nodeTruthy(v any) bool {
 	return false
 }
 
-// jsonNonEmptyString 复刻 `trim((string) $v) !== ''`。
-func jsonNonEmptyString(v any) bool {
-	return phpTrimSpaceOnly(nodeScalarString(v)) != ""
-}
-
-// rawJSONOrNil 把已构造的 jsObj/jsArr 编码成落库 JSON 文本；nil 保持 nil（PHP 的 null 列）。
-func rawJSONOrNil(v any) *string {
-	if v == nil {
-		return nil
-	}
-	s := string(phpEncode(v))
-	return &s
-}

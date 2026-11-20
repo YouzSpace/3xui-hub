@@ -70,10 +70,6 @@ func normal(r func(string, any) (bool, string)) rule {
 	return rule{kind: kindNormal, apply: func(a string, v any, _ ruleCtx) (bool, string) { return r(a, v) }}
 }
 
-func implicit(r func(string, any) (bool, string)) rule {
-	return rule{kind: kindImplicit, apply: func(a string, v any, _ ruleCtx) (bool, string) { return r(a, v) }}
-}
-
 // sized 构造 max/min 这类依赖数值/字符/数组口径的规则。
 func sized(r func(string, any, ruleCtx) (bool, string)) rule {
 	return rule{kind: kindNormal, apply: r}

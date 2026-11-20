@@ -1,8 +1,6 @@
 package xray
 
 import (
-	"time"
-
 	"controlhub-server/internal/driver/internal/phpjson"
 	"controlhub-server/internal/driver/internal/phpval"
 	"controlhub-server/internal/driver/internal/secrets"
@@ -51,14 +49,6 @@ func toRenderUser(u *UserRecord) User {
 		TrafficLimit: u.TrafficLimit,
 		ExpiredAt:    u.ExpiredAt,
 	}
-}
-
-// unixMillis 复刻 Carbon 的 `->timestamp * 1000`（毫秒时间戳）。
-func unixMillis(t *time.Time) int64 {
-	if t == nil || t.IsZero() {
-		return 0
-	}
-	return t.Unix() * 1000
 }
 
 // NodeSecret 解密 driver_config.node_secret（对应 Node::nodeSecret()）。

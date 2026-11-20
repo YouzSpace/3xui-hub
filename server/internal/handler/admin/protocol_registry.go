@@ -272,20 +272,6 @@ type inboundBuild struct {
 	spec     *inboundProtocolSpec
 }
 
-// text 读一个字符串字段（缺失 → 空串）。
-func (b *inboundBuild) text(key string) string { return nodeStringField(b.input, key) }
-
-// trimmed 读一个去首尾空白的字符串字段。
-func (b *inboundBuild) trimmed(key string) string {
-	return strings.TrimSpace(nodeStringField(b.input, key))
-}
-
-// present 读一个可选字段的原始值（缺失 → nil）。
-func (b *inboundBuild) raw(key string) (any, bool) {
-	v, ok := b.input[key]
-	return v, ok
-}
-
 // prevSettings 取编辑前的 settings（解析失败 → nil，与 parseOrderedJS 的宽容口径一致）。
 func (b *inboundBuild) prevSettings() any {
 	if b.existing == nil {

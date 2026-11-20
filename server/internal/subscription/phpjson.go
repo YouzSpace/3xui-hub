@@ -48,16 +48,6 @@ func (m *phpMap) set(key string, value any) {
 	*m = append(*m, phpKV{Key: key, Value: value})
 }
 
-// has 判断键是否存在。
-func (m phpMap) has(key string) bool {
-	for _, kv := range m {
-		if kv.Key == key {
-			return true
-		}
-	}
-	return false
-}
-
 // get 取键值。
 func (m phpMap) get(key string) (any, bool) {
 	for _, kv := range m {

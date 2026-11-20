@@ -43,8 +43,6 @@ func (d *SystemDomain) fail(c *gin.Context, msg string, code int) {
 	writeJSON(c, phpEncode(jo("code", code, "msg", msg, "data", nil)))
 }
 
-func (d *SystemDomain) failValidation(c *gin.Context, summary string) { d.fail(c, summary, 500) }
-
 func (d *SystemDomain) failServer(c *gin.Context, what string, err error) {
 	d.logger.Printf("admin %s 失败: %v", what, err)
 	c.Set(httpx.OpLogErrorKey, what+": "+err.Error())

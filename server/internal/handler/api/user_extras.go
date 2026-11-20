@@ -383,7 +383,6 @@ func (e *UserExtras) ensureInviteCode(ctx context.Context, userID uint64, now ti
 // generateUniqueInviteCode 复刻 DiscountCode::generateCode('INV')：
 // INV + 8 位随机大写（字符集去掉易混的 0/O/1/I/L），唯一冲突重试 32 次。
 func (e *UserExtras) generateUniqueInviteCode(ctx context.Context, tx *sql.Tx) (string, error) {
-	const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 	const codeLen = 8
 	for attempt := 0; attempt < 32; attempt++ {
 		code := "INV" + randomString(codeLen)

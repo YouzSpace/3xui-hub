@@ -30,9 +30,6 @@ import (
 // phpTrimChars 是 PHP trim() 的默认字符集（注意：不含 \f）。
 const phpTrimChars = " \t\n\r\x00\x0B"
 
-// phpSpaceChars 是 PCRE 非 UCP 模式下 \s 的字符集（含 \f、\v，不含 \x00）。
-const phpSpaceChars = " \t\n\r\f\v"
-
 // phpTrim 等价于 PHP 的 trim($s)（默认字符集）。
 func phpTrim(s string) string { return strings.Trim(s, phpTrimChars) }
 

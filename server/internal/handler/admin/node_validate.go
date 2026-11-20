@@ -62,12 +62,6 @@ func (v *nodeValidator) summary() string {
 	return first
 }
 
-// valueOf 取一个字段值（含未通过校验的字段，供 handler 在通过后取值）。
-func (v *nodeValidator) valueOf(name string) (any, bool) {
-	val, ok := v.data[name]
-	return val, ok
-}
-
 // storeFailure 对齐共享 validator 的同名方法：节点域校验器不查库，恒为 nil
 // （exists 规则在节点域没有使用 —— 节点入站/出站引用都在 handler 里显式查）。
 func (v *nodeValidator) storeFailure() error { return nil }

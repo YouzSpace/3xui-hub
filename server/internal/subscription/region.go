@@ -3,7 +3,6 @@ package subscription
 import (
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 // 逐字复刻 app/Support/NodeRegion.php。
@@ -141,24 +140,11 @@ var (
 	// 一遇 ':' 就停（`@[2001:db8::1]:443` 只吃到 `2001`）→ 整条失配 → 调用方静默丢掉该节点。
 	// 方括号分支里额外允许 '.'，覆盖 `[::ffff:1.2.3.4]` 这类 v4-mapped 写法。
 	linkPattern = regexp.MustCompile(`^(vless|vmess|trojan|ss|hysteria2|hy2|hysteria)://([^@]+)@(\[[0-9a-fA-F:.]+\]|[^:/\]]+):([0-9]+)`)
-	// 链接端口（过滤入站端口用）。host 段同样要认 `[2001:db8::1]`：
-	// 旧的 `@[^/@\]]+:` 在 IPv6 链接上会回溯成端口 "1"（把 `[2001:db8:` 当 host、
-	// 把 `1` 当端口），按端口过滤时错杀节点。host 用 (?:...) 不计捕获组，保证 m[1] 仍是端口。
-	linkPortPattern = regexp.MustCompile(`@(?:\[[0-9a-fA-F:.]+\]|[^/@\]]+):([0-9]+)`)
 	// hysteria 密码的 aead 后缀
 	hysteriaAeadPattern = regexp.MustCompile(`(?i):(\/gch|\/aead)$`)
 	// 自定义信息行切分
 	lineSplitPattern = regexp.MustCompile(`\r\n|\r|\n`)
 )
-
-// isPHPWhitespaceRune 判断 rune 是否是 PCRE 非 UCP 模式下的 \s（订阅改名链用）。
-func isPHPWhitespaceRune(r rune) bool {
-	switch r {
-	case ' ', '\t', '\n', '\r', '\f', '\v':
-		return true
-	}
-	return false
-}
 
 // phpPregReplaceAll 用 $replacement 里 $1..$9 的语义替换匹配（用于正则改名）。
 //
@@ -221,5 +207,3 @@ func isAllDigitsASCII(s string) bool {
 	return true
 }
 
-// isChineseOrLetterRune 判断 rune 是否为「字母或数字」（RegExp \p{L}\p{N} 语义，用于第三方 slug/CJK 判断）。
-func isLetterOrNumber(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }

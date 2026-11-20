@@ -7,8 +7,6 @@ package admin
 // 到期随账号失效。节点在用户端统一命名「地区+序号」，机场原名/品牌词不外露（保密）。
 
 import (
-	"strings"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -256,17 +254,3 @@ func presentThirdPartySub(s *ThirdPartySubRecord) *jsObj {
 	)
 }
 
-// cachedThirdPartyLinks 复刻 ThirdPartySub::getCachedLinks()（多行拆数组，跳过空行）。
-func cachedThirdPartyLinks(cached *string) []string {
-	if cached == nil || *cached == "" {
-		return nil
-	}
-	out := []string{}
-	for _, line := range splitLines(*cached) {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}

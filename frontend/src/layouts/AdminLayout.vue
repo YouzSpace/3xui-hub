@@ -77,6 +77,7 @@ const groups = [
       { to: '/admin/nodes/multiplier', name: 'admin-node-multipliers', label: '流量倍率', icon: 'traffic' },
       { to: '/admin/nodes/xray', name: 'admin-xray', label: 'Xray 高级配置', icon: 'activity' },
       { to: '/admin/geodata', name: 'admin-geodata', label: 'Geo 数据', icon: 'globe' },
+      { to: '/admin/certificates', name: 'admin-certificates', label: '证书管理', icon: 'lock' },
     ],
   },
   {

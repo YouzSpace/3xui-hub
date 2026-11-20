@@ -11,7 +11,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -765,10 +764,3 @@ func nodeConfigDefaults(c NodeConfig) NodeConfig {
 	return c
 }
 
-// jsonRaw 把 JSON 文本保留为 json.RawMessage（nil 保持 nil，避免输出 "null"）。
-func jsonRaw(raw []byte) json.RawMessage {
-	if len(raw) == 0 {
-		return nil
-	}
-	return json.RawMessage(raw)
-}

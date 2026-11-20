@@ -296,19 +296,6 @@ func envInt(key string, def int) int {
 	return n
 }
 
-// envFloat 读浮点 env（非法/缺失回落 def）。
-func envFloat(key string, def float64) float64 {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return def
-	}
-	return f
-}
-
 // siteConfigValue 复刻 SiteConfig::getValue($key, $default)。
 func (c *Collector) siteConfigValue(ctx context.Context, key, def string) string {
 	var value sql.NullString

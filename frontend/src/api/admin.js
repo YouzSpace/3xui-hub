@@ -348,6 +348,13 @@ export const adminApi = {
   // 列表接口永不回 PEM/私钥，所以回填必须单独请求，且只在用户点按钮时发生。
   // 响应 data 形如 { cert_pem, key_pem }。
   getXrayCertificatePem: (id) => client.get(`/admin-api/xray-certificates/${id}/pem`),
+  // 自动续期（证书管理页）：dry_run=true 只出计划 { window_days, plan, checked, due, skipped, reasons }；
+  // false 真跑，回 { checked, due, renewed, failed, skipped, bumped_nodes, reasons }。
+  // 真跑时每张证书最多等节点 ACME 回执 120s（CertIssueWait），批量时远超全局 30s，放宽到 10 分钟。
+  renewXrayCertificates: (dryRun = false) =>
+    client.post('/admin-api/xray-certificates/renew', { dry_run: !!dryRun }, { timeout: 600000 }),
+  // 扫描面板机证书目录并入库：{ dir, scanned, created, updated, skipped, reasons }
+  syncLocalXrayCertificates: () => client.post('/admin-api/xray-certificates/sync-local'),
   // 远程签发：面板给裸内核节点下发 cert_issue（域名取节点 host），成功后写入证书库。
   // 入参 { node_id, domain, method: 'http-01' }；响应 data 形如
   // { certificate: { id, name, domain, not_after } }（缺 certificate 时前端按域名从刷新后的库里兜底挑）。

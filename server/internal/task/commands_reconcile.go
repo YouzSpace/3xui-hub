@@ -5,26 +5,8 @@ package task
 
 import (
 	"context"
-	"database/sql"
 	"strings"
-
-	"controlhub-server/internal/driver/threexui"
 )
-
-// nodeRow 是节点行（3x-ui 客户端构造用）。
-type nodeRow struct {
-	ID         int64
-	Name       string
-	Scheme     string
-	Host       string
-	Port       int64
-	BasePath   string
-	Username   string
-	Password   sql.NullString
-	APIKey     sql.NullString
-	VerifySSL  bool
-	DriverType sql.NullString
-}
 
 // runUsersReconcileEnable 是「节点用户全量比对 + 兜底修复」的调度入口。
 //
@@ -85,47 +67,6 @@ func (r *commandRunner) runUsersReconcileEnable(ctx context.Context, args map[st
 		r.logf("  本轮跳过（读不到快照，不判失败）: %s", strings.Join(sum.OfflineNodes, ", "))
 	}
 	return nil
-}
-
-// buildThreexuiClient 构造 3x-ui 客户端。
-func (r *commandRunner) buildThreexuiClient(n nodeRow) (*threexui.Client, error) {
-	row := threexui.NodeRow{
-		Scheme:      n.Scheme,
-		Host:        n.Host,
-		Port:        int(n.Port),
-		WebBasePath: n.BasePath,
-		Username:    n.Username,
-		VerifySSL:   n.VerifySSL,
-	}
-	if n.Password.Valid {
-		v := n.Password.String
-		row.PasswordCipher = &v
-	}
-	if n.APIKey.Valid {
-		v := n.APIKey.String
-		row.APIKeyCipher = &v
-	}
-	return threexui.NewForNode(row, r.deps.AppKey)
-}
-
-// toggleClientAllNodes 对齐 BanService::toggleClient：全部启用节点确认才算成功。
-//
-// 直接委托 collector.ToggleClient —— 那里已含 3x-ui（get+normalize+update）与 xray
-// （adu/rmu 指令通道）两条分支，以及「全部确认才写 traffic_disabled_at」的判定。
-// 旧实现在这里另写了一份只处理 3x-ui 的版本，遇到 xray 节点直接 continue，
-// 于是 confirmed 永远小于 total、reconcile 每轮都判失败并重试。
-func (r *commandRunner) toggleClientAllNodes(ctx context.Context, userID int64, protocol string, enable bool) bool {
-	_ = protocol
-	if r.deps.ToggleClient == nil {
-		r.logf("ToggleClient 未配置，无法切换 user=%d 的 client 开关", userID)
-		return false
-	}
-	ok, err := r.deps.ToggleClient(ctx, userID, enable)
-	if err != nil {
-		r.logf("切换 client 开关失败（user=%d enable=%v）: %v", userID, enable, err)
-		return false
-	}
-	return ok
 }
 
 // ── 13. xray:reality-audit ─────────────────────────────────────────
