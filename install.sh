@@ -712,8 +712,8 @@ limit_req_status 429;
 
 # 用 map 把「是否需要限流」落到变量，再在主 conf 的两个精确 location 里使用
 GUARD
-    # 两个精确 location 通过 3hub 模板注入；此处仅补 zone 文件，
-    # 若主 conf 由更老的安装脚本生成（无 limit_req），本文件只是空转，无害。
+    # 两个精确 location 由本脚本的 nginx 模板直接写入（上面两个分支都含），
+    # 老机器由 `3hub fix-nginx` / `3hub update` 按同一模板收敛。
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
@@ -777,6 +777,30 @@ server {
         proxy_send_timeout 300s;
     }
 
+    # 面板登录限流（边缘层）：只挂两个精确路径，绝不波及 /api/node-api/* 等节点/App 请求。
+    # 依赖 zz-panel-login-guard.conf 里的 panel_login zone（本脚本在上面已写入）。
+    location = /admin-api/login {
+        limit_req zone=panel_login burst=10 nodelay;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location = /admin-api/google2fa/enable {
+        limit_req zone=panel_login burst=10 nodelay;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
     location / {
         proxy_pass http://controlhub_backend;
@@ -837,6 +861,30 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
+    }
+
+    # 面板登录限流（边缘层）：只挂两个精确路径，绝不波及 /api/node-api/* 等节点/App 请求。
+    # 依赖 zz-panel-login-guard.conf 里的 panel_login zone（本脚本在上面已写入）。
+    location = /admin-api/login {
+        limit_req zone=panel_login burst=10 nodelay;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location = /admin-api/google2fa/enable {
+        limit_req zone=panel_login burst=10 nodelay;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # 其余全部交给 Go：SPA 路由、/api、/admin-api、节点脚本与资产
