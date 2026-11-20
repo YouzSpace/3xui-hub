@@ -177,6 +177,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 	mailDomain.Register(adminGroup)
 
+	// 验证码发信（注册 / 找回密码）统一走账号池：把邮件域注入给 api 侧的发信器。
+	// 必须在 mailDomain 构造之后、apiHandler 已存在之后调用（两处都在本函数内，顺序安全）。
+	apiMailer.SetPoolMailer(mailDomain)
+
 	// 单用户通知（流量用尽通知 + 解锁防重标记）：collector 与用户域共用一份实现。
 	sceneNotifier := task.NewSceneNotifier(task.CommandDeps{
 		DB:        db,

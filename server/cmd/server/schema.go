@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"database/sql"
@@ -117,6 +117,10 @@ func ensureSchema(db *sql.DB) error {
 		// 订阅链接里的地址需要按入站覆盖节点地址；空 = 维持原行为。
 		{"xray_inbounds", "client_host", "varchar(255) COLLATE utf8mb4_unicode_ci"},
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
+		// SMTP 账号池的「默认账号」标记：挑号时优先用 is_default=1 的那个（仍受
+		// 日限额 / 冷却 / 停用约束），它不可用时才按「最久未用」轮换其它号。
+		// 默认账号只允许有一个；接口里「设为默认」会把其它行清零。
+		{"smtp_accounts", "is_default", "tinyint(1) NOT NULL DEFAULT 0 COMMENT '1=默认优先使用的账号'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {

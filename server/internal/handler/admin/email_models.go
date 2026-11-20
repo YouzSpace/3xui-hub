@@ -1,4 +1,4 @@
-package admin
+﻿package admin
 
 // 管理端邮件域（P8c）的类型与依赖。
 //
@@ -23,6 +23,7 @@ var emailConfigKeys = []string{
 	"smtp_from_name",
 	"email_template",
 	"register_email_verify",
+	"verify_mail_sender",             // 验证码发信用哪个账号：pool（默认）或池账号 id
 	"mail_rate_limit_enabled",
 	"mail_rate_per_minute",
 	"mail_send_interval_ms", // 串行 worker 两封之间的间隔（毫秒，默认 0 = 不等）

@@ -16,7 +16,7 @@ import (
 
 const smtpAccountColumns = `id, host, port, username, password_enc, encryption, from_name,
 	weight, daily_limit, sent_today, last_used_at, reset_at, status, cooldown_until,
-	error_count, created_at, updated_at`
+	error_count, is_default, created_at, updated_at`
 
 func scanSMTPAccount(row interface{ Scan(...any) error }, appKey []byte) (*SMTPAccount, error) {
 	var (
@@ -31,7 +31,7 @@ func scanSMTPAccount(row interface{ Scan(...any) error }, appKey []byte) (*SMTPA
 	)
 	if err := row.Scan(&a.ID, &a.Host, &a.Port, &a.Username, &passwordEnc, &a.Encryption,
 		&fromName, &a.Weight, &a.DailyLimit, &a.SentToday, &lastUsedAt, &resetAt,
-		&a.Status, &cooldownUntil, &a.ErrorCount, &createdAt, &updatedAt); err != nil {
+		&a.Status, &cooldownUntil, &a.ErrorCount, &a.IsDefault, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	if passwordEnc.Valid && passwordEnc.String != "" {
@@ -168,8 +168,8 @@ func (s *mailSQLStore) CreateSMTPAccount(ctx context.Context, in SMTPAccountInpu
 	}
 	res, err := s.db.ExecContext(ctx,
 		"INSERT INTO smtp_accounts (host, port, username, password_enc, encryption, from_name, "+
-			"weight, daily_limit, sent_today, status, cooldown_until, error_count, created_at, updated_at) "+
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, 0, ?, ?)",
+			"weight, daily_limit, sent_today, status, cooldown_until, error_count, is_default, created_at, updated_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, 0, 0, ?, ?)",
 		derefString(in.Host), smtpIntOr(in.Port, 587), derefString(in.Username), enc,
 		smtpEncryptionOr(in.Encryption), nullStrValue(in.FromName),
 		smtpIntOr(in.Weight, 1), smtpIntOr(in.DailyLimit, 0),
@@ -182,6 +182,30 @@ func (s *mailSQLStore) CreateSMTPAccount(ctx context.Context, in SMTPAccountInpu
 		return nil, err
 	}
 	return s.SMTPAccountByID(ctx, uint64(id))
+}
+
+// SetSMTPAccountDefault 把某个账号设为「默认优先使用」。
+//
+// 池里默认账号唯一：先把所有行 is_default 清零，再把目标行置 1（同一事务）。
+// 传 id=0 表示「清除默认」，即恢复纯轮换。
+func (s *mailSQLStore) SetSMTPAccountDefault(ctx context.Context, id uint64, now time.Time) error {
+	now = now.UTC().Truncate(time.Second)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE smtp_accounts SET is_default = 0, updated_at = ? WHERE is_default = 1", now); err != nil {
+		return err
+	}
+	if id > 0 {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE smtp_accounts SET is_default = 1, updated_at = ? WHERE id = ?", now, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *mailSQLStore) UpdateSMTPAccount(ctx context.Context, id uint64, in SMTPAccountInput, now time.Time) (*SMTPAccount, error) {

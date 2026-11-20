@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="email-page">
     <div class="email-head">
       <h1 class="email-title">邮箱配置</h1>
@@ -41,52 +41,27 @@
         <div class="email-col">
 
           <Card class="email-card">
-            <template #header><h2>SMTP 服务器</h2></template>
-            <div class="email-grid">
-              <div>
-                <label class="email-label">SMTP 服务器</label>
-                <Input v-model="form.smtp_host" placeholder="smtp.example.com" required />
-              </div>
-              <div>
-                <label class="email-label">端口</label>
-                <Input v-model="form.smtp_port" type="number" placeholder="465" />
-              </div>
-              <div>
-                <label class="email-label">加密方式</label>
-                <Select v-model="form.smtp_encryption" :options="encryptionOptions" />
-              </div>
-              <div>
-                <label class="email-label">发件邮箱</label>
-                <Input v-model="form.smtp_username" placeholder="noreply@example.com" required />
-                <p class="email-rate-desc">发件地址与邮箱账号相同（邮箱服务商要求）</p>
-              </div>
-              <div>
-                <label class="email-label">授权码</label>
-                <div class="email-pwd">
-                  <Input
-                    v-model="form.smtp_password"
-                    :type="smtpPwdVisible ? 'text' : 'password'"
-                    placeholder="QQ 邮箱需用授权码"
-                    required
-                  />
-                  <button
-                    type="button"
-                    class="email-pwd-toggle"
-                    :class="{ 'email-pwd-toggle--on': smtpPwdVisible }"
-                    :title="smtpPwdVisible ? '隐藏密码' : '显示密码'"
-                    :aria-label="smtpPwdVisible ? '隐藏密码' : '显示密码'"
-                    :aria-pressed="smtpPwdVisible"
-                    @click="smtpPwdVisible = !smtpPwdVisible"
-                  >
-                    <Icon name="eye-off" :size="16" />
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label class="email-label">发件名称</label>
-                <Input v-model="form.smtp_from_name" placeholder="ControlHub" />
-              </div>
+            <template #header><h2>验证码发送</h2></template>
+
+            <!-- 验证码（注册 / 找回密码）用哪个账号发 -->
+            <div class="email-verify-sender">
+              <label class="email-label">验证码用哪个账号发</label>
+              <Select v-model="form.verify_mail_sender" :options="verifySenderOptions" />
+              <p class="email-rate-desc">
+                选「自动：走账号池」= 从下方账号池里挑号轮换（最久未用优先，失败自动换号），
+                池里没有可用号时才回落到下面的 SMTP 配置。也可以直接指定某个号。
+              </p>
+              <p v-if="verifySenderHint" class="email-hint">
+                <Badge :variant="verifySenderHint.variant">{{ verifySenderHint.label }}</Badge>
+                {{ verifySenderHint.text }}
+              </p>
             </div>
+
+            <!-- 账号池是唯一发信来源，站点默认 SMTP 不再在界面暴露（后端保留兜底，不参与日常配置） -->
+            <p class="email-hint">
+              <Badge variant="info">说明</Badge>
+              验证码统一从「账号池」发送，账号的服务器 / 密码 / 限额都在「账号池」页维护。
+            </p>
           </Card>
 
           <Card class="email-card">
@@ -102,7 +77,7 @@
               </div>
               <Button :loading="loading" @click="onTest" class="self-end">发送测试</Button>
             </div>
-            <p class="email-rate-desc">选「站点默认账号」= 用上方 SMTP 配置发；选池里的号 = 用该号发，可用来验证池号是否真的通。</p>
+            <p class="email-rate-desc">选「账号池自动挑号」= 走账号池轮换；选具体某个号 = 只用该号发，可用来验证池号是否真的通。</p>
           </Card>
 
           <Card class="email-card">
@@ -326,6 +301,7 @@
                 <th>状态</th>
                 <th>冷却到</th>
                 <th>连续失败</th>
+                <th>默认</th>
                 <th class="email-pool-actions-col">操作</th>
               </tr>
             </thead>
@@ -348,6 +324,10 @@
                   <span :class="{ 'email-pool-err': a.error_count > 0 }">{{ a.error_count }}</span>
                 </td>
                 <td>
+                  <Badge v-if="a.is_default" variant="success">默认</Badge>
+                  <span v-else class="email-pool-dash">—</span>
+                </td>
+                <td>
                   <div class="email-pool-actions">
                     <Button variant="ghost" size="sm" @click="openPoolEdit(a)">编辑</Button>
                     <Button
@@ -356,6 +336,18 @@
                       @click="togglePoolStatus(a)"
                     >{{ a.status === 'active' ? '停用' : '启用' }}</Button>
                     <Button variant="ghost" size="sm" @click="resetToday(a)">重置今日</Button>
+                    <Button
+                      v-if="!a.is_default"
+                      variant="ghost"
+                      size="sm"
+                      @click="setDefaultAccount(a)"
+                    >设为默认</Button>
+                    <Button
+                      v-else
+                      variant="ghost"
+                      size="sm"
+                      @click="clearDefaultAccount(a)"
+                    >取消默认</Button>
                     <Button variant="ghost" size="sm" @click="removePool(a)">删除</Button>
                   </div>
                 </td>
@@ -570,12 +562,12 @@
           <Select v-model="poolForm.encryption" :options="encryptionOptions" />
         </div>
         <div>
-          <label class="email-label">{{ poolEditing ? '密码 / 授权码（留空 = 不修改）' : '密码 / 授权码' }}</label>
+          <label class="email-label">密码 / 授权码</label>
           <div class="email-pwd">
             <Input
               v-model="poolForm.password"
               :type="poolPwdVisible ? 'text' : 'password'"
-              :placeholder="poolEditing ? '留空保持原密码' : 'QQ 邮箱需用授权码'"
+              :placeholder="poolEditing ? '已填好原密码，改就直接覆盖' : 'QQ 邮箱需用授权码'"
             />
             <button
               type="button"
@@ -678,6 +670,8 @@ const form = ref({
   smtp_password: '',
   smtp_from_name: 'ControlHub',
   register_email_verify: false,
+	// 验证码发信用哪个账号：'pool' = 走账号池自动挑号（默认账号优先）；数字串 = 指定池账号 id
+	verify_mail_sender: 'pool',
   email_template: '',
   // 发信速度限制（「限制」页配置，批量与定时共用）
   mail_rate_limit_enabled: false,
@@ -845,8 +839,9 @@ const resetPoolForm = (a) => {
     host: a.host || '',
     port: a.port || 587,
     username: a.username || '',
-    // 密码不回显：留空 = 保持原密码（后端同口径）
-    password: '',
+    // 密码回显：后端在鉴权组内返回解密后的明文（与站点默认账号同口径）。
+    // 这样管理员点「眼睛」能看到原密码，不会因为「留空=不修改」而永远看不到配置。
+    password: a.password || '',
     encryption: a.encryption || 'tls',
     from_name: a.from_name || '',
     daily_limit: a.daily_limit ?? 0,
@@ -910,8 +905,28 @@ const savePool = async () => {
   }
 }
 
-const togglePoolStatus = async (a) => {
-  const next = a.status === 'active' ? 'disabled' : 'active'
+// 设为默认 / 取消默认：挑号时优先用默认账号（它不可用才轮换其它号）
+const setDefaultAccount = async (a) => {
+  try {
+    await adminApi.setSmtpAccountDefault(a.id)
+    toast.success(`已把「${a.username || a.host}」设为默认账号`)
+    await loadPool()
+  } catch (e) {
+    toast.error(e?.message || '设置失败')
+  }
+}
+
+const clearDefaultAccount = async (a) => {
+  try {
+    await adminApi.setSmtpAccountDefault(0)
+    toast.success('已取消默认账号，恢复纯轮换')
+    await loadPool()
+  } catch (e) {
+    toast.error(e?.message || '取消失败')
+  }
+}
+
+const togglePoolStatus = async (a) => {  const next = a.status === 'active' ? 'disabled' : 'active'
   try {
     await adminApi.setSmtpAccountStatus(a.id, next)
     toast.success(next === 'active' ? '已启用' : '已停用')
@@ -947,15 +962,45 @@ const removePool = async (a) => {
 const poolStatusText = { active: '启用', cooling: '冷却中', disabled: '已停用' }
 const poolStatusVariant = { active: 'success', cooling: 'warning', disabled: 'danger' }
 
-// 测试发送的「用哪个号发」：空 = 站点默认账号
+// 测试发送的「用哪个号发」：空 = 走账号池（默认账号优先 / 轮换）
 const testAccount = ref('')
 const testAccountOptions = computed(() => [
-  { label: '站点默认账号', value: '' },
+  { label: '账号池自动（默认账号优先）', value: '' },
   ...pool.value.map((a) => ({
-    label: `${a.username || a.host}（${a.host}:${a.port}）`,
+    label: `${a.username || a.host}（${a.host}:${a.port}）${a.is_default ? ' ★默认' : ''}`,
     value: a.id,
   })),
 ])
+
+// 验证码发信账号：'pool' 走池轮换，或指定某个池账号。
+// 注意 Select 的 value 类型要和 form 里的字符串保持一致（后端存的是字符串），
+// 所以这里把 id 也转成字符串，避免「pool」与数字混用导致选中态不显示。
+const verifySenderOptions = computed(() => [
+  { label: '自动：走账号池（推荐）', value: 'pool' },
+  ...pool.value.map((a) => ({
+    label: `${a.username || a.host}（${a.host}:${a.port}）`,
+    value: String(a.id),
+  })),
+])
+
+// 一句状态提示：让管理员一眼看出当前到底走哪条路、有没有隐患。
+const verifySenderHint = computed(() => {
+  const usable = pool.value.filter((a) => a.status === 'active')
+  const senderId = String(form.value.verify_mail_sender || 'pool')
+  if (senderId !== 'pool') {
+    const acc = pool.value.find((a) => String(a.id) === senderId)
+    if (!acc) return { variant: 'danger', label: '账号不存在', text: '指定的账号已不在池中，会自动退回走账号池。' }
+    if (acc.status !== 'active') return { variant: 'warning', label: '账号不可用', text: `${acc.username || acc.host} 当前状态为 ${acc.status}，会自动退回走账号池。` }
+    return { variant: 'success', label: '已指定', text: `验证码只从这个账号发出：${acc.username || acc.host}。` }
+  }
+  if (pool.value.length === 0) {
+    return { variant: 'warning', label: '账号池为空', text: '还没加账号，验证码会走下面的兜底 SMTP 配置。建议先到「账号池」加号。' }
+  }
+  if (usable.length === 0) {
+    return { variant: 'warning', label: '无可用账号', text: '池里账号都不是启用状态，验证码会走下面的兜底 SMTP 配置。' }
+  }
+  return { variant: 'success', label: '自动挑号', text: `将从 ${usable.length} 个可用账号中挑最久未用的轮换发送。` }
+})
 
 // 时间显示：后端 ISO 串；空值回 —（冷却到/最近使用在多数行都是空）
 const fmtTime = (iso) => {
@@ -1400,211 +1445,4 @@ onDeactivated(() => stopBatchPolling())
 onUnmounted(() => stopBatchPolling())
 </script>
 
-<style scoped>
-/* 页面铺满主区：原先 max-width:640px 在宽屏下右侧整片留白。
-   下面用两栏网格承载「左=基础配置 / 右=高级功能」，窄屏自动并成一列。 */
-.email-page { max-width: 1180px; }
-.email-head { display: flex; align-items: baseline; gap: var(--space-3); }
-.email-title { font-size: var(--text-xl); font-weight: var(--font-semibold); margin-bottom: var(--space-5); }
-.email-autosave-hint { font-size: var(--text-xs); color: var(--text-muted); }
-.email-warn-note { font-size: var(--text-xs); color: #b45309; margin-top: var(--space-3); }
-html.dark .email-warn-note { color: #fbbf24; }
-/* 模块导航：横向标签，激活项主题色下划线；窄屏可横向滚动不换行 */
-.email-tabs {
-  display: flex;
-  gap: var(--space-1);
-  margin-bottom: var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
-  overflow-x: auto;
-}
-.email-tab {
-  flex: 0 0 auto;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--text-secondary);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 0.15s, border-color 0.15s;
-}
-.email-tab:hover { color: var(--text-primary); }
-.email-tab--active {
-  color: var(--accent, #0d9488);
-  border-bottom-color: var(--accent, #0d9488);
-}
-/* 两栏：左列发送测试/SMTP/邮件模板，右列批量发信。
-   只承载「基础配置」——自动通知与发信日志改成下方通栏。
-   grid-template-columns 用 minmax(0,1fr) 防止长内容（代码框）把栅格撑破。 */
-.email-cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-5);
-}
-/* 两列纵排：列内最后一张卡吸收剩余高度（flex:1），左右两列底部自动对齐；
-   拉伸出的空间交给正文编辑区（textarea 弹性变高），而不是留成一片空白 */
-.email-col { min-width: 0; display: flex; flex-direction: column; }
-.email-col > .email-card:last-child { flex: 1; display: flex; flex-direction: column; }
-.email-col > .email-card:last-child textarea.email-template { flex: 1 1 auto; min-height: 120px; }
-.email-col > .email-card:last-child > .email-save-wrap:last-child { margin-top: auto; }
-/* 单栏时每张卡片自身的下边距交给父级 gap 统一控制，避免间距双份 */
-.email-col > .email-card:last-child,
-.email-col > .email-save-wrap:last-child { margin-bottom: 0; }
-
-/* 1280px 以下并成一列：两栏时每栏太窄，输入框会被挤到换行 */
-@media (max-width: 1280px) {
-  .email-cols { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* 窄屏：卡片内边距收一点，避免输入框被挤 */
-@media (max-width: 640px) {
-  .email-page { max-width: 100%; }
-}
-.email-card { margin-bottom: var(--space-5); }
-/* 通栏卡（自动通知/发信日志）：不在两栏网格内，本身就是块级，宽度自然撑满。
-   留一条规则是为了在「被误塞回 .email-cols」时能看出来，而不是静默变半宽。 */
-.email-card-full { max-width: 100%; }
-/* 通栏下表格有更多宽度，收件人/标题不必再截断到 160px */
-.email-card-full .email-log-to, .email-card-full .email-log-subject { max-width: 260px; }
-.email-card h2 { font-size: var(--text-base); font-weight: var(--font-semibold); }
-.email-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
-/* 3 个并列参数（通知收件邮箱 / 阈值 / 天数）一排放下 */
-.email-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 1100px) { .email-grid--3 { grid-template-columns: 1fr 1fr; } }
-/* 8 项刚好 4 行两列，不需要按开关数量切换列数 */
-@media (max-width: 640px) { .email-grid, .email-grid--3 { grid-template-columns: 1fr; } }
-.email-label { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-secondary); display: block; margin-bottom: var(--space-1); }
-
-
-.email-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); }
-.email-hint code { background: var(--bg-hover); padding: 0 4px; border-radius: var(--radius-sm); font-size: var(--text-xs); }
-.email-template { width: 100%; padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-input); color: var(--text-primary); font-family: monospace; font-size: var(--text-sm); resize: vertical; line-height: 1.6; }
-.email-template:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-muted); }
-.email-test-row { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
-/* 「用哪个账号发」下拉定宽：Select 默认 width:100%，不定宽会把收件邮箱挤没 */
-.email-test-account { width: 220px; flex: 0 0 auto; min-width: 0; }
-@media (max-width: 640px) { .email-test-account { width: 100%; } }
-/* flex 工具类：模板里给「发送测试」行贴了这两个名字，但项目里没有全局定义，
-   缺了输入框就不撑满、按钮不贴底。定义在本地 scoped 里，别去动 main.css。 */
-.flex-1 { flex: 1 1 0%; min-width: 0; }
-.self-end { align-self: flex-end; }
-/* 安全限制的 8 个输入项：min-width:0 防长 placeholder 撑破两列网格 */
-.email-rate-item { min-width: 0; }
-.email-rate-desc { font-size: var(--text-xs); color: var(--text-muted); margin-top: var(--space-1); }
-/* 授权码输入框 + 眼睛切换：按钮绝对定位贴在输入框右侧内缘，输入框留出右侧内边距避免文字压在图标下 */
-.email-pwd { position: relative; }
-.email-pwd :deep(.ch-input) { padding-right: 36px; }
-.email-pwd-toggle {
-  position: absolute;
-  top: 50%;
-  right: 4px;
-  transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: color 0.15s, background-color 0.15s;
-}
-.email-pwd-toggle:hover { color: var(--text-primary); background: var(--bg-hover); }
-/* 明文可见时图标点亮为强调色（图标集只有 eye-off，用状态色区分显示/隐藏） */
-.email-pwd-toggle--on { color: var(--accent, #0d9488); }
-.email-pwd-toggle--on:hover { color: var(--accent, #0d9488); }
-.email-pwd-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.email-switch-row { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
-.email-switch-label { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-primary); }
-.email-switch-hint { font-size: var(--text-xs); color: var(--text-muted); }
-.email-switch { position: relative; display: inline-block; width: 48px; height: 27px; flex-shrink: 0; }
-.email-switch-input { opacity: 0; width: 0; height: 0; position: absolute; }
-.email-switch-slider { position: absolute; cursor: pointer; inset: 0; background: var(--switch-off, #d1d5db); border-radius: 14px; transition: 0.3s; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1); }
-.email-switch-slider::before { content: ''; position: absolute; height: 21px; width: 21px; left: 3px; bottom: 3px; background: var(--switch-knob, #fff); border-radius: 50%; transition: 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-.email-switch-input:checked + .email-switch-slider { background: var(--switch-on, #2563eb); box-shadow: inset 0 0 0 0 rgba(0,0,0,0); }
-.email-switch-input:checked + .email-switch-slider::before { transform: translateX(21px); }
-.email-save-wrap { margin-top: var(--space-4); display: flex; justify-content: flex-end; }
-@media (max-width: 640px) { .email-save-wrap { justify-content: stretch; } .email-save-wrap > button { width: 100%; } }
-/* 自动通知：变量提示 + 场景卡 */
-.email-vars { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0; }
-.email-vars-label { font-size: var(--text-xs); color: var(--text-muted); }
-.email-var { background: var(--bg-hover); padding: 2px 6px; border-radius: var(--radius-sm); font-size: var(--text-xs); color: var(--text-secondary); cursor: pointer; }
-.email-var:hover { color: var(--accent); }
-/* 通知场景：两列网格。5 个场景单列排下来近 1000px 高，撑爆整页；
-   两列后高度砍半，且展开正文框时两栏仍有余量。 */
-/* 行内卡片默认 stretch 等高：展开一侧时另一侧跟随对齐，避免「犬牙交错」 */
-.email-scenes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-@media (max-width: 1100px) { .email-scenes { grid-template-columns: 1fr; } }
-.email-scene { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-3); min-width: 0; }
-.email-scene .email-switch-row { margin-bottom: var(--space-2); }
-/* 场景行标题不换行 + 下拉定宽：Select 默认 width:100%，不定宽会把标题挤到折行 */
-.email-scene .email-switch-row .email-switch-label { white-space: nowrap; }
-.email-scene .email-switch-row .ch-select { width: auto; min-width: 128px; flex: 0 0 auto; }
-
-.email-scene .email-rate-desc { margin-bottom: var(--space-3); }
-
-/* 场景标题/正文与开关之间的间距 */
-.email-scene-body { margin-top: var(--space-3); }
-.email-mt { margin-top: var(--space-3); }
-.email-result { margin-top: var(--space-3); margin-bottom: 0; }
-/* 批量发信进度条：沿用本页的 hint/description 字号与主题变量，不另起设计语言 */
-.email-result .email-hint { margin-bottom: var(--space-2); }
-.email-estimate { color: var(--text-secondary); }
-.email-progress { margin-top: var(--space-2); }
-.email-progress-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-1);
-  font-size: var(--text-xs);
-}
-.email-progress-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-/* 失败数标红：进度条本身不因为失败变色（否则看不出走到哪），红字单独提示 */
-.email-progress-failed { color: var(--danger, #dc2626); font-weight: var(--font-medium); }
-.email-progress-track {
-  height: 8px;
-  background: var(--bg-hover);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-.email-progress-fill {
-  display: block;
-  height: 100%;
-  background: var(--accent, #0d9488);
-  border-radius: var(--radius-full);
-  transition: width var(--duration-base, 0.2s) var(--ease-out, ease-out);
-}
-.email-progress-done { font-size: var(--text-xs); color: var(--text-secondary); margin-top: var(--space-2); }
-.email-progress-hint { font-size: var(--text-xs); color: var(--text-muted); margin-top: var(--space-1); }
-.email-progress-hint--failed { color: var(--danger, #dc2626); }
-/* 发信日志 */
-.email-table-wrap { margin-top: var(--space-3); overflow-x: auto; }
-.email-table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
-.email-table th { text-align: left; padding: var(--space-2); color: var(--text-muted); font-weight: var(--font-medium); border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
-.email-table td { padding: var(--space-2); border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
-.email-log-to, .email-log-subject { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.email-log-error { color: var(--danger, #dc2626); font-size: var(--text-xs); margin-top: 2px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.email-empty { font-size: var(--text-sm); color: var(--text-muted); text-align: center; padding: var(--space-6) 0; }
-/* 账号池表格：列多，用户名/操作列不折行；操作按钮排成一行靠右 */
-.email-pool-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.email-pool-head h2 { font-size: var(--text-base); font-weight: var(--font-semibold); margin: 0; }
-.email-pool-table { font-size: var(--text-sm); }
-.email-pool-table td { vertical-align: middle; }
-.email-pool-user { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.email-pool-of { color: var(--text-muted); }
-.email-pool-err { color: var(--danger, #dc2626); font-weight: var(--font-semibold); }
-.email-pool-actions-col { width: 1%; }
-.email-pool-actions { display: flex; align-items: center; gap: var(--space-1); white-space: nowrap; }
-.email-log-pager { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-3); }
-.email-pager-info { font-size: var(--text-xs); color: var(--text-muted); }
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.email-cols { align-items: start; }
-.email-cols .email-label { min-height: 2.6em; display: flex; align-items: flex-end; margin-bottom: 0; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/Email.css"></style>
