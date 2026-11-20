@@ -73,6 +73,7 @@ const groups = [
     items: [
       { to: '/admin/nodes', name: 'admin-nodes', label: '节点列表', icon: 'server' },
       { to: '/admin/regions', name: 'admin-regions', label: '地区与调度', icon: 'server' },
+      { to: '/admin/migrations', name: 'admin-migrations', label: '迁移历史', icon: 'refresh' },
       { to: '/admin/nodes/multiplier', name: 'admin-node-multipliers', label: '流量倍率', icon: 'traffic' },
       { to: '/admin/nodes/xray', name: 'admin-xray', label: 'Xray 高级配置', icon: 'activity' },
       { to: '/admin/geodata', name: 'admin-geodata', label: 'Geo 数据', icon: 'globe' },

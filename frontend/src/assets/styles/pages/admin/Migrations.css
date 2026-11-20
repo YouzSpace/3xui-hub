@@ -1,0 +1,24 @@
+.mg { max-width: 1280px; }
+
+.mg-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-3); margin-bottom: var(--space-4); flex-wrap: wrap;
+}
+.mg-sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+.mg-tools { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+/* 两个 ID 输入框：数字很短，别占满整条 */
+.mg-search { width: 120px; }
+.mg-sel { width: 140px; }
+
+.mg-table-wrap { overflow-x: auto; }
+.mg-nodes { white-space: nowrap; }
+.mg-arrow { margin: 0 var(--space-2); color: var(--text-muted); }
+.mg-muted { color: var(--text-muted); font-size: var(--text-xs); }
+.mg-batch { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.mg-batch .mono { font-size: var(--text-xs); }
+
+/* 窄屏：筛选工具组换行排满一行，表格由 .mg-table-wrap 横向滚动 */
+@media (max-width: 767px) {
+  .mg-search, .mg-sel { width: 100%; }
+  .mg-tools { width: 100%; }
+}

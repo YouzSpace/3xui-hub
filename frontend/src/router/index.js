@@ -104,6 +104,8 @@ const routes = [
       { path: 'nodes', name: 'admin-nodes', component: () => import('@/views/admin/Nodes.vue') },
       // 地区与调度：地区列表 + 展开看节点 + 容量水位 + 迁移/均衡入口
       { path: 'regions', name: 'admin-regions', component: () => import('@/views/admin/Regions.vue') },
+      // 迁移历史：节点搬迁记录 + 按批次撤销（24 小时内）
+      { path: 'migrations', name: 'admin-migrations', component: () => import('@/views/admin/Migrations.vue') },
       // 流量倍率：按节点设置实际/显示倍率
       { path: 'nodes/multiplier', name: 'admin-node-multipliers', component: () => import('@/views/admin/NodeMultipliers.vue') },
       // 上游（外部货源接入）：第三方机场订阅

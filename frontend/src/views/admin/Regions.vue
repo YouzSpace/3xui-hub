@@ -866,6 +866,13 @@ onBeforeUnmount(stopPoll)
           <p v-if="backfillDry.by_node?.length" class="rg-muted">
             节点分布：<span class="mono">{{ backfillDry.by_node.map((n) => `#${n.node_id}×${n.count}`).join('，') }}</span>
           </p>
+          <p
+            v-if="backfillDry.by_node?.length === 1 && (backfillDry.assigned ?? 0) > 1"
+            class="rg-error"
+            data-test="backfill-single-node"
+          >
+            提示：本批全部落到同一台节点。若该地区有多台节点，请先给其它节点设置「容量」（不限容量会被当成无限，永远选 id 最小的那台）。
+          </p>
           <p v-if="backfillDry.skipped?.length" class="rg-error" data-test="backfill-skipped">
             暂不可入组：
             <span

@@ -86,6 +86,11 @@ export const adminApi = {
   migrationJob: (jobId) => client.get(`/admin-api/migrations/jobs/${jobId}`),
   // 迁移历史 data = { items, total, page, per_page }
   listMigrations: (params) => client.get('/admin-api/migrations', { params }),
+  // 同上，但把 axios 的 config（含 abort signal）一并透传：历史页走 usePagedList 翻页，
+  // 需要在切页 / 离开时取消上一个未完成请求。
+  listMigrationsPage: (params, config) => client.get('/admin-api/migrations', { params, ...config }),
+  // 撤销迁移批次（只允许 24 小时内；data = { batch_id, undone, rebound, unbound }）
+  undoMigration: (batchId) => client.post(`/admin-api/migrations/${batchId}/undo`),
 
   // 第三方订阅（外部机场线路；链接含机场 token，仅管理端）
   // 列表返回 { items, enabled(总开关) }；新增/编辑会触发一次拉取（失败不阻塞保存），放宽超时

@@ -281,6 +281,10 @@ func (s *PaymentService) CreateOrder(ctx context.Context, in PaymentCreateInput)
 		}
 		order = newOrder
 		payURL, failMsg, _ = s.buildPayURL(ctx, payPayment, order)
+		if payURL == "" {
+			// 兜底失败也要把网关原因写进日志，否则只有「获取支付链接失败」这一句，没法排查。
+			s.logf("换新单号重下仍失败 order_no=%s gateway_msg=%s", order.OrderNo, failMsg)
+		}
 	}
 
 	result := &CreateOrderResult{
