@@ -212,6 +212,78 @@ nginx_conf_path() {
     fi
 }
 
+# nginx conf.d 目录（real_ip / 限流 zone 这类整机生效的指令放这里）
+nginx_confd_dir() { dirname "$(nginx_conf_path)"; }
+
+# Cloudflare 官方网段（https://www.cloudflare.com/ips-v4|v6，2026-11 快照）。
+# 内置静态清单而非安装时联网：安装不该依赖外网可达（国内机房连 CF 常超时）。
+# 过时后果只是「新段按 CF 边缘 IP 计数」，不放大伪造面（set_real_ip_from 只对列出的段生效）。
+# 更新：3hub cf-realip --refresh 或改这里。
+CLOUDFLARE_IPS='173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22
+141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22
+198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32
+2a06:98c0::/29 2c0f:f248::/32'
+
+# _ensure_aux_nginx_files —— 生成两个「与主 conf 解耦」的附属配置（幂等）。
+#
+#   zz-cloudflare-realip.conf   CF 真实 IP 还原（set_real_ip_from 是 http 级指令，
+#                               放 conf.d 让整机所有站点含节点 /node-ws 一起受益）
+#   zz-panel-login-guard.conf   登录限流 zone 定义
+#
+# ⚠️ 主 conf 的 limit_req 引用 panel_login zone，所以本函数必须在 nginx -t 之前调用。
+# 内容相同则不重写（避免每次 update 刷 mtime）。
+_ensure_aux_nginx_files() {
+    local dir realip guard ip
+    dir="$(nginx_confd_dir)"
+    realip="$dir/zz-cloudflare-realip.conf"
+    guard="$dir/zz-panel-login-guard.conf"
+    mkdir -p "$dir" 2>/dev/null || return 1
+
+    local t1="$realip.new" t2="$guard.new"
+    {
+        echo '# controlhub: 还原 Cloudflare 后的真实客户端 IP（段来源 https://www.cloudflare.com/ips/）'
+        echo '# 本文件由 3hub 受管；刷新网段: 3hub cf-realip --refresh'
+        for ip in $CLOUDFLARE_IPS; do echo "set_real_ip_from ${ip};"; done
+        echo 'real_ip_header CF-Connecting-IP;'
+        echo 'real_ip_recursive on;'
+    } > "$t1" || return 1
+
+    # zone 定义。与 install.sh 里的 heredoc 必须保持一致。
+    cat > "$t2" <<'GUARD'
+# controlhub: 面板登录限流 zone（本文件由 3hub 受管，请勿手工编辑）
+# 只作用主 conf 里两个精确 location: /admin-api/login 与 /admin-api/google2fa/enable。
+# 绝不用前缀匹配 —— /api/node-api/*、/api/sub/*、/api/clients/* 是节点/App 请求，限了会掉线。
+# 边缘第一层；后端 api 包另有 login_guard（5 次失败锁 15 分钟），两层叠加。
+limit_req_zone $binary_remote_addr zone=panel_login:10m rate=20r/m;
+limit_req_status 429;
+GUARD
+
+    for pair in "$realip:Cloudflare真实IP" "$guard:登录限流zone"; do
+        local dst="${pair%:*}" label="${pair##*:}"
+        local tmp="${dst}.new"
+        if [ -f "$dst" ] && cmp -s "$tmp" "$dst"; then
+            rm -f "$tmp"
+        else
+            mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
+            echo "Nginx: 已更新 $(basename "$dst")（${label}）"
+        fi
+    done
+    return 0
+}
+
+# nginx_guard_selfcheck —— 自愈：主 conf 引用 panel_login 但 zone 文件被删时补回。
+# 不加这道，误删该文件会让 nginx 重启直接失败（zero size shared memory zone）。
+nginx_guard_selfcheck() {
+    local conf guard
+    conf="$(nginx_conf_path)"; guard="$(nginx_confd_dir)/zz-panel-login-guard.conf"
+    [ -f "$conf" ] || return 0
+    grep -q 'zone=panel_login' "$conf" 2>/dev/null || return 0
+    [ -f "$guard" ] && return 0
+    echo -e "${YELLOW}⚠ 登录限流 zone 文件缺失（会导致 nginx 起不来），正在补回…${NC}"
+    _ensure_aux_nginx_files && echo -e "  ${GREEN}已补回${NC}"
+}
+
 # render_nginx_conf <domain> <cert前缀|""> <out>
 #   cert 为空 = 不启用 SSL（只出 80 段）
 render_nginx_conf() {
@@ -262,6 +334,34 @@ render_nginx_conf() {
         return 404;
     }'
 
+    # 面板登录限流（边缘层）。用 `=` 精确匹配，优先级最高，只命中这两个路径，
+    # 绝不波及 /api/node-api/*、/api/sub/*、/api/clients/* 等节点/App 请求。
+    # 依赖 zz-panel-login-guard.conf 定义的 panel_login zone。
+    # 关掉：HUB_NO_LOGIN_RATELIMIT=1 3hub fix-nginx
+    local GUARD='    # 面板登录限流（边缘层，仅此两路径；zone 见 zz-panel-login-guard.conf）
+    location = /admin-api/login {
+        limit_req zone=panel_login burst=10 nodelay;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /admin-api/google2fa/enable {
+        limit_req zone=panel_login burst=10 nodelay;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }'
+    [ "${HUB_NO_LOGIN_RATELIMIT:-0}" = "1" ] && GUARD=""
+
     if [ -n "$CERT" ]; then
         {
             echo '# controlhub: nginx 仅反代（前端已 go:embed 进二进制，接口/资产全部由 Go 提供）'
@@ -294,6 +394,7 @@ render_nginx_conf() {
             echo
             echo "$WS"
             echo
+            [ -n "$GUARD" ] && { echo "$GUARD"; echo; }
             echo "$ALL"
             echo '}'
         } > "$OUT"
@@ -313,6 +414,7 @@ render_nginx_conf() {
             echo
             echo "$WS"
             echo
+            [ -n "$GUARD" ] && { echo "$GUARD"; echo; }
             echo "$ALL"
             echo '}'
         } > "$OUT"
@@ -484,14 +586,21 @@ ensure_nginx_go_proxy() {
     render_nginx_conf "$DOMAIN" "${CERT:-}" "$TMP"
     if [ -f "$CONF" ] && cmp -s "$TMP" "$CONF"; then
         rm -f "$TMP"
+        _ensure_aux_nginx_files || true   # 主 conf 没变也要确保两个附属文件在位
         return 0
     fi
 
     cp -f "$CONF" "${CONF}.bak-3hub" 2>/dev/null || true
     mv -f "$TMP" "$CONF"
+    # 附属文件必须先于 nginx -t 就位（主 conf 引用了 panel_login zone）。
+    if ! _ensure_aux_nginx_files; then
+        mv -f "${CONF}.bak-3hub" "$CONF" 2>/dev/null || true
+        echo "Nginx: 附属配置写入失败，已回滚主配置"
+        return 1
+    fi
     if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx >/dev/null 2>&1 || true
-        echo "Nginx: 已按规范模板重写 $(basename "$CONF")（纯反代，前端由二进制提供）"
+        echo "Nginx: 已按规范模板重写 $(basename "$CONF")（纯反代 + 登录限流）"
         rm -f "${CONF}.bak-3hub"
     else
         mv -f "${CONF}.bak-3hub" "$CONF" 2>/dev/null || true
@@ -640,6 +749,7 @@ CMDS=(
     "ssl"
     "domain"
     "fix-nginx"
+    "cf-realip"
     "uninstall"
 )
 
@@ -657,6 +767,7 @@ CMD_LABELS=(
     "配置域名和 SSL 证书"
     "多域名管理 (add/renew/remove/status)"
     "补全 nginx 节点资产 location（老版本升级后用）"
+    "刷新 Cloudflare 真实 IP 网段（--refresh 联网拉最新）"
     "卸载面板 (--panel / --app / --all，不带参数进交互菜单)"
 )
 
@@ -1172,6 +1283,7 @@ nginx_node_ws_applied() {
 # 补 nginx 反代（给老版本升级上来的机器用；幂等，可反复执行）
 cmd_fix_nginx() {
     echo -e "${CYAN}检查 nginx 配置（受管文件按模板重写）...${NC}"
+    nginx_guard_selfcheck || true   # zone 文件被误删时先补回，否则 nginx -t 会失败
 
     # 主 conf：整份渲染成「纯反代」模板（幂等；内容一致则不动）
     if ensure_nginx_go_proxy; then
@@ -1186,11 +1298,46 @@ cmd_fix_nginx() {
     if nginx -t >/dev/null 2>&1; then
         echo -e "${GREEN}nginx -t 通过${NC}"
         echo -e "  当前: $(nginx_conf_path)"
+        echo -e "  真实IP还原: $(nginx_confd_dir)/zz-cloudflare-realip.conf"
+        echo -e "  登录限流:   $(nginx_confd_dir)/zz-panel-login-guard.conf"
         return 0
     fi
     echo -e "${RED}nginx -t 未通过${NC}，请检查 $(nginx_conf_path)"
     nginx -t 2>&1 | tail -3
     return 1
+}
+
+# cf-realip —— 维护 Cloudflare 真实 IP 还原。
+#   3hub cf-realip              用内置网段重渲染
+#   3hub cf-realip --refresh    联网拉 CF 最新网段（https://www.cloudflare.com/ips-v4|v6）
+# 过时后果只是「新段按 CF 边缘 IP 计数」，不是安全漏洞；定期跑一次即可。
+cmd_cf_realip() {
+    local realip; realip="$(nginx_confd_dir)/zz-cloudflare-realip.conf"
+    mkdir -p "$(dirname "$realip")" 2>/dev/null || true
+    local tmp; tmp="$(mktemp)"
+    if [ "$1" = "--refresh" ]; then
+        local v4 v6; v4=$(curl -fsS -m 20 https://www.cloudflare.com/ips-v4 2>/dev/null)
+        v6=$(curl -fsS -m 20 https://www.cloudflare.com/ips-v6 2>/dev/null)
+        if [ -z "$v4" ]; then
+            echo -e "${RED}拉取失败（网络不通），保持现有配置不动${NC}"; rm -f "$tmp"; return 1
+        fi
+        { echo '# controlhub: 还原 Cloudflare 后的真实客户端 IP（https://www.cloudflare.com/ips/）'
+          printf '%s\n' "$v4" "$v6" | grep -v '^$' | sed 's/^/set_real_ip_from /; s/$/;/'
+          echo 'real_ip_header CF-Connecting-IP;'; echo 'real_ip_recursive on;'; } > "$tmp"
+    else
+        { echo '# controlhub: 还原 Cloudflare 后的真实客户端 IP（https://www.cloudflare.com/ips/）'
+          for ip in $CLOUDFLARE_IPS; do echo "set_real_ip_from ${ip};"; done
+          echo 'real_ip_header CF-Connecting-IP;'; echo 'real_ip_recursive on;'; } > "$tmp"
+    fi
+    cp -f "$realip" "${realip}.bak-3hub" 2>/dev/null || true
+    mv -f "$tmp" "$realip"
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx >/dev/null 2>&1 && echo -e "${GREEN}已更新 $(grep -c '^set_real_ip_from' "$realip") 条网段，nginx 已 reload${NC}"
+        rm -f "${realip}.bak-3hub"
+    else
+        mv -f "${realip}.bak-3hub" "$realip" 2>/dev/null
+        echo -e "${RED}nginx -t 失败，已回滚${NC}"; return 1
+    fi
 }
 
 # nginx 配置是否仍是「老形态」：前端被 nginx 自己从磁盘端出去，而不是全反代给 Go。
@@ -1614,6 +1761,7 @@ run_cmd() {
         log)          cmd_log ;;
         restart)      cmd_restart ;;
         fix-nginx)    cmd_fix_nginx ;;
+        cf-realip)    shift; cmd_cf_realip "$@" ;;
         ssl)          cmd_ssl ;;
         domain)       shift; cmd_domain "$@" ;;
         uninstall)    shift; cmd_uninstall "$@" ;;

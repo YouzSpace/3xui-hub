@@ -702,6 +702,18 @@ real_ip_recursive on;'
     # 指令本身不受加载顺序影响。
     REAL_IP_CONF="${REAL_IP_CONF:-${NGINX_CONF_DIR}zz-cloudflare-realip.conf}"
     printf '%s\n' "$SET_REAL_IP_BLOCK" > "$REAL_IP_CONF"
+    # 面板登录限流（独立文件 + 由 nginx.conf include：主 conf 不含任何 limit_req，
+    # 因此本文件缺失时主站照常工作，不会出现 zone 未定义导致 nginx 起不来的情况）。
+    # 只对两个精确路径生效，绝不波及 /api/node-api/* 等节点/App 请求。
+    cat > "${NGINX_CONF_DIR}zz-panel-login-guard.conf" <<'GUARD'
+# controlhub: 面板登录限流（本文件由安装脚本/3hub 受管）
+limit_req_zone $binary_remote_addr zone=panel_login:10m rate=20r/m;
+limit_req_status 429;
+
+# 用 map 把「是否需要限流」落到变量，再在主 conf 的两个精确 location 里使用
+GUARD
+    # 两个精确 location 通过 3hub 模板注入；此处仅补 zone 文件，
+    # 若主 conf 由更老的安装脚本生成（无 limit_req），本文件只是空转，无害。
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
