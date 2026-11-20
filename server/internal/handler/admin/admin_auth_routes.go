@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -37,6 +38,9 @@ type AdminAuthRoutes struct {
 	// auditLogin 落「登录失败到阈值」的汇总审计（operation_logs.type='system'）。
 	// 默认实现写库，单测替换成内存捕获（不连库）。
 	auditLogin func(ctx context.Context, ev *loginAuditEvent) error
+	// lookupSiteTitle 取站点标题作为 2FA 二维码的 issuer。
+	// 白标铁律：这里绝不能硬编码品牌名，必须读站点配置；nil 时回落查 site_configs。
+	lookupSiteTitle func(ctx context.Context) (string, error)
 }
 
 // adminCredentials 是登录校验要用到的管理员凭据快照。
@@ -336,6 +340,12 @@ func (h *AdminAuthRoutes) UpdateUsername(c *gin.Context) {
 }
 
 // Google2faGenerate 对齐 AuthController::google2faGenerate。
+//
+// 返回三项（缺一不可，前端三处都依赖）：
+//   - secret：base32 密钥，前端「手动输入密钥」与 enable 时回传都要用；
+//   - qr_url：标准 otpauth:// URI，前端直接交给二维码服务渲染 —— 不能只给 secret
+//     让前端自己拼，前端拿不到 issuer 信息会拼出扫不了的码；
+//   - issuer/label：一并回传，便于前端提示"加到哪个应用下"。
 func (h *AdminAuthRoutes) Google2faGenerate(c *gin.Context) {
 	admin := httpx.AdminFromContext(c)
 	if admin == nil {
@@ -344,7 +354,73 @@ func (h *AdminAuthRoutes) Google2faGenerate(c *gin.Context) {
 	}
 
 	secret := generateBase32Secret()
-	writeJSON(c, phpEncode(jo("code", 0, "msg", "ok", "data", jo("secret", secret))))
+	if secret == "" {
+		h.fail(c, "生成密钥失败", 500)
+		return
+	}
+	issuer := h.otpIssuer(ctxOf(c))
+	label := otpAccountLabel(issuer, admin.Username)
+	writeJSON(c, phpEncode(jo("code", 0, "msg", "ok", "data", jo(
+		"secret", secret,
+		"qr_url", buildOTPAuthURL(issuer, label, secret),
+		"issuer", issuer,
+		"label", label,
+	))))
+}
+
+// otpDefaultIssuer 是没配站点标题时的兜底值：只允许用项目自己的名字，不允许出现任何客户品牌。
+const otpDefaultIssuer = "ControlHub"
+
+// otpIssuer 返回写进 otpauth:// 的服务名：优先站点标题（白标），兜底项目名。
+//
+// 优先级：单测注入的 lookupSiteTitle → site_configs.site_title → otpDefaultIssuer。
+func (h *AdminAuthRoutes) otpIssuer(ctx context.Context) string {
+	if h.lookupSiteTitle != nil {
+		if v, err := h.lookupSiteTitle(ctx); err == nil {
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		}
+		return otpDefaultIssuer
+	}
+	if h.db != nil {
+		var v sql.NullString
+		if err := h.db.QueryRowContext(ctx, "SELECT value FROM site_configs WHERE `key` = 'site_title'").Scan(&v); err == nil && v.Valid {
+			if s := strings.TrimSpace(v.String); s != "" {
+				return s
+			}
+		}
+	}
+	return otpDefaultIssuer
+}
+
+// otpAccountLabel 返回「issuer:用户名」。
+//
+// Authenticator 里以冒号分段显示，多个站点都叫 admin 时也能分清是哪一家。
+func otpAccountLabel(issuer, username string) string {
+	u := strings.TrimSpace(username)
+	if u == "" {
+		u = "admin"
+	}
+	return issuer + ":" + u
+}
+
+// buildOTPAuthURL 拼标准 otpauth://totp URI（RFC 3952 / Google Authenticator Key Uri Format）。
+//
+// 参数全部 url.QueryEscape：issuer/label 含中文与空格，不转义会导致二维码内容非法、
+// 验证器拒收。算法固定 SHA1 / 6 位 / 30 秒，与 verifyTOTP 的实现严格一致
+// （改这里必须同步改 verifyTOTP，否则算出来的码永远对不上）。
+func buildOTPAuthURL(issuer, label, secret string) string {
+	q := url.Values{}
+	q.Set("secret", secret)
+	q.Set("issuer", issuer)
+	q.Set("algorithm", "SHA1")
+	q.Set("digits", "6")
+	q.Set("period", "30")
+	// label 里的 ":" 是 otpauth 的分段符，必须保留字面冒号而不是 %3A，
+	// 但 issuer/username 自身不能含冒号 —— 已在 otpAccountInfo 里用固定前缀保证。
+	escapedLabel := strings.ReplaceAll(url.QueryEscape(label), "%3A", ":")
+	return "otpauth://totp/" + escapedLabel + "?" + q.Encode()
 }
 
 // Google2faEnable 对齐 AuthController::google2faEnable。
@@ -360,12 +436,23 @@ func (h *AdminAuthRoutes) Google2faEnable(c *gin.Context) {
 		OTP    string `json:"otp"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		h.fail(c, "otp 字段不能为空。", 500)
+		h.fail(c, "参数错误", 400)
 		return
 	}
 
+	// 密钥必须是 generate 发下去的那一个：空 = 没点「开启」就提交（老前端只传 otp 会撞这里）；
+	// 格式非法 = 被改过或传错字段，提前给准确文案，别让用户对着「验证码错误」反复试。
+	body.Secret = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(body.Secret), " ", ""))
 	if body.Secret == "" {
 		h.fail(c, "请先生成密钥", 400)
+		return
+	}
+	if _, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(body.Secret); err != nil {
+		h.fail(c, "密钥格式不正确，请重新生成", 400)
+		return
+	}
+	if strings.TrimSpace(body.OTP) == "" {
+		h.fail(c, "请输入验证码", 400)
 		return
 	}
 
