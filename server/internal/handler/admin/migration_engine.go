@@ -52,5 +52,41 @@ func (e *SchedulerEngine) Balance(ctx context.Context, regionID int64, dry bool,
 	return moved, out, nil
 }
 
-// 编译期断言：SchedulerEngine 必须满足 MigrationEngine。
-var _ MigrationEngine = (*SchedulerEngine)(nil)
+// Backfill 转发并做结果类型转换（老用户批量入组，见 region_backfill.go）。
+//
+// 复用同一个 Scheduler 实例：批量入组只是「按地区批量挑节点 + INSERT IGNORE」，
+// 与 Assign/AssignRegion 的选择口径一致，不需要另建实例或另传锁。
+func (e *SchedulerEngine) Backfill(ctx context.Context, dry bool, limit int) (BackfillReport, error) {
+	res, err := e.s.Backfill(ctx, scheduler.BackfillOptions{Dry: dry, Limit: limit})
+	if err != nil {
+		return BackfillReport{}, err
+	}
+	out := BackfillReport{
+		Dry:          res.Dry,
+		Candidates:   res.Candidates,
+		Assigned:     res.Assigned,
+		UsersDone:    res.UsersDone,
+		UsersSkipped: res.UsersSkipped,
+		Remaining:    res.Remaining,
+		ByNode:       make([]BackfillNodeCount, 0, len(res.ByNode)),
+		Skipped:      make([]BackfillSkipRow, 0, len(res.Skipped)),
+	}
+	for _, n := range res.ByNode {
+		out.ByNode = append(out.ByNode, BackfillNodeCount{NodeID: n.NodeID, Count: n.Count})
+	}
+	for _, s := range res.Skipped {
+		out.Skipped = append(out.Skipped, BackfillSkipRow{
+			RegionID:   s.RegionID,
+			RegionName: s.RegionName,
+			Reason:     s.Reason,
+			Count:      s.Count,
+		})
+	}
+	return out, nil
+}
+
+// 编译期断言：SchedulerEngine 必须满足 MigrationEngine 与 BackfillEngine。
+var (
+	_ MigrationEngine = (*SchedulerEngine)(nil)
+	_ BackfillEngine  = (*SchedulerEngine)(nil)
+)

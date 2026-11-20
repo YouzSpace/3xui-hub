@@ -5,6 +5,7 @@ package admin
 //	GET    /admin-api/regions             地区列表（含 node_count/user_count/capacity_*）
 //	GET    /admin-api/regions/overview    看板首屏：全局合计 + 各地区 + 未归属节点 + 告警计数
 //	GET    /admin-api/regions/alerts       容量告警（>=85% warn / >=95% critical，实时算）
+//	POST   /admin-api/regions/backfill    老用户批量入组 {dry?, limit?}（实现见 region_backfill.go）
 //	POST   /admin-api/regions             建地区 {name, sort}
 //	PUT    /admin-api/regions/:region     改名 / 改排序（只改传入的字段）
 //	DELETE /admin-api/regions/:region     删除（有节点时拒绝并报节点数）
@@ -44,14 +45,18 @@ type RegionDeps struct {
 	// Metrics 是容量建议的数据源（node_metrics 采样 + Recommend 推算）。
 	// 接口化：单测注入固定结果，不必连库造 7 天样本；为 nil 时端点回「未启用」，不 panic。
 	Metrics capacityRecommender
-	Logger  loggerLike
+	// Backfill 是老用户批量入组的引擎（POST /regions/backfill）。
+	// 为 nil 时该端点回 503「引擎未就绪」，其余地区接口不受影响。
+	Backfill BackfillEngine
+	Logger   loggerLike
 }
 
 // RegionDomain 是管理端地区域的 HTTP 入口。
 type RegionDomain struct {
-	store   RegionStore
-	metrics capacityRecommender
-	logger  loggerLike
+	store    RegionStore
+	metrics  capacityRecommender
+	backfill BackfillEngine
+	logger   loggerLike
 }
 
 // NewRegionDomain 组装地区域。
@@ -63,14 +68,15 @@ func NewRegionDomain(d RegionDeps) *RegionDomain {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &RegionDomain{store: d.Store, metrics: d.Metrics, logger: logger}
+	return &RegionDomain{store: d.Store, metrics: d.Metrics, backfill: d.Backfill, logger: logger}
 }
 
 // Register 把地区域路由挂到给定分组（调用方负责 /admin-api 前缀与 admin.auth 中间件）。
 func (d *RegionDomain) Register(r gin.IRouter) {
-	// 静态段必须排在 /regions/:region 之前（overview / alerts 不能被当成地区 id）。
+	// 静态段必须排在 /regions/:region 之前（overview / alerts / backfill 不能被当成地区 id）。
 	r.GET("/regions/overview", d.regionOverview)
 	r.GET("/regions/alerts", d.regionAlerts)
+	r.POST("/regions/backfill", d.regionBackfill)
 	r.GET("/regions", d.regionIndex)
 	r.POST("/regions", d.regionStore)
 	r.PUT("/regions/:region", d.regionUpdate)

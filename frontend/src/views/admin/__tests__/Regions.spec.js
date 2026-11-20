@@ -212,6 +212,107 @@ describe('Regions.vue — 容量告警条', () => {
   })
 })
 
+/**
+ * 老用户批量入组：预览 → 确认 → 循环到 remaining=0。
+ *
+ * 守的是三件事：
+ *  1. 打开弹窗先发一次 dry=true 预览，绝不直接写库；
+ *  2. 确认后按批继续调用（dry=false），直到 remaining=0 停下；
+ *  3. 预览为 0 时按钮不可点（不让人点出一个「补了 0 个人」的误操作）。
+ */
+describe('Regions.vue — 老用户批量入组', () => {
+  // 弹窗走 Teleport 到 body：按钮与文案都要在 document.body 里找。
+  const footerButton = (text) =>
+    [...document.body.querySelectorAll('.ch-modal-footer button')].find((b) => b.textContent.includes(text))
+
+  it('打开弹窗先预览（dry=true），显示候选人数', async () => {
+    adminApi.backfillRegions = vi.fn(() =>
+      Promise.resolve({ dry: true, candidates: 12, assigned: 18, users_done: 12, remaining: 12, by_node: [], skipped: [] }),
+    )
+    const wrapper = await mountPage()
+
+    const openBtn = wrapper.findAll('button').find((b) => b.text().includes('老用户批量入组'))
+    expect(openBtn).toBeTruthy()
+    await openBtn.trigger('click')
+    await flushPromises()
+
+    expect(adminApi.backfillRegions).toHaveBeenCalledWith({ dry: true, limit: 500 })
+    expect(document.body.querySelector('[data-test="backfill-dialog"]')).toBeTruthy()
+    expect(document.body.textContent).toContain('12')
+  })
+
+  it('确认后按批真写，remaining=0 时停下并刷新列表', async () => {
+    // 第一批 remaining=5，第二批 remaining=0
+    const queue = [
+      { dry: true, candidates: 7, assigned: 9, users_done: 7, remaining: 7, by_node: [], skipped: [] },
+      { dry: false, candidates: 7, assigned: 4, users_done: 3, users_skipped: 0, remaining: 5, by_node: [{ node_id: 11, count: 4 }], skipped: [] },
+      { dry: false, candidates: 5, assigned: 5, users_done: 4, users_skipped: 1, remaining: 0, by_node: [{ node_id: 12, count: 4 }, { node_id: 13, count: 1 }], skipped: [] },
+    ]
+    adminApi.backfillRegions = vi.fn(() => Promise.resolve(queue.shift()))
+    const wrapper = await mountPage()
+
+    await wrapper.findAll('button').find((b) => b.text().includes('老用户批量入组')).trigger('click')
+    await flushPromises()
+
+    const runBtn = footerButton('确认入组')
+    expect(runBtn).toBeTruthy()
+    await runBtn.click()
+    await flushPromises()
+
+    const calls = adminApi.backfillRegions.mock.calls.map((c) => c[0].dry)
+    // 1 次预览 + 2 次真写；真写结束后还会再预览一次刷新存量
+    expect(calls[0]).toBe(true)
+    expect(calls.filter((d) => d === false)).toHaveLength(2)
+    // 汇总卡片：共补 7 人（3 + 4）
+    expect(document.body.querySelector('[data-test="backfill-result"]').textContent).toContain('7')
+    // 执行后会重新拉页面数据
+    expect(adminApi.listRegions).toHaveBeenCalledTimes(2)
+  })
+
+  it('预览为 0 时按钮不可点（不会点出「补了 0 个人」）', async () => {
+    adminApi.backfillRegions = vi.fn(() =>
+      Promise.resolve({ dry: true, candidates: 0, assigned: 0, users_done: 0, remaining: 0, by_node: [], skipped: [] }),
+    )
+    const wrapper = await mountPage()
+    await wrapper.findAll('button').find((b) => b.text().includes('老用户批量入组')).trigger('click')
+    await flushPromises()
+
+    const runBtn = footerButton('没有待入组用户')
+    expect(runBtn).toBeTruthy()
+    expect(runBtn.disabled).toBe(true)
+  })
+
+  it('预览接口失败时弹后端原话，不静默', async () => {
+    adminApi.backfillRegions = vi.fn(() => Promise.reject({ message: '批量入组引擎未就绪' }))
+    const wrapper = await mountPage()
+    await wrapper.findAll('button').find((b) => b.text().includes('老用户批量入组')).trigger('click')
+    await flushPromises()
+
+    expect(toast.error).toHaveBeenCalledWith('批量入组引擎未就绪')
+  })
+
+  it('本批一条都没写成（assigned=0）时只调一次就停，不空转重试', async () => {
+    // 首次预览 remaining=3；真写全被跳过（regions 没容量），remaining 仍 3 —— 旧逻辑会
+    // 一直重试到 200 轮。正确行为：写完这一批就停，交给用户去处理容量。
+    const queue = [
+      { dry: true, candidates: 3, assigned: 3, users_done: 3, remaining: 3, by_node: [], skipped: [] },
+      { dry: false, candidates: 3, assigned: 0, users_done: 0, users_skipped: 3, remaining: 3, by_node: [], skipped: [{ region_id: 1, region_name: '香港', reason: '该地区暂无可分配节点', count: 3 }] },
+      { dry: true, candidates: 3, assigned: 3, users_done: 3, remaining: 3, by_node: [], skipped: [] },
+    ]
+    adminApi.backfillRegions = vi.fn(() => Promise.resolve(queue.shift()))
+    const wrapper = await mountPage()
+    await wrapper.findAll('button').find((b) => b.text().includes('老用户批量入组')).trigger('click')
+    await flushPromises()
+
+    await footerButton('确认入组').click()
+    await flushPromises()
+
+    const writes = adminApi.backfillRegions.mock.calls.filter((c) => c[0].dry === false)
+    expect(writes).toHaveLength(1)
+    expect(document.body.querySelector('[data-test="backfill-result"]').textContent).toContain('3')
+  })
+})
+
 describe('Regions.vue — 建议容量 / 采用', () => {
   // 展开后的节点行：外层 tbody 里还有一条 colspan 容器行（它包含整张内表，text 也含节点名），
   // 所以按「第一格文字 === 节点名」在内表里精确找，避免匹配到容器行。

@@ -64,6 +64,12 @@ export const adminApi = {
   //   counts: { warn, critical } }；>=85% 记 warn、>=95% 记 critical。
   // 后端未合入时 404 —— 页面按「没有告警」处理，不编造。
   regionsAlerts: () => client.get('/admin-api/regions/alerts'),
+  // 老用户批量入组（升级出地区后 user_nodes 为空的老用户，按地区各补一条绑定）：
+  //   入参 { dry?, limit? }，dry 缺省 true（只预览不写库），limit 默认 500、上限 5000。
+  //   data = { dry, candidates, assigned, users_done, users_skipped, remaining,
+  //            by_node: [{node_id, count}], skipped: [{region_id, region_name, reason, count}] }
+  //   remaining > 0 说明还有存量用户没轮到，前端按批继续调用直到 0。
+  backfillRegions: (data) => client.post('/admin-api/regions/backfill', data),
   // 节点归属（region_id 传 null = 移出地区，回到全量下发）/ 容量上限（null = 不限）
   setNodeRegion: (id, regionId) => client.put(`/admin-api/nodes/${id}/region`, { region_id: regionId }),
   setNodeCapacity: (id, capacity) => client.put(`/admin-api/nodes/${id}/capacity`, { capacity }),

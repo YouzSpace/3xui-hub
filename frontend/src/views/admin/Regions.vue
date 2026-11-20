@@ -404,6 +404,94 @@ const balance = async (r) => {
   }
 }
 
+// ===== 老用户批量入组（升级出地区后 user_nodes 为空的老用户） =====
+//
+// 后端 POST /regions/backfill：{dry?, limit?}，dry 缺省 true。
+// 流程：预览（dry=true）→ 确认 → 循环「真写一批、再预览一批」直到 remaining=0。
+// 为什么每批都重新预览：candidates/remaining 是「调用那一刻」快照，边补边有新用户过期/被删，
+// 只有重新预览才能知道还剩多少人。单批上限 500（后端上限 5000），这里固定 500 让进度条好读。
+const BACKFILL_LIMIT = 500
+const backfillOpen = ref(false)
+const backfillDry = ref(null) // 最近一次预览结果
+const backfillRunning = ref(false)
+const backfillProgress = ref(null) // 执行中的累计 { done, assigned, total }
+const backfillResult = ref(null) // 执行完的汇总
+
+const openBackfill = async () => {
+  backfillOpen.value = true
+  backfillDry.value = null
+  backfillResult.value = null
+  backfillProgress.value = null
+  await previewBackfill()
+}
+
+const previewBackfill = async () => {
+  try {
+    backfillDry.value = await adminApi.backfillRegions({ dry: true, limit: BACKFILL_LIMIT })
+  } catch (e) {
+    backfillDry.value = null
+    toast.error(e.message || '预览失败（后端可能还没升级到支持批量入组的版本）')
+  }
+}
+
+const backfillRemaining = computed(() => num(backfillDry.value?.remaining) ?? 0)
+const backfillCandidateCount = computed(() => num(backfillDry.value?.candidates) ?? 0)
+
+/** 真执行：循环到 remaining=0（或本批没进展，防死循环）。 */
+const runBackfill = async () => {
+  if (backfillRunning.value) return
+  const ok = await confirm({
+    title: '老用户批量入组',
+    message: `将为 ${backfillCandidateCount.value} 个老用户按地区各补一条节点绑定，确定执行？`,
+  })
+  if (!ok) return
+
+  backfillRunning.value = true
+  const total = backfillCandidateCount.value
+  const sum = { assigned: 0, usersDone: 0, usersSkipped: 0, byNode: {}, skipped: {} }
+  backfillProgress.value = { done: 0, assigned: 0, total }
+  try {
+    let guard = 0
+    while (guard++ < 200) {
+      const res = await adminApi.backfillRegions({ dry: false, limit: BACKFILL_LIMIT })
+      const wrote = num(res?.assigned) ?? 0
+      const done = num(res?.users_done) ?? 0
+      const skipped = num(res?.users_skipped) ?? 0
+      const remaining = num(res?.remaining) ?? 0
+      sum.assigned += wrote
+      sum.usersDone += done
+      sum.usersSkipped += skipped
+      for (const n of res?.by_node ?? []) sum.byNode[n.node_id] = (sum.byNode[n.node_id] ?? 0) + (num(n.count) ?? 0)
+      for (const s of res?.skipped ?? []) {
+        const k = s.region_id
+        if (!sum.skipped[k]) sum.skipped[k] = { region_name: s.region_name, reason: s.reason, count: 0 }
+        sum.skipped[k].count += num(s.count) ?? 0
+      }
+      backfillProgress.value = { done: sum.usersDone + sum.usersSkipped, assigned: sum.assigned, total }
+      // 本批一条绑定都没写成（例如所有地区都满/没容量）→ 再循环也是同样结果，停下并提示。
+      // 注意不能用 done+skipped===0 判断：全被跳过的批次这两个数都 >0，但人还留在候选池里，
+      // 会原样再选一遍 → 空转 200 轮。
+      if (wrote === 0) break
+      if (remaining === 0) break
+    }
+    // 用最后一次真写返回的 remaining 收尾 + 再预览一次让弹窗显示最新存量
+    backfillResult.value = {
+      assigned: sum.assigned,
+      usersDone: sum.usersDone,
+      usersSkipped: sum.usersSkipped,
+      byNode: Object.entries(sum.byNode).map(([id, count]) => ({ node_id: Number(id), count })),
+      skipped: Object.entries(sum.skipped).map(([id, v]) => ({ region_id: Number(id), ...v })),
+    }
+    await previewBackfill()
+    await load()
+  } catch (e) {
+    toast.error(e.message || '批量入组失败')
+  } finally {
+    backfillRunning.value = false
+    backfillProgress.value = null
+  }
+}
+
 // ===== 未归属节点：设置归属 / 容量 =====
 const assignOpen = ref(false)
 const assignNode = ref(null)
@@ -470,6 +558,9 @@ onBeforeUnmount(stopPoll)
       <div class="rg-head-actions">
         <Button variant="secondary" size="sm" :loading="loading" @click="load">
           <Icon name="refresh" :size="16" /> 刷新
+        </Button>
+        <Button variant="secondary" size="sm" @click="openBackfill">
+          <Icon name="users" :size="16" /> 老用户批量入组
         </Button>
         <Button variant="primary" size="sm" @click="openCreate">
           <Icon name="plus" :size="16" /> 新建地区
@@ -755,6 +846,78 @@ onBeforeUnmount(stopPoll)
       <template #footer>
         <Button variant="secondary" size="sm" @click="assignOpen = false">取消</Button>
         <Button variant="primary" size="sm" :loading="assignSaving" @click="saveAssign">保存</Button>
+      </template>
+    </Modal>
+
+    <!-- 老用户批量入组：预览 → 确认 → 逐批执行到 remaining=0 -->
+    <Modal v-model="backfillOpen" title="老用户批量入组" width="520px">
+      <div class="rg-form" data-test="backfill-dialog">
+        <p class="rg-muted">
+          升级出地区后，之前的老用户没有任何节点绑定：容量统计是 0，均衡 / 迁移也搬不到他们。
+          这里给「启用中、有套餐且未过期、一条绑定都没有」的用户，按地区各补一条绑定。
+        </p>
+
+        <template v-if="backfillDry">
+          <p class="rg-job-line">
+            待入组用户 <strong class="mono">{{ backfillCandidateCount }}</strong> 人
+            · 本次预览将写入 <strong class="mono">{{ backfillDry.assigned ?? 0 }}</strong> 条绑定
+            · 之后仍剩 <strong class="mono">{{ backfillRemaining }}</strong> 人
+          </p>
+          <p v-if="backfillDry.by_node?.length" class="rg-muted">
+            节点分布：<span class="mono">{{ backfillDry.by_node.map((n) => `#${n.node_id}×${n.count}`).join('，') }}</span>
+          </p>
+          <p v-if="backfillDry.skipped?.length" class="rg-error" data-test="backfill-skipped">
+            暂不可入组：
+            <span
+              v-for="s in backfillDry.skipped"
+              :key="s.region_id"
+              class="mono"
+            >{{ s.region_name }}（{{ s.count }} 人，{{ s.reason }}） </span>
+          </p>
+        </template>
+        <p v-else class="rg-muted">正在获取预览…</p>
+
+        <template v-if="backfillProgress">
+          <ProgressBar
+            :percent="backfillProgress.total > 0 ? Math.round((backfillProgress.done / backfillProgress.total) * 100) : 0"
+            :label="`${backfillProgress.done} / ${backfillProgress.total}`"
+          />
+          <p class="rg-job-line mono">已写入 {{ backfillProgress.assigned }} 条绑定</p>
+        </template>
+
+        <template v-if="backfillResult">
+          <p class="rg-job-line" data-test="backfill-result">
+            本次共补 <strong class="mono">{{ backfillResult.usersDone }}</strong> 人
+            （{{ backfillResult.assigned }} 条绑定）
+            <template v-if="backfillResult.usersSkipped">
+              · 暂不可入组 {{ backfillResult.usersSkipped }} 人
+            </template>
+          </p>
+          <p v-if="backfillResult.byNode.length" class="rg-muted">
+            节点分布：<span class="mono">{{ backfillResult.byNode.map((n) => `#${n.node_id}×${n.count}`).join('，') }}</span>
+          </p>
+          <p v-if="backfillResult.skipped.length" class="rg-muted">
+            跳过：
+            <span
+              v-for="s in backfillResult.skipped"
+              :key="s.region_id"
+              class="mono"
+            >{{ s.region_name }}（{{ s.count }} 人） </span>
+          </p>
+        </template>
+      </div>
+      <template #footer>
+        <Button variant="secondary" size="sm" @click="backfillOpen = false">关闭</Button>
+        <Button
+          variant="primary"
+          size="sm"
+          :loading="backfillRunning"
+          :disabled="!backfillDry || backfillRemaining === 0"
+          data-test="backfill-run"
+          @click="runBackfill"
+        >
+          {{ backfillRemaining === 0 && backfillDry ? '没有待入组用户' : '确认入组' }}
+        </Button>
       </template>
     </Modal>
 
