@@ -44,6 +44,9 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		"id", ib.ID,
 		"tag", ib.Tag,
 		"remark", nullableStr(ib.Remark),
+		// 入站归属地区（#入站级分组）：null = 跟随节点地区。
+		// region_name 由调用方补（presentXrayInboundWithRegion），这里只出 id。
+		"region_id", nullableUint(ib.RegionID),
 		"protocol", ib.Protocol,
 		"port", ib.Port,
 		"listen", ib.Listen,
@@ -150,6 +153,20 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		"client_count", clientCount,
 		"created_at", nullableISO(ib.CreatedAt),
 	)
+}
+
+// presentXrayInboundWithRegion 在 presentXrayInbound 的基础上补 region_name
+// （#入站级分组：列表/详情要同时给出归属地区的 id 与名称）。
+func presentXrayInboundWithRegion(ib *XrayInboundRecord, userCounts map[string]int64, regionNames map[uint64]string) *jsObj {
+	out := presentXrayInbound(ib, userCounts)
+	var name any
+	if ib.RegionID != nil {
+		if n, ok := regionNames[*ib.RegionID]; ok {
+			name = n
+		}
+	}
+	out.put("region_name", name)
+	return out
 }
 
 // ---- 展示小工具 ----

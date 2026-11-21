@@ -56,6 +56,8 @@ func (s *recFakeStore) RegionDelete(context.Context, uint64) error { return sql.
 
 func (s *recFakeStore) RegionExists(context.Context, uint64) (bool, error) { return false, nil }
 
+func (s *recFakeStore) RegionNames(context.Context) (map[uint64]string, error) { return nil, nil }
+
 func (s *recFakeStore) RegionNameTaken(context.Context, string, uint64) (bool, error) {
 	return false, nil
 }

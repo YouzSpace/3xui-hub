@@ -171,10 +171,11 @@ func (r *SQLRepository) PlanByID(ctx context.Context, id int64) (*Plan, error) {
 		months       sql.NullInt64
 		includeLocal sql.NullBool
 		thirdParty   sql.NullString
+		regionIDs    sql.NullString
 	)
 	err := r.DB.QueryRowContext(ctx,
-		"SELECT type, months, include_local, third_party_sub_ids FROM plans WHERE id = ? LIMIT 1", id,
-	).Scan(&planType, &months, &includeLocal, &thirdParty)
+		"SELECT type, months, include_local, third_party_sub_ids, region_ids FROM plans WHERE id = ? LIMIT 1", id,
+	).Scan(&planType, &months, &includeLocal, &thirdParty, &regionIDs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -186,6 +187,9 @@ func (r *SQLRepository) PlanByID(ctx context.Context, id int64) (*Plan, error) {
 	// Plan::includesLocal() => (bool) ($this->include_local ?? true)
 	plan.IncludeLocal = !includeLocal.Valid || includeLocal.Bool
 	plan.ThirdPartySubIDs = parseIDList(thirdParty)
+	// 套餐可用地区（#地区功能-15）：与 planregion.Allowed 同一解析口径，
+	// 订阅侧按入站过滤时不再查一次库。
+	plan.RegionIDs, plan.RegionRestricted = planregion.Parse(regionIDs)
 	return plan, nil
 }
 
@@ -215,8 +219,12 @@ func parseIDList(raw sql.NullString) []int64 {
 //	WHERE enabled = 1 AND status = 'online'
 //	  AND ( EXISTS(node_inbounds § protocol)  OR  (driver_type='xray' AND EXISTS(xray_inbounds § protocol, enabled)) )
 //	  AND ( 用户无任何绑定 OR 节点被绑给该用户 )
-//	  AND ( 套餐不限地区 OR 节点未归属地区 OR 节点地区在套餐允许列表内 )
-//	ORDER BY id
+//	  AND ( 套餐不限地区
+//	        OR 节点至少有一个「有效地区命中套餐地区」的启用入站 )
+//
+// 「有效地区」= COALESCE(xray_inbounds.region_id, nodes.region_id)（#入站级分组）：
+// 入站自己归属了地区就按入站的，否则跟随节点。老数据 region_id 全 NULL → 有效地区
+// 即节点地区，行为与升级前逐字节一致（store_plan_region_test.go 钉着这条）。
 //
 // map[string]any 的协议参数与 PHP 的 $user->protocol 字符串比较同义。
 //
@@ -235,7 +243,8 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string, 
 
 	query := `
 		SELECT n.id, n.name, n.host, n.port, n.enabled, n.driver_type, n.traffic_multiplier,
-		       n.api_key, n.password, n.scheme, n.web_base_path, n.username, n.verify_ssl, n.driver_config
+		       n.api_key, n.password, n.scheme, n.web_base_path, n.username, n.verify_ssl, n.driver_config,
+		       n.region_id
 		FROM nodes n
 		WHERE n.enabled = 1 AND n.status = 'online'
 		  AND (
@@ -251,7 +260,9 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string, 
 		  )`
 	args := []any{userID, userID}
 	if restricted {
-		clause, extra := planregion.NodeFilter(allowed)
+		// 按入站过滤（#入站级分组）：只留下「有效地区命中」入站的节点；
+		// 一个命中的入站都没有 → 整台节点不出现在订阅里。
+		clause, extra := planregion.InboundNodeFilter(allowed)
 		query += clause
 		args = append(args, extra...)
 	}
@@ -277,10 +288,15 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string, 
 			username sql.NullString
 			verify   sql.NullBool
 			driverCf sql.NullString
+			regionID sql.NullInt64
 		)
 		if err := rows.Scan(&node.ID, &node.Name, &node.Host, &node.Port, &node.Enabled, &driverTy,
-			&traffic, &apiKey, &password, &scheme, &basePath, &username, &verify, &driverCf); err != nil {
+			&traffic, &apiKey, &password, &scheme, &basePath, &username, &verify, &driverCf, &regionID); err != nil {
 			return nil, fmt.Errorf("扫描 nodes 失败: %w", err)
+		}
+		if regionID.Valid {
+			v := regionID.Int64
+			node.RegionID = &v
 		}
 		// 面板连接参数（PHP 侧由 ThreeXUiClient::fromNode 直接读模型属性）
 		node.Scheme = scheme.String
@@ -345,7 +361,7 @@ func (r *SQLRepository) NodeInboundIDs(ctx context.Context, nodeID int64, protoc
 // XrayInbounds 返回该节点启用的入站（对齐 XrayInbound::enabledFor：sort、id 升序）。
 func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayInbound, error) {
 	rows, err := r.DB.QueryContext(ctx, `
-		SELECT id, node_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings,
+		SELECT id, node_id, region_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings,
 		       salamander_password, enabled, sort
 		FROM xray_inbounds
 		WHERE node_id = ? AND enabled = 1
@@ -359,6 +375,7 @@ func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayI
 	for rows.Next() {
 		var (
 			ib         XrayInbound
+			regionID   sql.NullInt64
 			remark     sql.NullString
 			listen     sql.NullString
 			clientHost sql.NullString
@@ -366,9 +383,13 @@ func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayI
 			stream     sql.NullString
 			salamander sql.NullString
 		)
-		if err := rows.Scan(&ib.ID, &ib.NodeID, &ib.Tag, &remark, &ib.Protocol, &ib.Port,
+		if err := rows.Scan(&ib.ID, &ib.NodeID, &regionID, &ib.Tag, &remark, &ib.Protocol, &ib.Port,
 			&listen, &clientHost, &settings, &stream, &salamander, &ib.Enabled, &ib.Sort); err != nil {
 			return nil, fmt.Errorf("扫描 xray_inbounds 失败: %w", err)
+		}
+		if regionID.Valid {
+			v := regionID.Int64
+			ib.RegionID = &v
 		}
 		ib.Remark = remark.String
 		ib.Listen = listen.String

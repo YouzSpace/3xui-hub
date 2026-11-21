@@ -221,7 +221,15 @@ func ensureSchema(db *sql.DB) error {
 		// client_host：某些入站要走 CDN（客户端连 CDN 域名，回源才连节点地址），
 		// 订阅链接里的地址需要按入站覆盖节点地址；空 = 维持原行为。
 		{"xray_inbounds", "client_host", "varchar(255) COLLATE utf8mb4_unicode_ci"},
+		// 入站级分组（3.1.0）：NULL = 跟随节点地区（老数据行为完全不变），
+		// 非 NULL = 该入站属于这个地区；订阅按 COALESCE(入站, 节点) 过滤。
+		{"xray_inbounds", "region_id", "bigint unsigned DEFAULT NULL COMMENT '归属地区 id，NULL=跟随节点地区'"},
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
+		// App 版本分布（#App版本页 500 修复）：handler 与客户端上报都在写这三列，
+		// 老库从来没有建过 → /admin-api/app-versions 一直 500、上报静默失败。
+		{"users", "app_version_code", "int DEFAULT NULL COMMENT '客户端上报的版本号（build code）'"},
+		{"users", "app_version_name", "varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '客户端上报的版本名'"},
+		{"users", "app_version_reported_at", "datetime DEFAULT NULL COMMENT '最近一次客户端版本上报时间'"},
 		// 兑换码归档到文件夹（对齐优惠码分组）：老库升级时补列，null=未归档。
 		{"giftcards", "folder_id", "bigint unsigned DEFAULT NULL COMMENT '所属文件夹 id，null=未归档'"},
 		// 订单缓存的支付链接：下单时落库，「我的订单」续付直接复用，不再拿原单号去网关
@@ -275,6 +283,8 @@ func ensureSchema(db *sql.DB) error {
 		{"orders", "orders_status_pay_expires_at_index", "(`status`,`pay_expires_at`)"},
 		// 地区（#地区功能）：按地区筛节点（节点列表、订阅渲染）不能全表扫。
 		{"nodes", "idx_nodes_region", "(`region_id`)"},
+		// 入站级分组（3.1.0）：订阅按 (node_id, 有效地区) 过滤入站，region_id 要能走索引。
+		{"xray_inbounds", "idx_xray_inbounds_region", "(`region_id`)"},
 		// 批次号（#地区功能-10）：撤销按 batch_id 取整批记录，历史列表也可能按它筛。
 		{"user_node_migrations", "idx_batch", "(`batch_id`)"},
 		// 独占 socks 池（#地区功能-17）：每次下单都是「在池子里找一条未售出的」，

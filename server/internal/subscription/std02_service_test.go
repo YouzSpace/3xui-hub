@@ -691,7 +691,7 @@ func TestStd02SubConcurrencyChunking(t *testing.T) {
 	results := svc.fetchBatchConcurrently(context.Background(), []nodeEntry{
 		{node: repo.nodes[0], inboundIDs: []int64{1}},
 		{node: Node{ID: 99, Name: "bad", Enabled: true, Status: "online"}}, // 面板没有链接
-	}, user, "ch_user_7", &siteConfigReader{values: repo.configs}, &renderStats{})
+	}, user, nil, "ch_user_7", &siteConfigReader{values: repo.configs}, &renderStats{})
 	if len(results) != 2 {
 		t.Fatalf("结果数量 = %d，期望 2", len(results))
 	}

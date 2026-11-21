@@ -16,6 +16,7 @@ const {
   isSocks,
   isTunnel,
   isWg,
+  regionChoices,
 } = useInboundCtx()
 
 const ssMethodOptions = [
@@ -139,6 +140,16 @@ const tunnelNetworkOptions = [
     对端列表可以留空 —— 入站能起，但没人能连上。
   </p>
 </template>
+
+<!-- 归属分组（#入站级分组）：不选 = 跟随节点地区；选了 = 这个入站单独归到该地区 -->
+<label class="an-field">
+  <span>归属分组</span>
+  <Select v-model="form.region_id" :options="regionChoices" />
+</label>
+<p class="an-hint">
+  「跟随节点」时，这个入站和节点其他入站一样按节点地区卖；选了某个分组，就只有套餐包含该分组的用户能看到它。
+  只影响订阅里显示哪些入口，不影响用户与节点的分配关系。
+</p>
 
 <!-- 嗅探（issue #39）：默认对齐现状；不改则行为无感 -->
 <label class="ch-check-row">

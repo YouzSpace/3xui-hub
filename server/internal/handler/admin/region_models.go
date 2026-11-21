@@ -52,6 +52,23 @@ type RegionNode struct {
 	Status     string
 	Capacity   *int64 // NULL = 不限
 	BoundUsers int64
+	// Inbounds 是挂在节点上的入站及其归属（#入站级分组），只读展示。
+	// 节点列表页的表格不展开它，前端在「地区节点」接口的返回里按需展示。
+	Inbounds []RegionInbound
+}
+
+// RegionInbound 是「地区内节点的一个入站」只读展示行（Regions.vue 节点展开时用）。
+//
+// 只要求展示归属，不做内联编辑：编辑仍在「xray 入站」页。
+// RegionID/RegionName 为 nil 表示该入站跟随节点地区（region_id IS NULL）。
+type RegionInbound struct {
+	ID         uint64
+	Tag        string
+	Protocol   string
+	Port       int64
+	Enabled    bool
+	RegionID   *uint64
+	RegionName *string
 }
 
 // RegionOverview 是调度看板首屏数据。
@@ -78,6 +95,8 @@ type RegionStore interface {
 	// RegionDelete 删除地区；地区不存在返回 sql.ErrNoRows。
 	RegionDelete(ctx context.Context, id uint64) error
 	RegionExists(ctx context.Context, id uint64) (bool, error)
+	// RegionNames 返回「地区 id → 名称」，供入站列表回显归属地区名（#入站级分组）。
+	RegionNames(ctx context.Context) (map[uint64]string, error)
 	// RegionNameTaken 判断名称是否已被别的地区占用（excludeID=0 表示新建）。
 	RegionNameTaken(ctx context.Context, name string, excludeID uint64) (bool, error)
 	// RegionNodeCount 是该地区下的节点数（删除前的守卫）。

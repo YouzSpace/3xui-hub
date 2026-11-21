@@ -35,6 +35,9 @@ type NodeDomain struct {
 	store NodeStore
 	ops   NodeOps
 	cfg   NodeConfig
+	// regions 给入站列表/详情回显归属地区名（#入站级分组）。
+	// 可选：未注入时 region_name 一律 null（老构造方式 / 测试不受影响）。
+	regions RegionStore
 
 	// tasks 把「建好的 async_tasks」派进队列。为空时只落库不执行（仅供测试/无队列场景）。
 	// 节点类任务（初始化 / 入站同步 / 删除清理）必须经它派发，否则任务永远是 pending。
@@ -74,8 +77,10 @@ type NodeDeps struct {
 	// Tasks 为空时创建的任务不会被执行（生产必须注入）。
 	Tasks  NodeTaskDispatcher
 	Config NodeConfig
-	Now    func() time.Time
-	Logger *log.Logger
+	// Regions 可选：入站列表/详情回显归属地区名用（#入站级分组）。
+	Regions RegionStore
+	Now     func() time.Time
+	Logger  *log.Logger
 }
 
 // NewNodeDomain 组装节点域。
@@ -94,6 +99,7 @@ func NewNodeDomain(d NodeDeps) *NodeDomain {
 	return &NodeDomain{
 		store:        d.Store,
 		ops:          d.Ops,
+		regions:      d.Regions,
 		tasks:        d.Tasks,
 		cfg:          nodeConfigDefaults(d.Config),
 		now:          now,

@@ -76,6 +76,19 @@ var region09DDL = []string{
 		PRIMARY KEY (user_id, node_id),
 		KEY idx_node (node_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+	// GET /regions/:id/nodes 会带出入站归属（#入站级分组），要读 xray_inbounds。
+	`CREATE TABLE xray_inbounds (
+		id bigint unsigned NOT NULL AUTO_INCREMENT,
+		node_id bigint unsigned NOT NULL,
+		region_id bigint unsigned DEFAULT NULL,
+		tag varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+		protocol varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'vless',
+		port int unsigned NOT NULL DEFAULT 443,
+		enabled tinyint(1) NOT NULL DEFAULT 1,
+		sort int unsigned NOT NULL DEFAULT 0,
+		PRIMARY KEY (id),
+		KEY idx_xray_inbounds_region (region_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 }
 
 // newRegion09DB 建一个干净的测试库 + 三张表，跑完自动 DROP。

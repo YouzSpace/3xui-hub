@@ -23,6 +23,8 @@ VERSION="1.0.0"
 # nginx 环境（detect_nginx_env 填充）：bt | standard
 NGINX_ENV_TYPE=""
 NGINX_CONF_DIR=""
+# 面板监听端口（resolve_listen_port 填充）：.env / systemd unit / nginx upstream 三处都按它生成
+PANEL_PORT=""
 
 # 日志函数
 log() {
@@ -118,13 +120,56 @@ check_root() {
     fi
 }
 
-# 检查端口
-check_port() {
-    if ss -tlnp | grep -q ":$1 "; then
-        warn "端口 $1 已被占用"
-        return 1
-    fi
-    return 0
+# ── 面板端口 ────────────────────────────────────────────────────────────────
+#
+# 为什么要探测：面板默认 8080，而 1Panel 等面板默认也占 8080。不探测的话安装会一路
+# 装到 systemctl restart 才失败，systemd Restart=always 每 3 秒重拉、日志刷同一条错，
+# 用户看不出根因。这里在写 unit / nginx 之前就把端口定下来，全程只用一个值。
+
+# unit 里现有的监听端口（没有 unit / 没有 LISTEN_ADDR 时输出空）。
+# 这是「老用户升级端口一个字节都不变」的唯一依据：unit 里写的是什么就用什么。
+unit_listen_port() {
+    local unit="${1:-/etc/systemd/system/controlhub.service}"
+    [ -f "$unit" ] || return 0
+    grep -oE 'LISTEN_ADDR=[^[:space:]]*' "$unit" 2>/dev/null \
+        | head -1 | sed -E 's/^LISTEN_ADDR=//; s/^.*://'
+}
+
+# 端口是否已被监听
+port_in_use() {
+    ss -tln "sport = :$1" 2>/dev/null | grep -q LISTEN
+}
+
+# 确定面板端口，结果写全局 PANEL_PORT：
+#   1) unit 存在 → 读它的端口（老用户升级必须沿用，绝不变更）
+#   2) 该端口空闲 → 用它
+#   3) 该端口被占 → 从它开始向上探测（最多 100 个），取第一个空闲的
+#   4) 没有 unit（全新安装）→ 从 8080 开始探测
+# 纯逻辑、不打 info/success（便于离线测），日志由调用方打。
+resolve_listen_port() {
+    local unit="${1:-/etc/systemd/system/controlhub.service}"
+    local cur start p i
+
+    cur=$(unit_listen_port "$unit")
+    # 非数字视为没读到（unit 里可能被手改成域名之类，别拿它去探测）
+    case "$cur" in
+        '' | *[!0-9]*) cur="" ;;
+    esac
+    # 前导零规范化（08080 → 8080）：bash 算术会把 0 开头当八进制，08080 直接报错
+    [ -n "$cur" ] && cur=$((10#$cur))
+    start="${cur:-8080}"
+
+    for i in $(seq 0 99); do
+        p=$((start + i))
+        [ "$p" -le 65535 ] || break
+        if ! port_in_use "$p"; then
+            PANEL_PORT="$p"
+            return 0
+        fi
+    done
+
+    PANEL_PORT=""
+    return 1
 }
 
 # 清理历史 CLI opcache 配置（v1.25.1 曾默认开启，v1.25.3 回退为默认关）
@@ -343,16 +388,20 @@ setup_go_service() {
 [Unit]
 Description=ControlHub Go 后端（面板 API + 定时调度 + 节点 WS 通道）
 After=network.target mysqld.service mariadb.service mysql.service
+# 拉起失败上限：端口被占这类持续性错误 5 次内就停手，而不是每 3 秒重拉、日志刷几百遍
+# 同一条错把根因埋掉（restart 计数器 60 秒内不清零）。
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}/server
 Environment=CONFIG_ENV=${INSTALL_DIR}/.env
-# 只听本机：nginx 与本服务同机，反代走 127.0.0.1:8080。
-# 写成 :8080 等于把 8080 暴露到公网，攻击者可绕过 nginx 直连并自带 X-Forwarded-For 伪造来源 IP。
-# 确有必要对外直连时再显式改成 0.0.0.0:8080（注意此时务必同时设置 TRUSTED_PROXIES）。
-Environment=LISTEN_ADDR=127.0.0.1:8080
+# 只听本机：nginx 与本服务同机，反代走 127.0.0.1:${PANEL_PORT}（端口由 resolve_listen_port 确定）。
+# 写成 :${PANEL_PORT} 等于把端口暴露到公网，攻击者可绕过 nginx 直连并自带 X-Forwarded-For 伪造来源 IP。
+# 确有必要对外直连时再显式改成 0.0.0.0:${PANEL_PORT}（注意此时务必同时设置 TRUSTED_PROXIES）。
+Environment=LISTEN_ADDR=127.0.0.1:${PANEL_PORT}
 ExecStart=${INSTALL_DIR}/server/controlhub-server
 Restart=always
 RestartSec=3
@@ -368,9 +417,16 @@ EOF
     systemctl restart controlhub
     sleep 1
     if systemctl is-active --quiet controlhub; then
-        success "Go 后端服务已启动"
+        success "Go 后端服务已启动（127.0.0.1:${PANEL_PORT}）"
     else
-        error_exit "Go 后端服务启动失败（journalctl -u controlhub 查看原因）"
+        # 失败时直接把根因摆出来：最近日志 + 端口占用者。否则用户只能看到
+        # 「启动失败」和一堆重复的 Restart=always 日志，根本不知道是端口被占了。
+        error "Go 后端服务启动失败，最近日志:"
+        journalctl -u controlhub -n 10 --no-pager 2>/dev/null || true
+        echo ""
+        error "端口 ${PANEL_PORT} 占用情况:"
+        ss -tlnp "sport = :${PANEL_PORT}" 2>/dev/null || true
+        error_exit "Go 后端服务启动失败（详见上方日志与端口占用；换端口可执行 3hub port 18080）"
     fi
 }
 
@@ -582,6 +638,19 @@ EOF
         info ".env 已补充 REDIS_ADDR=127.0.0.1:6379"
     fi
 
+    # 面板监听端口写进 .env（幂等）：与 systemd unit 的 LISTEN_ADDR 同源，都是 PANEL_PORT。
+    # 已有该行就就地改成回环 + 当前端口 —— 顺带把用户手写的 :8080 / 0.0.0.0:8080 收敛回
+    # 127.0.0.1（对外直连会绕过 nginx、可自带 X-Forwarded-For 伪造来源 IP），端口本身跟着
+    # unit 走，老用户升级不会被改成别的端口。没有该行才追加（带注释，运维一眼能看懂）。
+    if [ -f .env ]; then
+        if grep -q '^LISTEN_ADDR=' .env 2>/dev/null; then
+            sed -i "s|^LISTEN_ADDR=.*|LISTEN_ADDR=127.0.0.1:${PANEL_PORT}|" .env
+        else
+            printf '\n# 面板监听地址（只回环；对外由 nginx 反代，改端口用 3hub port <新端口>）\nLISTEN_ADDR=127.0.0.1:%s\n' "${PANEL_PORT}" >> .env
+            info ".env 已写入 LISTEN_ADDR=127.0.0.1:${PANEL_PORT}"
+        fi
+    fi
+
     # 创建 MySQL 数据库
     if command -v mysql &>/dev/null; then
         mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1 | tee -a "$LOG_FILE"
@@ -722,7 +791,7 @@ GUARD
 #（assets 长缓存、index.html no-cache）。
 # Go 后端连接池（keepalive 复用，消除短连接 TIME_WAIT 堆积）
 upstream controlhub_backend {
-    server 127.0.0.1:8080;
+    server 127.0.0.1:${PANEL_PORT};
     keepalive 32;
 }
 
@@ -826,7 +895,7 @@ NGINX
 # 前端已 go:embed 进 Go 二进制：nginx 不再持有静态 root，缓存头由 Go 输出。
 # Go 后端连接池（keepalive 复用，消除短连接 TIME_WAIT 堆积）
 upstream controlhub_backend {
-    server 127.0.0.1:8080;
+    server 127.0.0.1:${PANEL_PORT};
     keepalive 32;
 }
 
@@ -1171,6 +1240,25 @@ main() {
     # 部署项目
     deploy_project
 
+    # 确定面板端口（必须早于 setup_env：.env、systemd unit、nginx upstream 都要用同一个值）。
+    # 老用户升级时 unit 里已有端口 → 原样沿用；端口确实被占时向上顺延，避免装到
+    # systemctl restart 才失败（8080 常被 1Panel 之类的面板先占掉）。
+    #
+    # 先停旧服务再探测：升级时旧 controlhub 还占着 unit 里的端口，不停就会把「自己」判成
+    # 占用者而顺延换端口 —— 老用户端口必须一个字节都不变。download_binary 里还会再 stop
+    # 一次，重复无害。
+    systemctl stop controlhub 2>/dev/null || true
+    if resolve_listen_port; then
+        info "面板监听端口: 127.0.0.1:${PANEL_PORT}"
+        local UNIT_PORT
+        UNIT_PORT=$(unit_listen_port)
+        if [ -n "$UNIT_PORT" ] && [ "$UNIT_PORT" != "$PANEL_PORT" ]; then
+            warn "原端口 ${UNIT_PORT} 已被占用，本次改用 ${PANEL_PORT}"
+        fi
+    else
+        error_exit "找不到空闲端口（已从 8080 起连续探测 100 个），请释放端口后重试"
+    fi
+
     # 配置环境（.env + 建库 + 导入 schema/seed）
     setup_env
 
@@ -1180,7 +1268,7 @@ main() {
     # 启动 Go 后端服务（systemd 单进程：HTTP + scheduler + WS 内置）
     setup_go_service
 
-    # 配置 Nginx（静态 + 反代 Go 8080）
+    # 配置 Nginx（纯反代到 127.0.0.1:${PANEL_PORT}）
     setup_nginx
 
     # 安装 3hub 命令

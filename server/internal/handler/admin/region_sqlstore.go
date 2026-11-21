@@ -8,6 +8,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -156,6 +157,28 @@ func (s *regionSQLStore) RegionExists(ctx context.Context, id uint64) (bool, err
 	return true, nil
 }
 
+// RegionNames 返回「地区 id → 名称」（一次查全表；地区数量小，不做分页）。
+func (s *regionSQLStore) RegionNames(ctx context.Context) (map[uint64]string, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id, name FROM regions")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[uint64]string{}
+	for rows.Next() {
+		var (
+			id   uint64
+			name string
+		)
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
 // RegionNameTaken 判断名称是否被别的地区占用（excludeID=0 表示新建场景）。
 //
 // 大小写敏感性跟随列的 collation（utf8mb4_unicode_ci → 不分大小写），
@@ -182,9 +205,73 @@ const regionNodeQuery = `
 	       (SELECT COUNT(*) FROM user_nodes un WHERE un.node_id = n.id) AS bound_users
 	FROM nodes n`
 
-// RegionNodes 返回某地区的节点（id 升序）。
+// RegionNodes 返回某地区的节点（id 升序），并带上每个节点上的入站及其归属。
 func (s *regionSQLStore) RegionNodes(ctx context.Context, id uint64) ([]RegionNode, error) {
-	return s.queryRegionNodes(ctx, regionNodeQuery+" WHERE n.region_id = ? ORDER BY n.id ASC", id)
+	nodes, err := s.queryRegionNodes(ctx, regionNodeQuery+" WHERE n.region_id = ? ORDER BY n.id ASC", id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachRegionInbounds(ctx, nodes); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
+// regionInboundQuery 读指定节点的入站并把「有效归属」解析出来：入站自己归属了地区就用它，
+// 否则显示节点地区（跟随）。region_name 用 LEFT JOIN 取；没有地区时为 NULL。
+const regionInboundQuery = `
+	SELECT xi.id, xi.node_id, xi.tag, xi.protocol, xi.port, xi.enabled,
+	       COALESCE(xi.region_id, n.region_id) AS eff_region_id, r.name
+	FROM xray_inbounds xi
+	INNER JOIN nodes n ON n.id = xi.node_id
+	LEFT JOIN regions r ON r.id = COALESCE(xi.region_id, n.region_id)
+	WHERE xi.node_id IN (%s)
+	ORDER BY xi.node_id ASC, xi.sort ASC, xi.id ASC`
+
+// attachRegionInbounds 一次性把 nodes 上挂的入站读出来（避免 N+1）。
+func (s *regionSQLStore) attachRegionInbounds(ctx context.Context, nodes []RegionNode) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	ids := make([]any, len(nodes))
+	placeholders := make([]string, len(nodes))
+	index := make(map[uint64]int, len(nodes))
+	for i := range nodes {
+		ids[i] = nodes[i].ID
+		placeholders[i] = "?"
+		index[nodes[i].ID] = i
+	}
+	query := fmt.Sprintf(regionInboundQuery, strings.Join(placeholders, ","))
+	rows, err := s.db.QueryContext(ctx, query, ids...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			in     RegionInbound
+			nodeID uint64
+			effID  sql.NullInt64
+			name   sql.NullString
+		)
+		if err := rows.Scan(&in.ID, &nodeID, &in.Tag, &in.Protocol, &in.Port, &in.Enabled,
+			&effID, &name); err != nil {
+			return err
+		}
+		if effID.Valid {
+			v := uint64(effID.Int64)
+			in.RegionID = &v
+		}
+		if name.Valid {
+			n := name.String
+			in.RegionName = &n
+		}
+		if i, ok := index[nodeID]; ok {
+			nodes[i].Inbounds = append(nodes[i].Inbounds, in)
+		}
+	}
+	return rows.Err()
 }
 
 // UnassignedNodes 返回 region_id IS NULL 的节点（全量下发）。

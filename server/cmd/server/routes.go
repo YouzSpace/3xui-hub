@@ -232,9 +232,13 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 
 	// 节点域（P8b）
 	nodeStore := admin.NewNodeSQLStore(db, cfg.AppKey)
+	// 地区域要先于节点域构造：入站列表要回显归属地区名（#入站级分组），
+	// NodeDomain.Regions 直接复用同一个无状态 Store。
+	regionStore := admin.NewRegionSQLStore(db)
 	nodeDomain := admin.NewNodeDomain(admin.NodeDeps{
-		Store: nodeStore,
-		Ops:   admin.NewRealNodeOps(admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")}, nodeStore, logger),
+		Store:   nodeStore,
+		Regions: regionStore,
+		Ops:     admin.NewRealNodeOps(admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")}, nodeStore, logger),
 		// 节点任务（初始化 / 入站同步 / 删除清理）必须派发，否则永远 pending。
 		Tasks: newNodeTaskDispatcher(asyncSvc, queue),
 		Config: admin.NodeConfig{
@@ -258,7 +262,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// Store 无状态（只包一个连接池），与 main.go 的采样器实例共用同一张表，
 	// 各自 new 一个不影响采样副作用。
 	regionDomain := admin.NewRegionDomain(admin.RegionDeps{
-		Store:   admin.NewRegionSQLStore(db),
+		Store:   regionStore,
 		Metrics: metrics.NewStore(db),
 		Logger:  logger,
 	})

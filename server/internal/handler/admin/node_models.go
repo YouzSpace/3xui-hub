@@ -175,13 +175,15 @@ type CommandRecord struct {
 
 // XrayInboundRecord 是 xray_inbounds 一行；RealityPrivateKey / SalamanderPassword 为明文。
 type XrayInboundRecord struct {
-	ID                uint64
-	NodeID            uint64
-	Tag               string
-	Remark            *string
-	Protocol          string
-	Port              int64
-	Listen            string
+	ID     uint64
+	NodeID uint64
+	// RegionID 是入站自己的地区归属（#入站级分组）；nil = 跟随节点地区（老数据行为）。
+	RegionID *uint64
+	Tag      string
+	Remark   *string
+	Protocol string
+	Port     int64
+	Listen   string
 	// ClientHost 是订阅链接里给客户端用的地址（CDN 域名等）；空 = 用节点地址。
 	ClientHost        *string
 	Settings          []byte // JSON
@@ -232,12 +234,16 @@ type XrayCertificatePEM struct {
 
 // XrayInboundInput 是入站落库字段（settings/stream/sniffing 已组装成 JSON）。
 type XrayInboundInput struct {
-	NodeID            uint64
-	Tag               string
-	Remark            *string
-	Protocol          string
-	Port              int64
-	Listen            string
+	NodeID uint64
+	// RegionID 是入站归属地区（#入站级分组）。RegionIDSet=false 表示本次请求没带该字段
+	// （编辑时保持原值）；true 时 RegionID=nil 表示清空 → 跟随节点地区。
+	RegionID    *uint64
+	RegionIDSet bool
+	Tag         string
+	Remark      *string
+	Protocol    string
+	Port        int64
+	Listen      string
 	// ClientHost 是订阅链接里给客户端用的地址（CDN 域名等）；空 = 用节点地址。
 	ClientHost        *string
 	Settings          []byte
@@ -528,6 +534,8 @@ type NodeStore interface {
 	// xray 入站
 	XrayInboundsByNode(ctx context.Context, nodeID uint64) ([]XrayInboundRecord, error)
 	XrayInboundByID(ctx context.Context, nodeID, id uint64) (*XrayInboundRecord, error)
+	// RegionExists 校验入站归属地区是否存在（#入站级分组：region_id 字段）。
+	RegionExists(ctx context.Context, id uint64) (bool, error)
 	XrayInboundTagTaken(ctx context.Context, nodeID uint64, tag string, excludeID *uint64) (bool, error)
 	// XrayInboundPortTaken 按「传输族」判定端口占用：families 取 tcp / udp（可能同时两个，
 	// 如 tunnel 的 settings.network=tcp,udp）。同一端口在 TCP 与 UDP 上可以并存

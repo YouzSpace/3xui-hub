@@ -36,6 +36,8 @@ export const emptyForm = () => ({
   listen: '0.0.0.0',
   // 客户端连接地址（可选）：填了订阅链接就用它（CDN 域名等），端口仍用本入站端口
   client_host: '',
+  // 入站归属地区（#入站级分组）：null = 跟随节点地区（老数据行为）
+  region_id: null,
   network: 'tcp',
   security: 'reality',
   dest: 'www.cloudflare.com:443',
@@ -192,6 +194,8 @@ export const formFromInbound = (ib) => ({
   port: ib.port,
   listen: ib.listen || '0.0.0.0',
   client_host: ib.client_host || '',
+  // 入站归属地区：null/缺省都当「跟随节点地区」
+  region_id: ib.region_id ?? null,
   network: ib.network || 'tcp',
   security: ib.security || 'none',
   dest: ib.dest || 'www.cloudflare.com:443',

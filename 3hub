@@ -4,9 +4,13 @@
 # ============================================================
 
 VERSION="1.0.0"
-INSTALL_DIR="/www/wwwroot/3xui-hub"
+# 允许环境变量覆盖安装目录 / .env 路径：仅为离线验证和特殊布局，正常部署不设置，
+# 行为与写死时完全一致。
+INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/3xui-hub}"
 # 运行时环境文件（Go 后端读仓库根 .env；install.sh 生成、3hub 改 APP_URL 都落这里）
-ENV_FILE="${INSTALL_DIR}/.env"
+ENV_FILE="${ENV_FILE:-${INSTALL_DIR}/.env}"
+# systemd 单元路径（HUB_SYSTEMD_UNIT 仅供离线验证覆盖，正常部署不设置）
+HUB_SYSTEMD_UNIT="${HUB_SYSTEMD_UNIT:-/etc/systemd/system/controlhub.service}"
 # ACME HTTP-01 挑战目录：全机统一 /var/www/acme（与现有 nginx 各站点一致）。
 #
 # 不用 frontend/dist：那是前端产物目录，会被构建/更新清空；且实测该路径从公网读到的是
@@ -113,16 +117,20 @@ ensure_nginx_node_ws() {
     grep -q '/node-ws' "$CONF" 2>/dev/null && return 0
 
     cp -f "$CONF" "${CONF}.bak-nodews"
-    python3 - "$CONF" <<'PY'
+    # 端口由调用方传入（跟着后端实际监听端口走；用户改过端口的机器补 WS 时不能写死 8080）
+    local PORT
+    PORT=$(hub_listen_port)
+    python3 - "$CONF" "$PORT" <<'PY'
 import sys
 path = sys.argv[1]
+port = sys.argv[2]
 with open(path, encoding="utf-8") as f:
     s = f.read()
 blocks = ''
 if '/node-ws' not in s:
-    blocks += '''    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
-    location /node-ws {
-        proxy_pass http://127.0.0.1:8080;
+    blocks += f'''    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
+    location /node-ws {{
+        proxy_pass http://127.0.0.1:{port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -130,19 +138,19 @@ if '/node-ws' not in s:
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
-    }
+    }}
 
 '''
 if 'node-install' not in s:
-    blocks += '''    # xray 节点资产与安装脚本（Go 后端动态提供）
-    location ~ ^/(node-install\\.sh|node-agent\\.sh|node-bin/) {
-        proxy_pass http://127.0.0.1:8080;
+    blocks += f'''    # xray 节点资产与安装脚本（Go 后端动态提供）
+    location ~ ^/(node-install\\.sh|node-agent\\.sh|node-bin/) {{
+        proxy_pass http://127.0.0.1:{port};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         # XFF 覆盖语义：整条由 nginx 重写，丢弃客户端自带值（追加语义会把伪造地址留在首位）
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
-    }
+    }}
 
 '''
 if not blocks:
@@ -284,14 +292,50 @@ nginx_guard_selfcheck() {
     _ensure_aux_nginx_files && echo -e "  ${GREEN}已补回${NC}"
 }
 
+# unit 里现有的监听端口（没有 unit / 没有 LISTEN_ADDR 时输出空）。
+# 与 install.sh 的同名函数保持同一实现；迁移/诊断要靠它拿到「迁移前的原端口」。
+unit_listen_port() {
+    local unit="${1:-${HUB_SYSTEMD_UNIT}}"
+    [ -f "$unit" ] || return 0
+    grep -oE 'LISTEN_ADDR=[^[:space:]]*' "$unit" 2>/dev/null \
+        | head -1 | sed -E 's/^LISTEN_ADDR=//; s/^.*://'
+}
+
+# 后端实际监听端口 —— nginx upstream / 诊断输出 / 改端口三处唯一来源。
+#
+# 优先级：
+#   1) HUB_LISTEN_PORT：cmd_port 渲染新 conf 时临时覆盖（此时 unit 还没改）；
+#   2) systemd unit 的 LISTEN_ADDR：后端真正生效的值（unit 里 Environment= 优先于 .env，
+#      godotenv 不覆盖已存在的环境变量），也是老用户升级后端口不变的依据；
+#   3) $ENV_FILE 的 LISTEN_ADDR：没有 unit 的部署（容器 / 手工跑二进制）只能看 .env；
+#   4) 都读不到 → 8080（与后端 envOr 默认值一致）。
+# 解析不出端口（被手改成域名等）时逐级回落，不让 nginx 生成非法 upstream。
+hub_listen_port() {
+    local p=""
+    if [ -n "${HUB_LISTEN_PORT:-}" ]; then
+        echo "${HUB_LISTEN_PORT}"
+        return 0
+    fi
+    p=$(unit_listen_port "${HUB_SYSTEMD_UNIT}")
+    if [ -z "$p" ] && [ -f "${ENV_FILE}" ]; then
+        p=$(grep -oE '^LISTEN_ADDR=[^[:space:]]*' "${ENV_FILE}" 2>/dev/null \
+            | head -1 | sed -E 's/^LISTEN_ADDR=//; s/^.*://')
+    fi
+    case "$p" in
+        '' | *[!0-9]*) p="8080" ;;
+    esac
+    echo "$p"
+}
+
 # render_nginx_conf <domain> <cert前缀|""> <out>
 #   cert 为空 = 不启用 SSL（只出 80 段）
 render_nginx_conf() {
     local DOMAIN="$1" CERT="$2" OUT="$3"
-    local UP='upstream controlhub_backend {
-    server 127.0.0.1:8080;
+    # upstream 端口跟着后端实际监听端口走，否则改过端口的机器一 update 就被打回 8080 → 整站 502
+    local UP="upstream controlhub_backend {
+    server 127.0.0.1:$(hub_listen_port);
     keepalive 32;
-}'
+}"
     local GZ='    # 文本资源 gzip：Go 不压缩，由 nginx 压代理回来的响应
     gzip on;
     gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
@@ -477,12 +521,14 @@ _migrate_xff_in_file() {
 }
 
 # _migrate_listen_in_unit <unit> <时间戳>
+# 只把「裸端口 / 通配地址」收敛成回环，端口号原样保留（反向引用取原端口）：
+# 用户自定义过 18080 的机器升级后仍是 18080，绝不能被写回 8080。
 _migrate_listen_in_unit() {
     local unit="$1" stamp="$2"
     [ -f "$unit" ] || return 1
-    grep -Eq 'LISTEN_ADDR=(:8080|0\.0\.0\.0:8080)' "$unit" 2>/dev/null || return 1
+    grep -Eq 'LISTEN_ADDR=(:|0\.0\.0\.0:)' "$unit" 2>/dev/null || return 1
     cp -f "$unit" "${unit}.bak.${stamp}" 2>/dev/null || return 2
-    if ! sed -i -E 's/LISTEN_ADDR=(:8080|0\.0\.0\.0:8080)/LISTEN_ADDR=127.0.0.1:8080/g' "$unit" 2>/dev/null; then
+    if ! sed -i -E 's/LISTEN_ADDR=(:|0\.0\.0\.0:)([0-9]+)/LISTEN_ADDR=127.0.0.1:\2/g' "$unit" 2>/dev/null; then
         cp -f "${unit}.bak.${stamp}" "$unit" 2>/dev/null || true
         return 2
     fi
@@ -531,11 +577,12 @@ migrate_nginx_xff() {
     return 0
 }
 
-# 把 controlhub.service 的监听地址收敛到 127.0.0.1:8080（覆盖 :8080 / 0.0.0.0:8080）。
+# 把 controlhub.service 的监听地址收敛到 127.0.0.1:<原端口>（覆盖裸 :PORT / 0.0.0.0:PORT）。
 migrate_listen_addr() {
-    # HUB_SYSTEMD_UNIT 仅供离线验证覆盖，正常部署不设置
-    local unit="${HUB_SYSTEMD_UNIT:-/etc/systemd/system/controlhub.service}" stamp rc
+    local unit="${HUB_SYSTEMD_UNIT}" stamp rc old_port
     stamp="$(date +%Y%m%d%H%M%S)"
+    # 迁移前先记下原端口，用于提示（迁移保留端口号，只改地址）
+    old_port=$(unit_listen_port "$unit")
     _migrate_listen_in_unit "$unit" "$stamp"
     rc=$?
     [ "$rc" -eq 1 ] && return 0
@@ -548,7 +595,7 @@ migrate_listen_addr() {
         || echo -e "${YELLOW}⚠ systemctl daemon-reload 失败，请手工执行${NC}"
     systemctl restart controlhub >/dev/null 2>&1 \
         || echo -e "${YELLOW}⚠ controlhub 重启失败，请运行: journalctl -u controlhub${NC}"
-    echo "controlhub.service: LISTEN_ADDR 已改为 127.0.0.1:8080（仅本机监听）"
+    echo "controlhub.service: LISTEN_ADDR 已改为 127.0.0.1:${old_port}（仅本机监听）"
     return 0
 }
 
@@ -746,6 +793,7 @@ CMDS=(
     "backup"
     "log"
     "restart"
+    "port"
     "ssl"
     "domain"
     "fix-nginx"
@@ -764,6 +812,7 @@ CMD_LABELS=(
     "数据库备份（导出到 /var/backups/3xui-hub，保留 7 份，每天 03:30 自动备份）"
     "查看最近错误日志"
     "重启 controlhub 后端服务"
+    "查看当前监听端口 / 修改端口 (3hub port [新端口])"
     "配置域名和 SSL 证书"
     "多域名管理 (add/renew/remove/status)"
     "补全 nginx 节点资产 location（老版本升级后用）"
@@ -785,6 +834,8 @@ show_help() {
     echo "示例:"
     echo "  3hub status"
     echo "  3hub 1          # 等同于 3hub status"
+    echo "  3hub port       # 查看面板监听端口（诊断: 占用 + nginx upstream）"
+    echo "  3hub port 18080 # 修改面板监听端口（systemd + nginx 一起改）"
     echo "  3hub domain add example.com"
 }
 
@@ -805,6 +856,7 @@ cmd_status() {
         BACKEND_VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     fi
     echo -e "后端版本:  ${GREEN}${BACKEND_VER:-未知}${NC}"
+    echo -e "监听端口:  ${GREEN}127.0.0.1:$(hub_listen_port)${NC}（改端口: 3hub port <新端口>）"
 
     # 数据库
     if command -v mysql &>/dev/null; then
@@ -1121,21 +1173,28 @@ cmd_update_phase2() {
     # 已存在则不覆盖（保留用户可能改过的 RestartSec 等）。
     if [ ! -f /etc/systemd/system/controlhub.service ]; then
         echo -e "${CYAN}创建 controlhub.service（老机器升级缺失）...${NC}"
+        # 端口跟随现有配置：unit 这时还不存在，hub_listen_port 会读 .env 里已配置的
+        # LISTEN_ADDR，都没有才落到 8080。写死 8080 会把老机器 .env 的自定义端口冲掉。
+        local HUB_PORT
+        HUB_PORT=$(hub_listen_port)
         cat > /etc/systemd/system/controlhub.service << EOF
 [Unit]
 Description=ControlHub Go 后端（面板 API + 定时调度 + 节点 WS 通道）
 After=network.target mysqld.service mariadb.service mysql.service
 Wants=network-online.target
+# 与 install.sh 的模板保持一致：端口被占这类持续性错误 5 次内停手，不无限重拉刷日志
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}/server
 Environment=CONFIG_ENV=${ENV_FILE}
-# 只听本机：nginx 与本服务同机，反代走 127.0.0.1:8080。
-# 写成 :8080 等于把 8080 暴露到公网，攻击者可绕过 nginx 直连并自带 X-Forwarded-For 伪造来源 IP。
-# 确有必要对外直连时再显式改成 0.0.0.0:8080（注意此时务必同时设置 TRUSTED_PROXIES）。
-Environment=LISTEN_ADDR=127.0.0.1:8080
+# 只听本机：nginx 与本服务同机，反代走 127.0.0.1:${HUB_PORT}（沿用 .env 已配置的端口）。
+# 写成 :${HUB_PORT} 等于把端口暴露到公网，攻击者可绕过 nginx 直连并自带 X-Forwarded-For 伪造来源 IP。
+# 确有必要对外直连时再显式改成 0.0.0.0:${HUB_PORT}（注意此时务必同时设置 TRUSTED_PROXIES）。
+Environment=LISTEN_ADDR=127.0.0.1:${HUB_PORT}
 ExecStart=${INSTALL_DIR}/server/controlhub-server
 Restart=always
 RestartSec=3
@@ -1615,6 +1674,144 @@ cmd_ssl() {
     echo -e "  续期:   acme.sh 已装 cron，自动续期后 reload nginx"
 }
 
+# 面板端口：查看 / 修改
+#
+# 为什么要有这条命令：端口一旦写死在 unit + nginx 两处，任何一处手改都会被 update 的
+# 模板收敛打回去（后端在 18080 而 nginx 反代 8080 = 整站 502）。这里把两处当成一件事改：
+# 先改 unit（唯一的真源），再用同一个值重渲染 nginx，校验不过就整组回滚。
+#
+#   3hub port            打印端口 + 占用情况 + nginx 实际 upstream（诊断三件套）
+#   3hub port 18080      换端口
+#
+# 改端口全程 fail-safe：unit 改前备份、nginx -t 不过就把 unit 与 conf 一起恢复并重启回原端口。
+cmd_port() {
+    local NEW="${1:-}"
+    local unit="${HUB_SYSTEMD_UNIT}"
+    local conf cur
+
+    check_install
+
+    # 无参数：诊断
+    if [ -z "$NEW" ]; then
+        cur=$(hub_listen_port)
+        echo -e "${CYAN}=== 面板监听端口 ===${NC}"
+        echo ""
+        echo -e "当前端口:  ${GREEN}${cur}${NC}"
+        echo -e "来源:      ${unit}（找不到时回退 ${ENV_FILE}）"
+        echo ""
+        echo -e "${CYAN}--- 端口占用（ss -tlnp）---${NC}"
+        ss -tlnp "sport = :${cur}" 2>/dev/null || echo "（ss 不可用或没有结果）"
+        echo ""
+        conf="$(nginx_conf_path)"
+        echo -e "${CYAN}--- nginx 实际 upstream（${conf}）---${NC}"
+        if [ -f "$conf" ]; then
+            grep -nE 'proxy_pass[[:space:]]+http://' "$conf" 2>/dev/null || echo "（conf 里没有 proxy_pass）"
+        else
+            echo "（conf 不存在: ${conf}）"
+        fi
+        return 0
+    fi
+
+    # 校验端口号（先规范化前导零：08080 → 8080，否则写进 unit 后端解析失败）
+    if ! [[ "$NEW" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}端口必须是 1-65535 的数字: ${NEW}${NC}"
+        return 1
+    fi
+    NEW=$((10#$NEW))
+    if [ "$NEW" -lt 1 ] || [ "$NEW" -gt 65535 ]; then
+        echo -e "${RED}端口必须是 1-65535 的数字: ${NEW}${NC}"
+        return 1
+    fi
+
+    cur=$(hub_listen_port)
+    if [ "$NEW" = "$cur" ]; then
+        echo -e "${GREEN}面板已经在 ${NEW} 端口上，无需修改${NC}"
+        return 0
+    fi
+
+    # 新端口被占时拒绝 —— 但 controlhub 自己占着不算（重启前它还在旧端口，这里只是兜底）。
+    if ss -tln "sport = :${NEW}" 2>/dev/null | grep -q LISTEN; then
+        if ss -tlnp "sport = :${NEW}" 2>/dev/null | grep -q 'controlhub'; then
+            echo -e "${YELLOW}注意: ${NEW} 当前被 controlhub 自身占用，继续切换${NC}"
+        else
+            echo -e "${RED}端口 ${NEW} 已被占用，换一个${NC}"
+            ss -tlnp "sport = :${NEW}" 2>/dev/null || true
+            return 1
+        fi
+    fi
+
+    conf="$(nginx_conf_path)"
+    local stamp unit_bak conf_bak env_bak
+    stamp="$(date +%Y%m%d%H%M%S)"
+    unit_bak="${unit}.bak.${stamp}"
+    conf_bak="${conf}.bak.port.${stamp}"
+    env_bak="${ENV_FILE}.bak.port.${stamp}"
+
+    # 1) unit：只改 LISTEN_ADDR 的地址（保留 127.0.0.1 回环语义，端口换成新值）。
+    #    unit 里没有 LISTEN_ADDR（极老的机器）就补一行到 [Service] 段之后。
+    cp -f "$unit" "$unit_bak" 2>/dev/null || { echo -e "${RED}备份 ${unit} 失败，未做任何修改${NC}"; return 1; }
+    if grep -q '^Environment=LISTEN_ADDR=' "$unit" 2>/dev/null; then
+        sed -i -E "s|^Environment=LISTEN_ADDR=.*|Environment=LISTEN_ADDR=127.0.0.1:${NEW}|" "$unit"
+    else
+        sed -i "/^\[Service\]/a Environment=LISTEN_ADDR=127.0.0.1:${NEW}" "$unit"
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    # 1b) .env 同步（三处同源）：运行时以 unit 的 Environment 为准，但 Docker / 手工起
+    #     二进制只读 .env —— 不同步会出现「unit 18080、.env 8080」的隐性不一致。
+    if [ -f "$ENV_FILE" ]; then
+        cp -f "$ENV_FILE" "$env_bak" 2>/dev/null || true
+        if grep -q '^LISTEN_ADDR=' "$ENV_FILE" 2>/dev/null; then
+            sed -i "s|^LISTEN_ADDR=.*|LISTEN_ADDR=127.0.0.1:${NEW}|" "$ENV_FILE"
+        else
+            printf '\nLISTEN_ADDR=127.0.0.1:%s\n' "${NEW}" >> "$ENV_FILE"
+        fi
+    fi
+
+    # 2) nginx：用新端口渲染（HUB_LISTEN_PORT 临时覆盖优先级，避免读到还没生效的旧值）
+    if [ -f "$conf" ]; then
+        cp -f "$conf" "$conf_bak" 2>/dev/null || true
+        HUB_LISTEN_PORT="$NEW" ensure_nginx_go_proxy >/dev/null 2>&1 || true
+    fi
+
+    # 3) 重启后端；起不来说明新端口有问题（被占 / 权限），整组回滚
+    systemctl restart controlhub >/dev/null 2>&1 || true
+    sleep 1
+    local ok=1
+    if ! systemctl is-active --quiet controlhub; then
+        ok=0
+        echo -e "${RED}后端在新端口 ${NEW} 启动失败，正在回滚到 ${cur}${NC}"
+        journalctl -u controlhub -n 10 --no-pager 2>/dev/null || true
+    fi
+
+    # 4) nginx 校验；不过同样回滚
+    if [ "$ok" -eq 1 ] && ! nginx -t >/dev/null 2>&1; then
+        ok=0
+        echo -e "${RED}nginx -t 未通过（upstream 已指向 ${NEW}），正在回滚到 ${cur}${NC}"
+        nginx -t 2>&1 | tail -3
+    fi
+
+    if [ "$ok" -eq 0 ]; then
+        # 回滚：unit → 原端口，conf → 原内容，后端重启回原端口，nginx 不变
+        mv -f "$unit_bak" "$unit" 2>/dev/null || true
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        [ -f "$conf_bak" ] && mv -f "$conf_bak" "$conf" 2>/dev/null || true
+        [ -f "$env_bak" ] && mv -f "$env_bak" "$ENV_FILE" 2>/dev/null || true
+        systemctl restart controlhub >/dev/null 2>&1 || true
+        echo -e "${YELLOW}已回滚，面板仍在 ${cur} 端口${NC}"
+        return 1
+    fi
+
+    systemctl reload nginx >/dev/null 2>&1 || true
+    rm -f "$unit_bak" "$conf_bak" "$env_bak" 2>/dev/null || true
+
+    echo -e "${GREEN}面板端口已改为 ${NEW}${NC}"
+    echo -e "  systemd: ${unit} → LISTEN_ADDR=127.0.0.1:${NEW}"
+    echo -e "  nginx:   $(grep -oE 'server 127\.0\.0\.1:[0-9]+' "$conf" 2>/dev/null | head -1)"
+    echo -e "  ${YELLOW}以后升级用 3hub update，端口不会被改回 8080。${NC}"
+    return 0
+}
+
 cmd_restart() {
     echo -e "${CYAN}重启服务...${NC}"
 
@@ -1760,6 +1957,7 @@ run_cmd() {
         backup)       cmd_backup ;;
         log)          cmd_log ;;
         restart)      cmd_restart ;;
+        port)         shift; cmd_port "$@" ;;
         fix-nginx)    cmd_fix_nginx ;;
         cf-realip)    shift; cmd_cf_realip "$@" ;;
         ssl)          cmd_ssl ;;

@@ -47,7 +47,20 @@ beforeEach(() => {
   adminApi.listRegions = vi.fn(() => Promise.resolve(REGIONS))
   adminApi.listNodes = vi.fn(() => Promise.resolve(NODES))
   adminApi.regionOverview = vi.fn(() => Promise.resolve(OVERVIEW))
-  adminApi.listRegionNodes = vi.fn((id) => Promise.resolve(NODES.filter((n) => n.region_id === id)))
+  // 入站归属（#入站级分组）：节点展开时带 inbounds（有效归属地区名）
+  adminApi.listRegionNodes = vi.fn((id) =>
+    Promise.resolve(
+      NODES.filter((n) => n.region_id === id).map((n) => ({
+        ...n,
+        inbounds: id === 1 && n.id === 11
+          ? [
+              { id: 101, tag: 'vless-443', protocol: 'vless', port: 443, enabled: true, region_id: 1, region_name: '香港' },
+              { id: 102, tag: 'hy2-8443', protocol: 'hysteria', port: 8443, enabled: true, region_id: null, region_name: null },
+            ]
+          : [],
+      })),
+    ),
+  )
   adminApi.deleteRegion = vi.fn(() => Promise.resolve({}))
   adminApi.balanceRegion = vi.fn(() => Promise.resolve({ moved: 0 }))
   // 地区功能-22：默认无告警；推荐只给 hk-1（high）/ hk-2（low），其余拿不到
@@ -370,5 +383,23 @@ describe('Regions.vue — 建议容量 / 采用', () => {
     expect(toast.success).toHaveBeenCalled()
     // 采用后重新拉一遍页面数据
     expect(adminApi.listRegions).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Regions.vue — 入站归属（#入站级分组）', () => {
+  it('展开地区后，节点下面列出各入站的归属；无归属显示「跟随节点」', async () => {
+    const wrapper = await mountPage()
+    await regionRow(wrapper, '香港').trigger('click')
+    await flushPromises()
+
+    const row = wrapper.findAll('tr.rg-inbounds-row')
+    expect(row.length).toBeGreaterThan(0)
+    const text = row[0].text()
+    expect(text).toContain('入站归属')
+    expect(text).toContain('vless-443')
+    expect(text).toContain('香港')
+    // 入站 region_id 为 null → 跟随节点地区
+    expect(text).toContain('hy2-8443')
+    expect(text).toContain('跟随节点')
   })
 })

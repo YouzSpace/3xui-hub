@@ -539,6 +539,10 @@ func presentRegionSummary(r *RegionSummary) *jsObj {
 // agree_ratio 在 capacity 为 NULL（不限）或 <=0 时输出 null：
 // 有限容量才有「水位」，前端据此显示进度条还是「不限」。
 func presentRegionNode(n *RegionNode) *jsObj {
+	inbounds := make(jsArr, 0, len(n.Inbounds))
+	for i := range n.Inbounds {
+		inbounds = append(inbounds, presentRegionInbound(&n.Inbounds[i]))
+	}
 	return jo(
 		"id", n.ID,
 		"name", n.Name,
@@ -548,6 +552,23 @@ func presentRegionNode(n *RegionNode) *jsObj {
 		"capacity", nullableInt(n.Capacity),
 		"bound_users", n.BoundUsers,
 		"agree_ratio", regionAgreeRatio(n.BoundUsers, n.Capacity),
+		"inbounds", inbounds,
+	)
+}
+
+// presentRegionInbound 输出入站归属一行（#入站级分组，只读展示）。
+//
+// region_id/region_name 是**有效归属**：入站自己归了地区就它，否则是节点地区；
+// 都没有则为 null（前端显示「跟随节点」）。
+func presentRegionInbound(in *RegionInbound) *jsObj {
+	return jo(
+		"id", in.ID,
+		"tag", in.Tag,
+		"protocol", in.Protocol,
+		"port", in.Port,
+		"enabled", in.Enabled,
+		"region_id", nullableUint(in.RegionID),
+		"region_name", nullableStr(in.RegionName),
 	)
 }
 

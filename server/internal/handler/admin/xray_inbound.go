@@ -28,10 +28,11 @@ func (d *NodeDomain) xrayInboundIndex(c *gin.Context) {
 		d.failServer(c, "统计可用用户", err)
 		return
 	}
+	regionNames := d.regionNames(c)
 
 	items := make(jsArr, 0, len(inbounds))
 	for i := range inbounds {
-		items = append(items, presentXrayInbound(&inbounds[i], counts))
+		items = append(items, presentXrayInboundWithRegion(&inbounds[i], counts, regionNames))
 	}
 	d.success(c, jo(
 		"inbounds", items,
@@ -83,7 +84,7 @@ func (d *NodeDomain) xrayInboundStore(c *gin.Context) {
 		return
 	}
 	resp := jo(
-		"inbound", presentXrayInbound(created, counts),
+		"inbound", presentXrayInboundWithRegion(created, counts, d.regionNames(c)),
 		"config_version", version,
 	)
 	// 入站已落库，防火墙这一步只报状态：下发失败不能让创建算失败。
@@ -137,7 +138,7 @@ func (d *NodeDomain) xrayInboundUpdate(c *gin.Context) {
 		return
 	}
 	resp := jo(
-		"inbound", presentXrayInbound(updated, counts),
+		"inbound", presentXrayInboundWithRegion(updated, counts, d.regionNames(c)),
 		"config_version", version,
 	)
 	// 入站已落库，防火墙这一步只报状态：下发失败不能让保存算失败。
@@ -248,6 +249,23 @@ func (d *NodeDomain) xrayInboundBatchDestroy(c *gin.Context) {
 // noRowsToNotFoundQuiet 判断「查无此行」且不写响应（batch 里要按 id 回报）。
 func (d *NodeDomain) noRowsToNotFoundQuiet(err error) bool {
 	return err != nil && d.noRowsToNotFoundSilent(err)
+}
+
+// regionNames 取「地区 id → 名称」用于入站响应回显（#入站级分组）。
+//
+// regions 未注入（老构造方式 / 单测）时返回空表，presentXrayInboundWithRegion 就会把
+// region_name 输出成 null —— 入站本身照常读写，不因为地区查询失败而 500（读不到名称
+// 只是少一个展示字段，不该挡住整个列表）。
+func (d *NodeDomain) regionNames(c *gin.Context) map[uint64]string {
+	if d.regions == nil {
+		return nil
+	}
+	names, err := d.regions.RegionNames(ctxOf(c))
+	if err != nil {
+		d.logger.Printf("admin 读取地区名称失败（入站 region_name 将为空）: %v", err)
+		return nil
+	}
+	return names
 }
 
 // loadOwnedInbound 取 URL 里的入站并校验归属（PHP ensureOwned → abort(404)）。

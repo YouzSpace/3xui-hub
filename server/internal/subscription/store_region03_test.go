@@ -47,13 +47,28 @@ var region03SchemaDDL = []string{
 		PRIMARY KEY (id),
 		UNIQUE KEY node_inbounds_node_id_protocol_inbound_id_unique (node_id, protocol, inbound_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+	// 入站级分组（3.1.0）：region_id 参与「有效地区 = COALESCE(入站, 节点)」过滤，
+	// tag 让用例能给同节点多个入站起可读的名字（订阅用例只按 region_id 造数据）。
+	// 列与 SQLRepository.XrayInbounds 的 SELECT 逐列对齐（少了任何一列读数就报 1054）。
 	`CREATE TABLE xray_inbounds (
 		id bigint unsigned NOT NULL AUTO_INCREMENT,
 		node_id bigint unsigned NOT NULL,
+		region_id bigint unsigned DEFAULT NULL,
+		tag varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+		remark varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
 		protocol varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
+		port int unsigned NOT NULL DEFAULT '443',
+		listen varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '0.0.0.0',
+		client_host varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+		settings json DEFAULT NULL,
+		stream_settings json DEFAULT NULL,
+		salamander_password text COLLATE utf8mb4_unicode_ci,
 		enabled tinyint(1) NOT NULL DEFAULT '1',
+		sort int unsigned NOT NULL DEFAULT '0',
 		PRIMARY KEY (id),
-		KEY xray_inbounds_node_id_enabled_index (node_id, enabled)
+		UNIQUE KEY xray_inbounds_node_id_tag_unique (node_id, tag),
+		KEY xray_inbounds_node_id_enabled_index (node_id, enabled),
+		KEY idx_xray_inbounds_region (region_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	// 与 cmd/server/schema.go 的 user_nodes 完全一致（含 idx_node）。
 	`CREATE TABLE user_nodes (
@@ -68,11 +83,25 @@ var region03SchemaDDL = []string{
 		plan_id bigint unsigned DEFAULT NULL,
 		PRIMARY KEY (id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+	// plans 的列与 SQLRepository.PlanByID 的 SELECT 对齐（type/months/include_local/
+	// third_party_sub_ids/region_ids）；端到端 Generate 用例会整行读。
 	`CREATE TABLE plans (
 		id bigint unsigned NOT NULL AUTO_INCREMENT,
 		name varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+		type varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'period',
+		months int DEFAULT NULL,
+		include_local tinyint(1) NOT NULL DEFAULT 1,
+		third_party_sub_ids text COLLATE utf8mb4_unicode_ci,
 		region_ids json DEFAULT NULL,
 		PRIMARY KEY (id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+	// 端到端 Generate 用例会读站点配置；空表即「全部取默认值」。
+	`CREATE TABLE site_configs (
+		id bigint unsigned NOT NULL AUTO_INCREMENT,
+		` + "`key`" + ` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+		` + "`value`" + ` text COLLATE utf8mb4_unicode_ci,
+		PRIMARY KEY (id),
+		UNIQUE KEY site_configs_key_unique (` + "`key`" + `)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 }
 

@@ -42,7 +42,7 @@ const (
 	//
 	// 内置 direct/blocked、负载均衡 tag、UDP 出站（wireguard/warp）由面板侧过滤，
 	// 不会出现在 payload 里。agent 侧实现不在本仓（本任务只定义协议）。
-	ActionOutboundTest = "outbound_test"
+	ActionOutboundTest = "test_outbound"
 
 	// 以下是端口跳跃（HY2 udpHop，issue #94 R1–R3）的四个窄接口 action。
 	//

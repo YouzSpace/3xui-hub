@@ -42,7 +42,7 @@ APP_NAME=ControlHub
 APP_ENV=production
 APP_KEY=${APP_KEY:-${APP_KEY_GEN}}
 APP_DEBUG=false
-APP_URL=${APP_URL:-http://localhost:8080}
+APP_URL=${APP_URL:-http://localhost:${CONTROLHUB_PORT:-8080}}
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
@@ -68,7 +68,7 @@ fi
 
 echo "=========================================="
 echo " 启动完成！"
-echo " 访问: ${APP_URL:-http://localhost:8080}"
+echo " 访问: ${APP_URL:-http://localhost:${CONTROLHUB_PORT:-8080}}"
 echo "=========================================="
 
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

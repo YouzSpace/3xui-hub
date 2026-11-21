@@ -246,14 +246,14 @@ func (s *Service) getLinks(ctx context.Context, user *User, plan *Plan, cfg *sit
 		// 这里用同一套「分批 + 批内并发 + 按批序收集」：并发只影响耗时，不影响顺序 ——
 		// 结果按 batch 内原顺序落位，与 PHP 的 foreach ($batch as $entry) 一致。
 		for _, batch := range chunkEntries(concurrent, s.concurrency()) {
-			nodeLinks := s.fetchBatchConcurrently(ctx, batch, user, email, cfg, st)
+			nodeLinks := s.fetchBatchConcurrently(ctx, batch, user, plan, email, cfg, st)
 			for _, perNode := range nodeLinks {
 				links = appendUnique(links, perNode...)
 			}
 		}
 
 		for _, entry := range sequential {
-			nodeLinks, err := s.fetchNodeLinks(ctx, entry.node, entry.inboundIDs, user, email, cfg)
+			nodeLinks, err := s.fetchNodeLinks(ctx, entry.node, entry.inboundIDs, user, plan, email, cfg)
 			if err != nil {
 				// 单节点取数失败照旧只跳过该节点（日志已在 fetchNodeLinks 里记），
 				// 但本次渲染残缺 → 不能进缓存。
@@ -309,7 +309,7 @@ func chunkEntries(items []nodeEntry, size int) [][]nodeEntry {
 //
 // 单节点失败只丢该节点（PHP 侧 report 后 continue），不影响同批其它节点；
 // 但仍要把本次渲染标记为残缺 —— 残缺结果不能进缓存。
-func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry, user *User, email string, cfg *siteConfigReader, st *renderStats) [][]string {
+func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry, user *User, plan *Plan, email string, cfg *siteConfigReader, st *renderStats) [][]string {
 	results := make([][]string, len(batch))
 	var wg sync.WaitGroup
 
@@ -318,7 +318,7 @@ func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nodeLinks, err := s.fetchNodeLinks(ctx, entry.node, entry.inboundIDs, user, email, cfg)
+			nodeLinks, err := s.fetchNodeLinks(ctx, entry.node, entry.inboundIDs, user, plan, email, cfg)
 			if err != nil {
 				results[i] = nil // 与单节点失败同口径：该节点不产出链接
 				st.markFailed()
@@ -336,11 +336,11 @@ func (s *Service) fetchBatchConcurrently(ctx context.Context, batch []nodeEntry,
 //
 // 返回 error 表示该节点本次取数失败（含请求取消/超时）：链接不可信，调用方只丢该节点，
 // 并把本次渲染标记为残缺。日志在这里统一记（带节点 id/名称），调用方不必重复打。
-func (s *Service) fetchNodeLinks(ctx context.Context, node Node, inboundIDs []int64, user *User, email string, cfg *siteConfigReader) ([]string, error) {
+func (s *Service) fetchNodeLinks(ctx context.Context, node Node, inboundIDs []int64, user *User, plan *Plan, email string, cfg *siteConfigReader) ([]string, error) {
 	var raw []string
 
 	if node.IsXray() {
-		uris, err := xraySubscriptionURIs(node, user, ctx, s.repo)
+		uris, err := xraySubscriptionURIs(node, user, plan, ctx, s.repo)
 		if err != nil {
 			// 取入站失败不是「该节点没有入站」：必须留痕，否则用户看到订阅少节点却无从追查。
 			s.logf("[sub] 节点 %d/%s 取入站失败%s: %v", node.ID, node.Name, contextErrHint(err), err)
@@ -370,7 +370,11 @@ func (s *Service) fetchNodeLinks(ctx context.Context, node Node, inboundIDs []in
 //
 // 读库失败**不能**等同于「该节点没有入站」：返回 error 由调用方留日志并标记本次渲染残缺
 // （issue #141：一次请求取消就静默少十几个节点，而且残缺结果还会被缓存一个 TTL）。
-func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repository) ([]string, error) {
+//
+// plan 非空且限了地区时，只输出「有效地区命中套餐地区」的入站（#入站级分组）：
+// 有效地区 = COALESCE(入站地区, 节点地区)，与 planregion.InboundNodeFilter 同一口径。
+// 节点没有任何命中入站 → 该节点一条链接都不产出（调用方已按 SQL 过滤掉整台，这里兜底）。
+func xraySubscriptionURIs(node Node, user *User, plan *Plan, ctx context.Context, repo Repository) ([]string, error) {
 	host := phpTrim(node.Host)
 	hostV6 := node.HostV6()
 	// issue #88：只配了 host_v6、没配 host 的节点仍然可以有 v6 入口的链接，
@@ -386,6 +390,9 @@ func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repos
 
 	uris := make([]string, 0, len(inbounds))
 	for _, inbound := range inbounds {
+		if !inboundRegionAllowed(inbound, node, plan) {
+			continue
+		}
 		// 用户全协议通用：节点上启用的每个入站都出一条链接，不按 users.protocol 过滤。
 		inboundHost := strings.TrimSpace(inbound.ClientHost)
 		if inboundHost == "" {
@@ -400,6 +407,38 @@ func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repos
 	}
 	// PHP 侧 XrayDriver::getClientLinks 返回后还要过一遍 sanitizeLinks（过滤空串、去重）。
 	return sanitizeLinks(uris), nil
+}
+
+// effectiveRegion 是入站的有效地区：入站自己的归属优先，否则跟随节点。
+// 返回 nil 表示「不属于任何地区」—— 这种入站永远不受套餐地区限制（老数据行为）。
+func effectiveRegion(inbound XrayInbound, node Node) *int64 {
+	if inbound.RegionID != nil {
+		return inbound.RegionID
+	}
+	return node.RegionID
+}
+
+// inboundRegionAllowed 判断该入站是否允许出现在订阅里（#入站级分组）。
+//
+//   - 套餐不限地区 / 用户没套餐（plan 为 nil 或 RegionRestricted=false）→ 全部允许；
+//   - 限了地区 → 有效地区为 NULL（未归属）或命中套餐地区才允许。
+//
+// 与 planregion.InboundNodeFilter 的 SQL 分支一一对应：SQL 负责把「一个命中入站都没有」
+// 的节点整台筛掉，这里负责把同节点上「没命中的入站」逐条筛掉。
+func inboundRegionAllowed(inbound XrayInbound, node Node, plan *Plan) bool {
+	if plan == nil || !plan.RegionRestricted {
+		return true
+	}
+	region := effectiveRegion(inbound, node)
+	if region == nil {
+		return true
+	}
+	for _, id := range plan.RegionIDs {
+		if id == *region {
+			return true
+		}
+	}
+	return false
 }
 
 // isBearerNode 对应 canFetchConcurrently()：3x-ui 节点 + api_key 非空（Bearer 无状态）。

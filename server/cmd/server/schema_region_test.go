@@ -307,6 +307,32 @@ func TestEnsureSchemaRegionsIdempotent(t *testing.T) {
 			t.Fatalf("nodes.%s 必须可空，实际 IS_NULLABLE=%s", column, nullable)
 		}
 	}
+	// 入站级分组（3.1.0）：xray_inbounds.region_id 必须被加上且可空 ——
+	// 老数据全 NULL = 跟随节点地区，行为与升级前一致。
+	var inboundRegionType, inboundRegionNullable string
+	if err := db.QueryRow(
+		"SELECT COLUMN_TYPE, IS_NULLABLE FROM information_schema.COLUMNS "+
+			"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='xray_inbounds' AND COLUMN_NAME='region_id'").
+		Scan(&inboundRegionType, &inboundRegionNullable); err != nil {
+		t.Fatalf("ensureSchema 没给 xray_inbounds 加 region_id 列: %v", err)
+	}
+	if inboundRegionType != "bigint unsigned" {
+		t.Fatalf("xray_inbounds.region_id 类型 = %s，期望 bigint unsigned", inboundRegionType)
+	}
+	if inboundRegionNullable != "YES" {
+		t.Fatalf("xray_inbounds.region_id 必须可空（NULL=跟随节点地区），实际 IS_NULLABLE=%s", inboundRegionNullable)
+	}
+	var inboundIdx string
+	if err := db.QueryRow(
+		"SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS " +
+			"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='xray_inbounds' AND INDEX_NAME='idx_xray_inbounds_region'").
+		Scan(&inboundIdx); err != nil {
+		t.Fatalf("取 idx_xray_inbounds_region 失败: %v", err)
+	}
+	if inboundIdx != "region_id" {
+		t.Fatalf("idx_xray_inbounds_region 的列 = %q，期望 region_id", inboundIdx)
+	}
+
 	// 套餐地区（#地区功能-15）：plans.region_ids 必须被加上，JSON 且可空 —— 老套餐就是 NULL（不限地区）。
 	var regionIDsType, regionIDsNullable string
 	if err := db.QueryRow(

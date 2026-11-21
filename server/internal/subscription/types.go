@@ -50,6 +50,12 @@ type Plan struct {
 	Months           int64
 	IncludeLocal     bool
 	ThirdPartySubIDs []int64
+
+	// RegionIDs / RegionRestricted 是套餐允许的地区（#地区功能-15）。
+	// RegionRestricted=false（region_ids 为 NULL / 空 / 脏数据）= 不限地区，与老套餐一致；
+	// true 时订阅只输出「有效地区命中」的入站（解析口径见 internal/planregion.Parse）。
+	RegionIDs        []int64
+	RegionRestricted bool
 }
 
 // IsPeriod 对应 Plan::isPeriod()。
@@ -76,6 +82,9 @@ type Node struct {
 	DriverType        string
 	DriverConfig      string // 原始 JSON 文本
 	TrafficMultiplier *float64
+	// RegionID 是节点地区归属（#地区功能-15）；nil = 未归属（不参与地区过滤）。
+	// 入站级分组下它只作为「入站没有自己地区时」的兜底（见 XrayInbound.RegionID）。
+	RegionID *int64
 }
 
 // IsXray 对应 Node::isXray()。
@@ -88,13 +97,16 @@ func (n Node) IsXray() bool {
 
 // XrayInbound 是 xray_inbounds 表的一行。
 type XrayInbound struct {
-	ID             int64
-	NodeID         int64
-	Tag            string
-	Remark         string
-	Protocol       string
-	Port           int64
-	Listen         string // 绑定地址（DB 默认 0.0.0.0）；订阅按地址族选 host / host_v6
+	ID     int64
+	NodeID int64
+	// RegionID 是入站自己的地区归属（#入站级分组）；nil = 跟随节点地区。
+	// 有效地区 = COALESCE(inbound.RegionID, node.RegionID)，口径见 service.go 的 effectiveRegion。
+	RegionID *int64
+	Tag      string
+	Remark   string
+	Protocol string
+	Port     int64
+	Listen   string // 绑定地址（DB 默认 0.0.0.0）；订阅按地址族选 host / host_v6
 	// ClientHost 是「客户端连接地址」覆盖（CDN 域名 / 另一个地址）；
 	// 非空时订阅链接的地址用它，端口仍用本入站端口。
 	ClientHost     string

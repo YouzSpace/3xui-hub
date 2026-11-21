@@ -75,6 +75,9 @@ const nodeUsage = (n) => {
 
 const unassignedNodes = computed(() => nodesAll.value.filter((n) => n.region_id == null))
 
+/** 入站归属文本（#入站级分组）：有归属地区显示地区名，否则「跟随节点」。 */
+const inboundRegionText = (ib) => ib.region_name || '跟随节点'
+
 // ===== 容量告警（>=85% 黄、>=95% 红）=====
 // 接口 GET /regions/alerts 的 data = { alerts: [...], counts: { warn, critical } }。
 // 后端还没这个端点（404）时 counts 归零、两条告警条都不渲染 —— 宁可什么都不显示，也不编告警。
@@ -674,7 +677,9 @@ onBeforeUnmount(stopPoll)
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="n in regionNodes" :key="n.id">
+                      <!-- 一个节点两行：节点本身 + 它的入站归属（#入站级分组） -->
+                      <template v-for="n in regionNodes" :key="n.id">
+                      <tr>
                         <td>{{ n.name }}</td>
                         <td class="mono">{{ n.host || '—' }}</td>
                         <td>{{ driverLabel(n.driver_type) }}</td>
@@ -711,6 +716,19 @@ onBeforeUnmount(stopPoll)
                           </div>
                         </td>
                       </tr>
+                      <!-- 入站归属（#入站级分组）：只读文本，编辑仍在「xray 入站」页 -->
+                      <tr v-if="(n.inbounds || []).length" class="rg-inbounds-row">
+                        <td colspan="9">
+                          <div class="rg-inbounds">
+                            <span class="rg-inbounds-label">入站归属</span>
+                            <span v-for="ib in n.inbounds" :key="ib.id" class="rg-inbound-tag">
+                              {{ ib.tag }}
+                              <span class="rg-muted">（{{ inboundRegionText(ib) }}）</span>
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      </template>
                       <tr v-if="!regionNodes.length">
                         <td colspan="9" class="rg-empty">该地区暂无节点</td>
                       </tr>
@@ -1136,6 +1154,21 @@ onBeforeUnmount(stopPoll)
   font-size: var(--text-sm);
 }
 .mono {
+  font-family: var(--font-mono);
+}
+/* 入站归属（#入站级分组）：节点行下面的一段只读文本 */
+.rg-inbounds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.rg-inbounds-label {
+  color: var(--text-tertiary);
+}
+.rg-inbound-tag {
   font-family: var(--font-mono);
 }
 

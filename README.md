@@ -46,6 +46,9 @@ docker-compose up -d
 
 访问 `http://localhost:8080`
 
+> 8080 被别的程序占用时：`CONTROLHUB_PORT=18080 docker-compose up -d` 换宿主端口；
+> 脚本安装的面板用 `3hub port 18080`（systemd 与 nginx 一起改，`3hub update` 不会再改回 8080）。
+
 ```bash
 docker-compose logs -f        # 查看日志
 docker-compose down           # 停止
@@ -202,6 +205,9 @@ docker-compose up -d
 ```
 
 Visit http://localhost:8080
+
+> If 8080 is taken: `CONTROLHUB_PORT=18080 docker-compose up -d` changes the host port.
+> For script installs use `3hub port 18080` (updates systemd + nginx; `3hub update` keeps it).
 
 ## Features
 

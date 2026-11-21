@@ -105,6 +105,9 @@ func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any
 	v.field("tls_server_name", "nullable", "string", "max:255")
 	// 客户端连接地址（CDN 域名等）：订阅链接里用它替换节点地址；空 = 用节点地址。
 	v.field("client_host", "nullable", "string", "max:255")
+	// 入站归属地区（#入站级分组）：可选，null = 跟随节点地区（老数据行为）。
+	// 存在性在 buildInboundInput 里用 RegionExists 查库校验（节点域校验器不查库）。
+	v.field("region_id", "nullable", "integer", "min:1")
 	v.field("tls_certificate", "nullable", "string", "max:65535")
 	v.field("tls_key", "nullable", "string", "max:65535")
 	v.field("ss_method", "nullable", "in:aes-256-gcm,aes-128-gcm,chacha20-poly1305,xchacha20-poly1305,2022-blake3-aes-256-gcm,2022-blake3-aes-128-gcm")

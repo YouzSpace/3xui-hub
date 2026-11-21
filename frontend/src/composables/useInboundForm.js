@@ -34,6 +34,24 @@ export function useInboundForm({ nodeId, onSaved }) {
   // 高级参数折叠面板（新建/编辑时不打扰）
   const advOpen = ref(false)
 
+  // ── 归属分组（#入站级分组）──────────────────────────────────────
+  // 地区字典很小（id 小、数量少），打开表单时拉一次即可；拉不到就只留「跟随节点」
+  // 一项 —— 归属地区是可选功能，地区接口不可用不该挡住建/改入站。
+  const regionOptions = ref([])
+  const regionChoices = computed(() => [
+    { label: '跟随节点（默认）', value: null },
+    ...regionOptions.value.map((r) => ({ label: r.name, value: r.id })),
+  ])
+
+  const loadRegions = async () => {
+    try {
+      const res = await adminApi.listRegions()
+      regionOptions.value = Array.isArray(res) ? res : (res?.regions || [])
+    } catch (e) {
+      regionOptions.value = []
+    }
+  }
+
   const isReality = computed(() => form.value.protocol === 'vless' && form.value.security === 'reality')
 
   // ── 地址族（issue #88）─────────────────────────────────────────
@@ -162,6 +180,7 @@ export function useInboundForm({ nodeId, onSaved }) {
     loadCertificates().then(() => {
       pemCertId.value = bestPemCert()?.id ?? null
     })
+    loadRegions()
     modalOpen.value = true
   }
 
@@ -175,6 +194,7 @@ export function useInboundForm({ nodeId, onSaved }) {
       // 没引用（老的内联 PEM 用法）才按域名挑一张。
       pemCertId.value = form.value.tls_cert_id ?? bestPemCert()?.id ?? null
     })
+    loadRegions()
     modalOpen.value = true
   }
 
@@ -265,6 +285,7 @@ export function useInboundForm({ nodeId, onSaved }) {
     ...certs,
     form,
     advOpen,
+    regionChoices,
     customAddress,
     modalOpen,
     editing,

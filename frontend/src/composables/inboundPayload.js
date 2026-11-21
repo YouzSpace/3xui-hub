@@ -51,6 +51,9 @@ export function buildInboundPayload(
     port: Number(form.value.port),
     listen: form.value.listen,
     client_host: String(form.value.client_host || '').trim(),
+    // 入站归属地区（#入站级分组）：null = 跟随节点（清空）；数字 = 归属该地区。
+    // 全量提交（始终带字段），避免「编辑时清空」退化成「保持原值」。
+    region_id: form.value.region_id ? Number(form.value.region_id) : null,
     network: form.value.network,
     security: form.value.security,
     enabled: form.value.enabled,

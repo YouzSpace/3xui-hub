@@ -35,6 +35,10 @@
   border-left: 3px solid var(--accent);
   color: var(--accent);
 }
+.ch-toast--warning {
+  border-left: 3px solid var(--warning, #d97706);
+  color: var(--warning, #d97706);
+}
 .ch-toast-msg {
   flex: 1;
   color: var(--text-primary);

@@ -92,6 +92,7 @@ var xrayTemplate19DDL = []string{
 	`CREATE TABLE xray_inbounds (
 		id bigint unsigned NOT NULL AUTO_INCREMENT,
 		node_id bigint unsigned NOT NULL,
+		region_id bigint unsigned DEFAULT NULL,
 		tag varchar(64) NOT NULL,
 		remark varchar(128) DEFAULT NULL,
 		protocol varchar(32) NOT NULL,
@@ -127,6 +128,17 @@ var xrayTemplate19DDL = []string{
 		updated_at timestamp NULL DEFAULT NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY xray_outbounds_node_id_tag_unique (node_id, tag)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+	// 入站表单的 region_id 校验（#入站级分组）会读 regions；本用例的入站都走
+	// 模板套用（不经过表单），但 NodeDomain 的 region_id 校验路径要求表存在。
+	`CREATE TABLE regions (
+		id bigint unsigned NOT NULL AUTO_INCREMENT,
+		name varchar(64) NOT NULL,
+		sort int NOT NULL DEFAULT 0,
+		created_at timestamp NULL DEFAULT NULL,
+		updated_at timestamp NULL DEFAULT NULL,
+		PRIMARY KEY (id),
+		UNIQUE KEY regions_name_unique (name)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	`CREATE TABLE node_inbounds (
 		id bigint unsigned NOT NULL AUTO_INCREMENT,

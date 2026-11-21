@@ -593,6 +593,9 @@ CREATE TABLE `users` (
   `traffic_disabled_at` timestamp NULL DEFAULT NULL COMMENT '最近一次确认关闭 3x-ui 流量的时间，null=未关闭',
   `used_invite_code_id` bigint unsigned DEFAULT NULL COMMENT '该用户用过的邀请码 id，非空即永久锁死',
   `invite_code_used_at` timestamp NULL DEFAULT NULL COMMENT '邀请码使用时间',
+  `app_version_code` int DEFAULT NULL COMMENT '客户端上报的版本号（build code）',
+  `app_version_name` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '客户端上报的版本名',
+  `app_version_reported_at` datetime DEFAULT NULL COMMENT '最近一次客户端版本上报时间',
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
   `deleted_at` timestamp NULL DEFAULT NULL,
@@ -633,6 +636,7 @@ CREATE TABLE `xray_inbounds` (
   `port` int unsigned NOT NULL,
   `listen` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '0.0.0.0',
   `client_host` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订阅链接里给客户端用的地址（CDN 域名等）；空 = 用节点地址',
+  `region_id` bigint unsigned DEFAULT NULL COMMENT '归属地区 id，NULL=跟随节点地区',
   `settings` json DEFAULT NULL,
   `stream_settings` json DEFAULT NULL,
   `sniffing` json DEFAULT NULL,
@@ -645,6 +649,7 @@ CREATE TABLE `xray_inbounds` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `xray_inbounds_node_id_tag_unique` (`node_id`,`tag`),
   KEY `xray_inbounds_node_id_enabled_index` (`node_id`,`enabled`),
+  KEY `idx_xray_inbounds_region` (`region_id`),
   CONSTRAINT `xray_inbounds_node_id_foreign` FOREIGN KEY (`node_id`) REFERENCES `nodes` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

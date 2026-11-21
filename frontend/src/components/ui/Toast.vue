@@ -46,8 +46,13 @@ export function createToastStore() {
   function info(message, duration) {
     return addToast(message, 'info', duration)
   }
+  // warning：语义是「操作没成功但不算错误」（如节点未及时回执）。
+  // 之前只有 success/error/info，页面调 toast.warning 直接 TypeError。
+  function warning(message, duration) {
+    return addToast(message, 'warning', duration)
+  }
 
-  return { toasts, addToast, removeToast, success, error, info }
+  return { toasts, addToast, removeToast, success, error, info, warning }
 }
 
 // Module-level singleton — shared by Toast.vue render + useToast().
@@ -69,6 +74,7 @@ const ICON = {
   success: 'check',
   error: 'x',
   info: 'activity',
+  warning: 'activity',
 }
 
 /** 点撤销：执行回调后关掉本条 toast（删除操作的反悔入口） */

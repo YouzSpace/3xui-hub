@@ -101,17 +101,22 @@ func (s *nodeSQLStore) UserIDsWithPlanByProtocols(ctx context.Context, protocols
 
 // ---- xray 入站 ----
 
-const xrayInboundColumns = `id, node_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings,
+const xrayInboundColumns = `id, node_id, region_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings,
 	sniffing, reality_private_key, salamander_password, enabled, sort, created_at, updated_at`
 
 func (s *nodeSQLStore) scanXrayInbound(row interface{ Scan(...any) error }) (*XrayInboundRecord, error) {
 	var ib XrayInboundRecord
 	var remark, clientHost, settings, stream, sniffing, privateKey, salamander sql.NullString
+	var regionID sql.NullInt64
 	var enabled int
 	var createdAt, updatedAt sql.NullTime
-	if err := row.Scan(&ib.ID, &ib.NodeID, &ib.Tag, &remark, &ib.Protocol, &ib.Port, &ib.Listen,
+	if err := row.Scan(&ib.ID, &ib.NodeID, &regionID, &ib.Tag, &remark, &ib.Protocol, &ib.Port, &ib.Listen,
 		&clientHost, &settings, &stream, &sniffing, &privateKey, &salamander, &enabled, &ib.Sort, &createdAt, &updatedAt); err != nil {
 		return nil, err
+	}
+	if regionID.Valid {
+		v := uint64(regionID.Int64)
+		ib.RegionID = &v
 	}
 	ib.Remark = nullStrPtr(remark)
 	ib.ClientHost = nullStrPtr(clientHost)
@@ -147,6 +152,16 @@ func (s *nodeSQLStore) XrayInboundsByNode(ctx context.Context, nodeID uint64) ([
 func (s *nodeSQLStore) XrayInboundByID(ctx context.Context, nodeID, id uint64) (*XrayInboundRecord, error) {
 	return s.scanXrayInbound(s.db.QueryRowContext(ctx, "SELECT "+xrayInboundColumns+
 		" FROM xray_inbounds WHERE node_id = ? AND id = ?", nodeID, id))
+}
+
+// RegionExists 判断入站归属的地区是否存在（入站表单的 region_id 校验）。
+// 与地区域 Store 的同名方法口径一致：只查 regions 表，不存在返回 false。
+func (s *nodeSQLStore) RegionExists(ctx context.Context, id uint64) (bool, error) {
+	var n int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM regions WHERE id = ?", id).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (s *nodeSQLStore) XrayInboundTagTaken(ctx context.Context, nodeID uint64, tag string, excludeID *uint64) (bool, error) {
@@ -424,10 +439,10 @@ func (s *nodeSQLStore) CreateXrayInbound(ctx context.Context, in XrayInboundInpu
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		"INSERT INTO xray_inbounds (node_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings, "+
+		"INSERT INTO xray_inbounds (node_id, region_id, tag, remark, protocol, port, listen, client_host, settings, stream_settings, "+
 			"sniffing, reality_private_key, salamander_password, enabled, sort, created_at, updated_at) "+
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		in.NodeID, in.Tag, nullStrValue(in.Remark), in.Protocol, in.Port, in.Listen,
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		in.NodeID, nullableUint(in.RegionID), in.Tag, nullStrValue(in.Remark), in.Protocol, in.Port, in.Listen,
 		nullStrValue(in.ClientHost),
 		jsonTextValue(in.Settings), jsonTextValue(in.StreamSettings), jsonTextValue(in.Sniffing),
 		nullStrValue(encryptedKey), nullStrValue(encryptedSalamander), enabled, sortVal, now, now)
@@ -463,6 +478,11 @@ func (s *nodeSQLStore) UpdateXrayInbound(ctx context.Context, id uint64, in Xray
 		}
 		sets = append(sets, "salamander_password = ?")
 		args = append(args, nullStrValue(encryptedSalamander))
+	}
+	// 入站归属地区（#入站级分组）：没带字段 = 保持原值；带了 null = 清空（跟随节点）。
+	if in.RegionIDSet {
+		sets = append(sets, "region_id = ?")
+		args = append(args, nullableUint(in.RegionID))
 	}
 	if in.Enabled != nil {
 		sets = append(sets, "enabled = ?")

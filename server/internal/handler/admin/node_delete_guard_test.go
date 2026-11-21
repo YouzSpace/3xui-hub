@@ -105,6 +105,7 @@ var region24DDL = []string{
 	`CREATE TABLE xray_inbounds (
 		id bigint unsigned NOT NULL AUTO_INCREMENT,
 		node_id bigint unsigned NOT NULL,
+		region_id bigint unsigned DEFAULT NULL,
 		tag varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
 		remark varchar(128) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
 		protocol varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,

@@ -293,6 +293,28 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		in.ClientHost = &ch
 	}
 
+	// 入站归属地区（#入站级分组）：
+	//   - 不带字段 = 保持原值（老客户端 / 未改造的表单不受影响）；
+	//   - null   = 清空 → 跟随节点地区；
+	//   - 数字   = 该入站属于这个地区，必须真实存在（exists:regions,id）。
+	if raw, present := input["region_id"]; present {
+		in.RegionIDSet = true
+		if raw != nil {
+			regionID := inputInt(raw)
+			ok, err := d.store.RegionExists(ctxOf(c), uint64(regionID))
+			if err != nil {
+				d.failServer(c, "校验入站归属地区", err)
+				return XrayInboundInput{}, false
+			}
+			if !ok {
+				d.fail(c, "所选地区不存在（id="+itoaInt64(regionID)+"），请重新选择", 500)
+				return XrayInboundInput{}, false
+			}
+			v := uint64(regionID)
+			in.RegionID = &v
+		}
+	}
+
 	if v, present := input["enabled"]; present {
 		b := inputBool(v)
 		in.Enabled = &b
