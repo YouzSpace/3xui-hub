@@ -57,7 +57,7 @@ func buildShadowsocksInboundSettings(b *inboundBuild) (*jsObj, bool) {
 		b.fail("Shadowsocks 必须设置密码")
 		return nil, false
 	}
-	settings.put("password", pw)
+	settings.Put("password", pw)
 	return settings, true
 }
 
@@ -138,7 +138,7 @@ func buildWireGuardInboundSettings(b *inboundBuild) (*jsObj, bool) {
 	// 显式写上，免得以后内核默认值变化把入站搞挂。
 	settings := jo("secretKey", secret, "mtu", mtu, "noKernelTun", true)
 	if len(peers) > 0 {
-		settings.put("peers", peers)
+		settings.Put("peers", peers)
 	}
 	return settings, true
 }

@@ -165,7 +165,7 @@ func presentXrayInboundWithRegion(ib *XrayInboundRecord, userCounts map[string]i
 			name = n
 		}
 	}
-	out.put("region_name", name)
+	out.Put("region_name", name)
 	return out
 }
 
@@ -216,7 +216,7 @@ func jsonArrayLen(v any) int {
 		return len(arr)
 	}
 	if obj, ok := v.(*jsObj); ok {
-		return len(obj.keys)
+		return len(obj.Keys())
 	}
 	return 0
 }

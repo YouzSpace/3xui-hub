@@ -193,7 +193,7 @@ func panelColorsJSON(list []panelColor) any {
 	}
 	o := jo()
 	for _, c := range list {
-		o.put(c.Name, c.Value)
+		o.Put(c.Name, c.Value)
 	}
 	return o
 }
@@ -312,7 +312,7 @@ func (h *Handler) showKeyValues(c *gin.Context, keys []string, what string) {
 	}
 	o := jo()
 	for _, k := range keys {
-		o.put(k, values[k])
+		o.Put(k, values[k])
 	}
 	h.success(c, o)
 }
@@ -388,7 +388,7 @@ func (h *Handler) inviteSettings(c *gin.Context) {
 				val = def
 			}
 		}
-		o.put(k, val)
+		o.Put(k, val)
 	}
 
 	rateValues, err := h.store.SiteConfigMany(ctxOf(c), discountRateKeys)
@@ -407,10 +407,10 @@ func (h *Handler) inviteSettings(c *gin.Context) {
 		stored := rateValues[k]
 		if stored == "" {
 			// 空值 = 用 config/panel.php 的默认值（0 = 该项不限）。
-			o.put(k, strconv.FormatInt(rateDefaults[k], 10))
+			o.Put(k, strconv.FormatInt(rateDefaults[k], 10))
 			continue
 		}
-		o.put(k, stored)
+		o.Put(k, stored)
 	}
 
 	h.success(c, o)

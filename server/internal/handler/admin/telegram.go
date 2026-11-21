@@ -25,7 +25,7 @@ func (d *TelegramDomain) telegramShow(c *gin.Context) {
 				v = plain
 			}
 		}
-		out.put(k, v)
+		out.Put(k, v)
 	}
 	d.success(c, out)
 }

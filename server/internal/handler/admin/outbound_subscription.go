@@ -304,7 +304,7 @@ func (d *NodeDomain) refreshOutboundSub(c *gin.Context, sub *OutboundSubRecord) 
 
 	for i := range outbounds {
 		if obj, isObj := outbounds[i].(*jsObj); isObj {
-			obj.put("tag", assigned[i])
+			obj.Put("tag", assigned[i])
 		}
 	}
 	newIdent := map[string]string{}
@@ -382,9 +382,9 @@ func presentOutboundSub(s *OutboundSubRecord) *jsObj {
 // ---- 标签稳定（复刻 OutboundSubscriptionService::assignStableTags）----
 
 // assignStableOutboundTags 对齐 assignStableTags()：
-//  1) identity 见过 → 复用旧 tag
-//  2) 否则位置兜底复用（未被其它 identity 预留时）
-//  3) 否则 prefix + slug(remark) 新分配
+//  1. identity 见过 → 复用旧 tag
+//  2. 否则位置兜底复用（未被其它 identity 预留时）
+//  3. 否则 prefix + slug(remark) 新分配
 //
 // 批内用 -N 去重。
 func assignStableOutboundTags(outbounds []any, identities []string, prev map[string]string, prevTagByIndex map[int]string, subID int64, prefix string) []string {
@@ -538,8 +538,10 @@ func parseIdentityMap(raw *string) map[string]string {
 	if !ok {
 		return out
 	}
-	for i, k := range obj.keys {
-		out[k] = nodeScalarString(obj.vals[i])
+	keys := obj.Keys()
+	vals := obj.Vals()
+	for i, k := range keys {
+		out[k] = nodeScalarString(vals[i])
 	}
 	return out
 }
@@ -551,7 +553,7 @@ func parseIdentityMap(raw *string) map[string]string {
 func identityMapJSON(m map[string]string) string {
 	obj := jo()
 	for _, k := range sortedStringKeys(m) {
-		obj.put(k, m[k])
+		obj.Put(k, m[k])
 	}
 	return string(phpEncode(obj))
 }

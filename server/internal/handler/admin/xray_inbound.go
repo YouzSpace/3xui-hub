@@ -89,7 +89,7 @@ func (d *NodeDomain) xrayInboundStore(c *gin.Context) {
 	)
 	// 入站已落库，防火墙这一步只报状态：下发失败不能让创建算失败。
 	if hop := d.applyHysteriaHopAfterSave(c, node, created, hopAuto, hopReason); hop != nil {
-		resp.put("hop", hop)
+		resp.Put("hop", hop)
 	}
 	d.success(c, resp)
 }
@@ -143,7 +143,7 @@ func (d *NodeDomain) xrayInboundUpdate(c *gin.Context) {
 	)
 	// 入站已落库，防火墙这一步只报状态：下发失败不能让保存算失败。
 	if hop := d.applyHysteriaHopAfterSave(c, node, updated, hopAuto, hopReason); hop != nil {
-		resp.put("hop", hop)
+		resp.Put("hop", hop)
 	}
 	d.success(c, resp)
 }

@@ -194,46 +194,46 @@ func (d *NodeDomain) realitySettings(input map[string]any, publicKey string) *js
 	)
 
 	if v, present := input["xver"]; present && inputInt(v) != 0 {
-		settings.put("xver", inputInt(v))
+		settings.Put("xver", inputInt(v))
 	}
 	if v, present := input["show"]; present && inputBool(v) {
-		settings.put("show", true)
+		settings.Put("show", true)
 	}
 	if v := strings.TrimSpace(nodeStringField(input, "min_client_ver")); v != "" {
-		settings.put("minClientVer", v)
+		settings.Put("minClientVer", v)
 	}
 	if v := strings.TrimSpace(nodeStringField(input, "max_client_ver")); v != "" {
-		settings.put("maxClientVer", v)
+		settings.Put("maxClientVer", v)
 	}
 	if v, present := input["max_timediff"]; present && inputInt(v) != 0 {
-		settings.put("maxTimediff", inputInt(v))
+		settings.Put("maxTimediff", inputInt(v))
 	}
 	if v := strings.TrimSpace(nodeStringField(input, "mldsa65_seed")); v != "" {
-		settings.put("mldsa65Seed", v)
+		settings.Put("mldsa65Seed", v)
 	}
 	if v := strings.TrimSpace(nodeStringField(input, "master_key_log")); v != "" {
-		settings.put("masterKeyLog", v)
+		settings.Put("masterKeyLog", v)
 	}
 	if v, ok := limitFallback(input["limit_fallback_upload"]); ok {
-		settings.put("limitFallbackUpload", v)
+		settings.Put("limitFallbackUpload", v)
 	}
 	if v, ok := limitFallback(input["limit_fallback_download"]); ok {
-		settings.put("limitFallbackDownload", v)
+		settings.Put("limitFallbackDownload", v)
 	}
 
 	// 客户端段（订阅链接：fp / spx / pqv）
 	client := jo()
 	if fp := strings.TrimSpace(nodeStringField(input, "fingerprint")); fp != "" {
-		client.put("fingerprint", fp)
+		client.Put("fingerprint", fp)
 	}
 	if spx, present := input["spider_x"]; present && nodeScalarString(spx) != "" {
-		client.put("spiderX", nodeScalarString(spx))
+		client.Put("spiderX", nodeScalarString(spx))
 	}
 	if pqv := strings.TrimSpace(nodeStringField(input, "mldsa65_verify")); pqv != "" {
-		client.put("mldsa65Verify", pqv)
+		client.Put("mldsa65Verify", pqv)
 	}
-	if len(client.keys) > 0 {
-		settings.put("settings", client)
+	if len(client.Keys()) > 0 {
+		settings.Put("settings", client)
 	}
 	return settings
 }

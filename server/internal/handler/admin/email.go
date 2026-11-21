@@ -1,4 +1,4 @@
-﻿package admin
+package admin
 
 // 管理端邮件（/admin-api/email…）：SMTP 配置 + 自动通知 + 批量发信 + 定时发信 + 日志。
 //
@@ -116,7 +116,7 @@ func (d *MailDomain) mailShow(c *gin.Context) {
 		if k == "smtp_password" && v != "" {
 			v = d.decryptSmtpPassword(v)
 		}
-		out.put(k, v)
+		out.Put(k, v)
 	}
 	d.success(c, out)
 }
@@ -206,7 +206,7 @@ func (d *MailDomain) mailSave(c *gin.Context) {
 	d.success(c, nil, "保存成功")
 }
 
-// mailConfigStoreValue 对齐 `$updates[$key] = $value ?? ''`（布尔按 PDO prepareBindings 落 1/0）。
+// mailConfigStoreValue 对齐 `$updates[$key] = $value ?? ”`（布尔按 PDO prepareBindings 落 1/0）。
 func mailConfigStoreValue(key string, val any) string {
 	if val == nil {
 		return ""
@@ -310,9 +310,9 @@ func (d *MailDomain) mailTest(c *gin.Context) {
 
 	sendErr := d.transport.Send(settings, to, subject, body)
 	logRow := MailLogRow{
-		Type:     mailLogTypeTest,
-		ToEmail:  &to,
-		Subject:  &subject,
+		Type:      mailLogTypeTest,
+		ToEmail:   &to,
+		Subject:   &subject,
 		CreatedAt: timePtr(d.now().UTC()),
 	}
 	if sendErr != nil {
@@ -337,7 +337,7 @@ func (d *MailDomain) mailTest(c *gin.Context) {
 
 // ---- 自动通知 ----
 
-// notifyAllConfig 对齐 MailNotifyService::allConfig()（扁平键，enabled 存 '1'/''）。
+// notifyAllConfig 对齐 MailNotifyService::allConfig()（扁平键，enabled 存 '1'/”）。
 func (d *MailDomain) notifyAllConfig(ctx context.Context) (*jsObj, error) {
 	keys := []string{"notify_traffic_almost_threshold", "notify_expiring_days", "notify_admin_email"}
 	for _, scene := range mailNotifyScenes {
@@ -369,10 +369,10 @@ func (d *MailDomain) notifyAllConfig(ctx context.Context) (*jsObj, error) {
 		if to == "" {
 			to = def.To
 		}
-		out.put("notify_"+scene+"_enabled", boolAsFlag(enabled))
-		out.put("notify_"+scene+"_title", title)
-		out.put("notify_"+scene+"_body", body)
-		out.put("notify_"+scene+"_to", to)
+		out.Put("notify_"+scene+"_enabled", boolAsFlag(enabled))
+		out.Put("notify_"+scene+"_title", title)
+		out.Put("notify_"+scene+"_body", body)
+		out.Put("notify_"+scene+"_to", to)
 	}
 
 	threshold := 90
@@ -387,13 +387,13 @@ func (d *MailDomain) notifyAllConfig(ctx context.Context) (*jsObj, error) {
 			days = n
 		}
 	}
-	out.put("notify_traffic_almost_threshold", threshold)
-	out.put("notify_expiring_days", days)
-	out.put("notify_admin_email", cfg["notify_admin_email"])
+	out.Put("notify_traffic_almost_threshold", threshold)
+	out.Put("notify_expiring_days", days)
+	out.Put("notify_admin_email", cfg["notify_admin_email"])
 	return out, nil
 }
 
-// boolAsFlag 对齐 `$cfg['enabled'] ? '1' : ''`（前端用 === '1' 严格判断）。
+// boolAsFlag 对齐 `$cfg['enabled'] ? '1' : ”`（前端用 === '1' 严格判断）。
 func boolAsFlag(v bool) string {
 	if v {
 		return "1"
@@ -863,10 +863,10 @@ func (d *MailDomain) scheduleConfigView(cfg map[string]string) *jsObj {
 		t = "09:00"
 	}
 	out := &jsObj{}
-	out.put("enabled", cfg["schedule_mail_enabled"] == "1")
-	out.put("day", day)
-	out.put("time", t)
-	out.put("config", decodeScheduleConfig(cfg["schedule_mail_config"]))
+	out.Put("enabled", cfg["schedule_mail_enabled"] == "1")
+	out.Put("day", day)
+	out.Put("time", t)
+	out.Put("config", decodeScheduleConfig(cfg["schedule_mail_config"]))
 	return out
 }
 
@@ -884,7 +884,7 @@ func decodeScheduleConfig(raw string) *jsObj {
 	}
 	// 保序：PHP json_decode 保键序，这里按字典序稳定输出（前端按字段名取值）
 	for _, k := range sortedKeys(generic) {
-		out.put(k, normalizeJSONValue(generic[k]))
+		out.Put(k, normalizeJSONValue(generic[k]))
 	}
 	return out
 }
@@ -894,7 +894,7 @@ func normalizeJSONValue(v any) any {
 	case map[string]any:
 		out := &jsObj{}
 		for _, k := range sortedKeys(t) {
-			out.put(k, normalizeJSONValue(t[k]))
+			out.Put(k, normalizeJSONValue(t[k]))
 		}
 		return out
 	case []any:
@@ -1062,7 +1062,7 @@ func encodeScheduleConfig(raw any) string {
 		obj := &jsObj{}
 		// PHP 数组/对象键序 = 提交顺序；Go map 无序，按字典序稳定
 		for _, k := range sortedKeys(t) {
-			obj.put(k, t[k])
+			obj.Put(k, t[k])
 		}
 		return string(phpEncode(obj))
 	default:

@@ -105,7 +105,7 @@ func (d *NodeDomain) sysctlApply(c *gin.Context) {
 
 	payload := jo()
 	if profile != "" {
-		payload.put("profile", profile)
+		payload.Put("profile", profile)
 	}
 	if len(keys) > 0 {
 		// 排序输出：同一份输入恒等（便于复现与对拍），不改变 agent 侧的语义。
@@ -116,9 +116,9 @@ func (d *NodeDomain) sysctlApply(c *gin.Context) {
 		sort.Strings(names)
 		kv := jo()
 		for _, name := range names {
-			kv.put(name, keys[name])
+			kv.Put(name, keys[name])
 		}
-		payload.put("keys", kv)
+		payload.Put("keys", kv)
 	}
 
 	d.runNodeCommand(c, node, nodeapi.ActionSysctlApply, payload, d.cfg.SysctlWait)

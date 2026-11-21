@@ -403,7 +403,7 @@ func (d *NodeDomain) routingTest(c *gin.Context) {
 	defaultOutbound := "direct"
 	var finalOutbound any = defaultOutbound
 	if obj, isObj := matched.(*jsObj); isObj {
-		if v, ok := obj.get("outbound"); ok {
+		if v, ok := obj.Get("outbound"); ok {
 			finalOutbound = v
 		}
 	}
@@ -460,8 +460,8 @@ func (d *NodeDomain) routingOutboundTest(c *gin.Context) {
 	}
 
 	requested := requestedTestTags(input["targets"])
-	targets := jsArr{}  // 真正下发给节点的 [{tag,server,port}]
-	skipped := jsArr{}  // 不测的 [{tag,reason}]，顺序跟候选一致（不随 map 抖）
+	targets := jsArr{} // 真正下发给节点的 [{tag,server,port}]
+	skipped := jsArr{} // 不测的 [{tag,reason}]，顺序跟候选一致（不随 map 抖）
 	for _, cand := range candidates {
 		if len(requested) > 0 && !requested[cand.Tag] {
 			continue
@@ -1052,7 +1052,7 @@ func routingRuleInputOf(node *NodeRecord, input map[string]any) RoutingRuleInput
 	return in
 }
 
-// trimmedStringList 复刻 `array_values(array_filter(array_map('trim', $arr), fn($v) => $v !== ''))`。
+// trimmedStringList 复刻 `array_values(array_filter(array_map('trim', $arr), fn($v) => $v !== ”))`。
 func trimmedStringList(raw any) []string {
 	out := []string{}
 	for _, item := range phpArrayCast(raw) {

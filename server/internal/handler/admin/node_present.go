@@ -5,11 +5,11 @@ package admin
 
 import (
 	"context"
+	"controlhub-server/internal/driver/xray"
 	"net"
 	"sort"
 	"strconv"
 	"strings"
-	"controlhub-server/internal/driver/xray"
 
 	"github.com/gin-gonic/gin"
 )
@@ -80,13 +80,13 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 	)
 
 	if full {
-		data.put("api_key", nullableStr(n.APIKey))
-		data.put("has_api_key", n.APIKey != nil)
-		data.put("has_password", n.Password != nil)
+		data.Put("api_key", nullableStr(n.APIKey))
+		data.Put("has_api_key", n.APIKey != nil)
+		data.Put("has_password", n.Password != nil)
 	}
 
 	if n.IsXray() {
-		data.put("reality_registered", presentRealityRegistered(n))
+		data.Put("reality_registered", presentRealityRegistered(n))
 		if n.NodeSecret != nil {
 			fullSecret := *n.NodeSecret
 			secret := []rune(fullSecret)
@@ -94,30 +94,30 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 			if len(secret) > 4 {
 				prefix = string(secret[:4])
 			}
-			data.put("node_secret_prefix", prefix+"…")
+			data.Put("node_secret_prefix", prefix+"…")
 			// 详情接口给全文，列表不给：密钥是 40 位定长串，前端挤在元信息行里只能看到
 			// 「VpM2…」，要单独拷贝时无从下手。列表（50 行）没必要把密钥全发下去。
 			// 注意这不是新增泄露面 —— 同一个响应里的 install_command 本来就明文带完整密钥。
 			if full {
-				data.put("node_secret", fullSecret)
+				data.Put("node_secret", fullSecret)
 			}
 		} else {
-			data.put("node_secret_prefix", nil)
+			data.Put("node_secret_prefix", nil)
 			if full {
-				data.put("node_secret", nil)
+				data.Put("node_secret", nil)
 			}
 		}
-		data.put("xray_version", nodeDriverConfigString(n, "xray_version"))
+		data.Put("xray_version", nodeDriverConfigString(n, "xray_version"))
 		// issue #88：IPv6 入口地址（编辑表单回显；null = 未配置）
-		data.put("host_v6", nodeDriverConfigHostV6(n))
-		data.put("config_version", n.ConfigVersion)
-		data.put("lag_seconds", nodeDriverConfigInt(n, "lag_seconds"))
-		data.put("agent", nodeDriverConfigAgent(n))
+		data.Put("host_v6", nodeDriverConfigHostV6(n))
+		data.Put("config_version", n.ConfigVersion)
+		data.Put("lag_seconds", nodeDriverConfigInt(n, "lag_seconds"))
+		data.Put("agent", nodeDriverConfigAgent(n))
 		// issue #94 R5：BBR 运行态（来自心跳，原样回传）。
 		// 未上报 → null：不编造默认值，前端据此显示「未上报」。
-		data.put("bbr", nodeDriverConfigBBR(n))
-		data.put("ws_connected", nodeDriverConfigBool(n, "ws", "connected"))
-		data.put("install_command", d.installCommand(n))
+		data.Put("bbr", nodeDriverConfigBBR(n))
+		data.Put("ws_connected", nodeDriverConfigBool(n, "ws", "connected"))
+		data.Put("install_command", d.installCommand(n))
 
 		agent := env.agent
 		if agent == nil {
@@ -129,18 +129,18 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 			agent = m
 		}
 		env.agent = agent
-		data.put("agent_version", nullableStr(d.reportedAgentVersion(n)))
-		data.put("agent_latest", nullableStr(manifestLatestVersion(agent)))
+		data.Put("agent_version", nullableStr(d.reportedAgentVersion(n)))
+		data.Put("agent_latest", nullableStr(manifestLatestVersion(agent)))
 		// issue #94：端口跳跃要 agent ≥ 1.0.7，前端据此把按钮禁用并提示「需升级 agent」。
 		// 与 node_hop 的入队门槛同一个判定，避免 UI 允许点、后端才拒。
-		data.put("hop_supported", agentSupportsHop(n))
-		data.put("hop_min_agent_version", minHopAgentVersion)
+		data.Put("hop_supported", agentSupportsHop(n))
+		data.Put("hop_min_agent_version", minHopAgentVersion)
 		inFlight, err := d.store.HasInFlightUpgrade(ctxOf(c), n.ID)
 		if err != nil {
 			d.failServer(c, "查询在途升级指令", err)
 			return nil, false
 		}
-		data.put("agent_upgrade_pending", inFlight)
+		data.Put("agent_upgrade_pending", inFlight)
 	}
 
 	return data, true
@@ -154,9 +154,9 @@ func (d *NodeDomain) presentMetrics(n *NodeRecord) any {
 			return nil
 		}
 		agent := jsonObject(agentVal)
-		num := func(key string) any { return phpNumericOrNil(agent.get(key)) }
-		intOrNull := func(key string) any { return phpIntOrNil(agent.get(key)) }
-		at, atOK := agent.get("at")
+		num := func(key string) any { return phpNumericOrNil(agent.Get(key)) }
+		intOrNull := func(key string) any { return phpIntOrNil(agent.Get(key)) }
+		at, atOK := agent.Get("at")
 		return jo(
 			"cpu", num("cpu"),
 			"mem", num("mem"),
@@ -226,12 +226,12 @@ func presentNodeInbounds(n *NodeRecord) *jsObj {
 
 // nodeAppendInboundID 往「协议 → id 数组」里追加（首见时建键）。
 func nodeAppendInboundID(grouped *jsObj, protocol string, id any) {
-	existing, ok := grouped.get(protocol)
+	existing, ok := grouped.Get(protocol)
 	if !ok {
-		grouped.put(protocol, jsArr{id})
+		grouped.Put(protocol, jsArr{id})
 		return
 	}
-	grouped.put(protocol, append(existing.(jsArr), id))
+	grouped.Put(protocol, append(existing.(jsArr), id))
 }
 
 // ---- 展示用小工具 ----
@@ -820,7 +820,7 @@ func (d *NodeDomain) submitInboundSync(c *gin.Context, n *NodeRecord, changed ma
 		for _, id := range changed[proto] {
 			arr = append(arr, id)
 		}
-		changedJSON.put(proto, arr)
+		changedJSON.Put(proto, arr)
 	}
 	meta := phpEncode(jo(
 		"action", "sync_inbounds",

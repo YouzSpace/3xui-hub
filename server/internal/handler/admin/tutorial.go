@@ -150,20 +150,20 @@ func presentTutorialCreated(t *Tutorial, v *validator) *jsObj {
 		}
 		switch name {
 		case "title":
-			o.put("title", t.Title)
+			o.Put("title", t.Title)
 		case "category":
-			o.put("category", t.Category)
+			o.Put("category", t.Category)
 		case "content":
-			o.put("content", t.Content)
+			o.Put("content", t.Content)
 		case "sort":
-			o.put("sort", t.Sort)
+			o.Put("sort", t.Sort)
 		case "enabled":
-			o.put("enabled", t.Enabled)
+			o.Put("enabled", t.Enabled)
 		}
 	}
-	o.put("updated_at", nullableEloq(t.UpdatedAt))
-	o.put("created_at", nullableEloq(t.CreatedAt))
-	o.put("id", t.ID)
+	o.Put("updated_at", nullableEloq(t.UpdatedAt))
+	o.Put("created_at", nullableEloq(t.CreatedAt))
+	o.Put("id", t.ID)
 	return o
 }
 
@@ -205,4 +205,3 @@ func presentTutorial(t *Tutorial) *jsObj {
 		"updated_at", nullableEloq(t.UpdatedAt),
 	)
 }
-

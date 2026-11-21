@@ -53,15 +53,15 @@ func (d *NodeDomain) renderData(c *gin.Context, node *NodeRecord) (*xray.Data, e
 
 	data := &xray.Data{
 		Node: xray.Node{
-			ID:          int64(node.ID),
-			Name:        node.Name,
-			Host:        node.Host,
-			DriverType:  node.DriverType,
-			ConfigRaw:   configRaw,
-			ConfigVer:   node.ConfigVersion,
+			ID:         int64(node.ID),
+			Name:       node.Name,
+			Host:       node.Host,
+			DriverType: node.DriverType,
+			ConfigRaw:  configRaw,
+			ConfigVer:  node.ConfigVersion,
 			RoutingOpts: xray.RoutingOptions{
-				DomainStrategy: routingSettings(node).mustString("domainStrategy"),
-				DomainMatcher:  routingSettings(node).mustString("domainMatcher"),
+				DomainStrategy: jsMustString(routingSettings(node), "domainStrategy"),
+				DomainMatcher:  jsMustString(routingSettings(node), "domainMatcher"),
 			},
 		},
 		Inbounds:     make([]xray.Inbound, 0, len(inbounds)),
@@ -159,11 +159,11 @@ func (d *NodeDomain) renderData(c *gin.Context, node *NodeRecord) (*xray.Data, e
 }
 
 // mustString 从 jsObj 取字符串（用于 routingSettings 的字段取值）。
-func (o *jsObj) mustString(key string) string {
-	v, ok := o.get(key)
+// 改为包级函数（jsObj 现是 phpjson.Object 的别名，不能再在本包为其挂方法）。
+func jsMustString(o *jsObj, key string) string {
+	v, ok := o.Get(key)
 	if !ok {
 		return ""
 	}
 	return nodeScalarString(v)
 }
-

@@ -678,7 +678,7 @@ func templateNeedsRealityKey(stream []byte) bool {
 	if !ok {
 		return false
 	}
-	security, _ := obj.get("security")
+	security, _ := obj.Get("security")
 	s, _ := security.(string)
 	return strings.EqualFold(strings.TrimSpace(s), "reality")
 }
@@ -698,16 +698,16 @@ func templateWithRealityPublicKey(stream []byte, publicKey string) []byte {
 	}
 	reality, ok := mustRealitySettings(obj)
 	if !ok {
-		obj.put("realitySettings", jo("publicKey", publicKey))
+		obj.Put("realitySettings", jo("publicKey", publicKey))
 		return phpEncode(obj)
 	}
-	reality.put("publicKey", publicKey)
+	reality.Put("publicKey", publicKey)
 	return phpEncode(obj)
 }
 
 // mustRealitySettings 取（或补建）realitySettings 子对象。
 func mustRealitySettings(obj *jsObj) (*jsObj, bool) {
-	raw, ok := obj.get("realitySettings")
+	raw, ok := obj.Get("realitySettings")
 	if !ok || raw == nil {
 		return nil, false
 	}

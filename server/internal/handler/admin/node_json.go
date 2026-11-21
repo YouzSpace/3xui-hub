@@ -60,7 +60,7 @@ func parseOrderedJSValue(dec *json.Decoder) (any, error) {
 				if err != nil {
 					return nil, err
 				}
-				obj.put(key, val)
+				obj.Put(key, val)
 			}
 			if _, err := dec.Token(); err != nil { // '}'
 				return nil, err
@@ -104,21 +104,6 @@ func convertJSONNumber(tok any) any {
 	return f
 }
 
-// get 读一个键（对应 PHP 数组的 `$arr[$k] ?? null` 里的取值部分）。
-//
-// 写在 node_json.go 而不是 json.go：P8d 的共享文件在本任务边界内不可改。
-func (o *jsObj) get(key string) (any, bool) {
-	if o == nil {
-		return nil, false
-	}
-	for i, k := range o.keys {
-		if k == key {
-			return o.vals[i], true
-		}
-	}
-	return nil, false
-}
-
 // phpArrayCast 复刻 PHP 的 `(array) $value`：数组原样；map 取 values；标量包成单元素；null 空。
 func phpArrayCast(v any) []any {
 	switch t := v.(type) {
@@ -139,7 +124,7 @@ func phpArrayCast(v any) []any {
 
 // valueOrNil 取一个键的值（缺失 → nil），对应 PHP 的 `$arr[$k] ?? null`。
 func valueOrNil(obj *jsObj, key string) any {
-	if v, ok := obj.get(key); ok {
+	if v, ok := obj.Get(key); ok {
 		return v
 	}
 	return nil
@@ -187,7 +172,7 @@ func jsonGet(v any, path ...string) any {
 	for _, key := range path {
 		switch t := cur.(type) {
 		case *jsObj:
-			next, ok := t.get(key)
+			next, ok := t.Get(key)
 			if !ok {
 				return nil
 			}
@@ -211,7 +196,7 @@ func jsonGetOK(v any, path ...string) (any, bool) {
 	for _, key := range path {
 		switch t := cur.(type) {
 		case *jsObj:
-			next, ok := t.get(key)
+			next, ok := t.Get(key)
 			if !ok {
 				return nil, false
 			}
@@ -229,7 +214,7 @@ func jsonGetOK(v any, path ...string) (any, bool) {
 	return cur, true
 }
 
-// jsonGetString 复刻 `(string) ($arr['a']['b'] ?? '')`。
+// jsonGetString 复刻 `(string) ($arr['a']['b'] ?? ”)`。
 func jsonGetString(v any, path ...string) string {
 	return nodeScalarString(jsonGet(v, path...))
 }
@@ -309,8 +294,7 @@ func nodeTruthy(v any) bool {
 	case jsArr:
 		return len(t) > 0
 	case *jsObj:
-		return len(t.keys) > 0
+		return len(t.Keys()) > 0
 	}
 	return false
 }
-

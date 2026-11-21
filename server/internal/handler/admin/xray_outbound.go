@@ -549,7 +549,7 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		}
 		user := jo("id", id, "encryption", "none")
 		if flow := nodeStringField(input, "flow"); flow != "" {
-			user.put("flow", flow)
+			user.Put("flow", flow)
 		}
 		return phpEncode(jo("vnext", jsArr{jo(
 			"address", addr,
@@ -596,7 +596,7 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		return phpEncode(jo(
 			"version", int64(2),
 			"address", addr,
-			"port",    p,
+			"port", p,
 		))
 	case "dns":
 		// dns 出站：官方 settings 形状 = {network: udp|tcp, address, port}。
@@ -625,7 +625,7 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 	if protocol == "dns" {
 		stream := jo()
 		if dialerProxy != "" {
-			stream.put("sockopt", jo("dialerProxy", dialerProxy))
+			stream.Put("sockopt", jo("dialerProxy", dialerProxy))
 		}
 		return phpEncode(stream), true
 	}
@@ -669,7 +669,7 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 			d.fail(c, "hysteria 出站必须填 auth（对端 hysteria2 的认证串）", 500)
 			return nil, false
 		}
-		stream.put("hysteriaSettings", jo("version", int64(2), "auth", auth))
+		stream.Put("hysteriaSettings", jo("version", int64(2), "auth", auth))
 	}
 
 	if network == "ws" {
@@ -678,24 +678,24 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 		if path == "" {
 			path = "/"
 		}
-		ws.put("path", path)
+		ws.Put("path", path)
 		if host := nodeStringField(input, "ws_host"); host != "" {
-			ws.put("headers", jo("Host", host))
+			ws.Put("headers", jo("Host", host))
 		}
-		stream.put("wsSettings", ws)
+		stream.Put("wsSettings", ws)
 	} else if network == "xhttp" {
-		stream.put("xhttpSettings", xhttpSettings(input))
+		stream.Put("xhttpSettings", xhttpSettings(input))
 	} else if network == "httpupgrade" {
 		hu := jo()
 		path := nodeStringField(input, "httpupgrade_path")
 		if path == "" {
 			path = "/"
 		}
-		hu.put("path", path)
+		hu.Put("path", path)
 		if host := nodeStringField(input, "httpupgrade_host"); host != "" {
-			hu.put("host", host)
+			hu.Put("host", host)
 		}
-		stream.put("httpupgradeSettings", hu)
+		stream.Put("httpupgradeSettings", hu)
 	}
 
 	if network == "tcp" && nodeStringField(input, "tcp_header_type") == "http" {
@@ -705,46 +705,46 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 		}
 		request := jo("version", "1.1", "method", "GET", "path", jsArr{reqPath})
 		if host := nodeStringField(input, "tcp_header_host"); host != "" {
-			request.put("headers", jo("Host", jsArr{host}))
+			request.Put("headers", jo("Host", jsArr{host}))
 		}
-		stream.put("tcpSettings", jo("header", jo("type", "http", "request", request)))
+		stream.Put("tcpSettings", jo("header", jo("type", "http", "request", request)))
 	}
 
 	if security == "tls" {
 		tls := jo()
 		if sni := nodeStringField(input, "tls_server_name"); sni != "" {
-			tls.put("serverName", sni)
+			tls.Put("serverName", sni)
 		}
 		if protocol == "hysteria" {
 			// HY2 走 QUIC，ALPN 固定协商 h3（与入站侧同规矩）：不写时默认 alpn 是 h2/http1.1，
 			// 对端 QUIC 握手不认，出站直接连不上。
-			tls.put("alpn", jsArr{"h3"})
+			tls.Put("alpn", jsArr{"h3"})
 		}
-		stream.put("tlsSettings", tls)
+		stream.Put("tlsSettings", tls)
 	} else if security == "reality" {
 		reality := jo()
 		if v := nodeStringField(input, "reality_server_name"); v != "" {
-			reality.put("serverName", v)
+			reality.Put("serverName", v)
 		}
 		if v := nodeStringField(input, "reality_public_key"); v != "" {
-			reality.put("publicKey", v)
+			reality.Put("publicKey", v)
 		}
 		if v := nodeStringField(input, "reality_short_id"); v != "" {
-			reality.put("shortId", v)
+			reality.Put("shortId", v)
 		}
 		fp := nodeStringField(input, "reality_fingerprint")
 		if fp == "" {
 			fp = "chrome"
 		}
-		reality.put("fingerprint", fp)
+		reality.Put("fingerprint", fp)
 		if v := nodeStringField(input, "reality_spider_x"); v != "" {
-			reality.put("spiderX", v)
+			reality.Put("spiderX", v)
 		}
-		stream.put("realitySettings", reality)
+		stream.Put("realitySettings", reality)
 	}
 
 	if dialerProxy != "" {
-		stream.put("sockopt", jo("dialerProxy", dialerProxy))
+		stream.Put("sockopt", jo("dialerProxy", dialerProxy))
 	}
 	return phpEncode(stream), true
 }
@@ -928,7 +928,7 @@ func (d *NodeDomain) applyWarpContext(ctx context.Context, node *NodeRecord, acc
 
 	// previousPeers = previous.peers[0]（换 IP 时保留 peers 里除账号字段外的自定义项）
 	previousPeers := jo()
-	if pv, ok := previous.get("peers"); ok {
+	if pv, ok := previous.Get("peers"); ok {
 		if arr, ok := pv.(jsArr); ok && len(arr) > 0 {
 			if po, ok := arr[0].(*jsObj); ok {
 				previousPeers = po
@@ -938,41 +938,41 @@ func (d *NodeDomain) applyWarpContext(ctx context.Context, node *NodeRecord, acc
 
 	// 新 settings = previous（去掉 secretKey/peers）+ 账号相关字段覆盖
 	settings := jo()
-	for _, k := range previous.keys {
+	for _, k := range previous.Keys() {
 		if k == "secretKey" || k == "peers" {
 			continue
 		}
-		v, _ := previous.get(k)
-		settings.put(k, v)
+		v, _ := previous.Get(k)
+		settings.Put(k, v)
 	}
 	if len(account.Addresses) > 0 {
-		settings.put("address", stringsToJSArr(account.Addresses))
+		settings.Put("address", stringsToJSArr(account.Addresses))
 	}
 	peerObj := jo()
-	for _, k := range previousPeers.keys {
-		v, _ := previousPeers.get(k)
-		peerObj.put(k, v)
+	for _, k := range previousPeers.Keys() {
+		v, _ := previousPeers.Get(k)
+		peerObj.Put(k, v)
 	}
-	peerObj.put("publicKey", account.PeerPublicKey)
-	peerObj.put("endpoint", account.PeerEndpoint)
-	settings.put("peers", jsArr{peerObj})
+	peerObj.Put("publicKey", account.PeerPublicKey)
+	peerObj.Put("endpoint", account.PeerEndpoint)
+	settings.Put("peers", jsArr{peerObj})
 	if len(account.Reserved) > 0 {
 		reserved := make(jsArr, len(account.Reserved))
 		for i, v := range account.Reserved {
 			reserved[i] = v
 		}
-		settings.put("reserved", reserved)
+		settings.Put("reserved", reserved)
 	}
 	// mtu / domainStrategy / noKernelTun：保留已有或补默认（对齐 PHP 的 ?? 语义）。
 	// 不写 domainStrategy 即 FORCE_IP：v4/v6 同时启用，隧道内目标解析随机落两族之一（IPv4-only 节点会不通）。
-	if _, ok := settings.get("mtu"); !ok {
-		settings.put("mtu", int64(1280))
+	if _, ok := settings.Get("mtu"); !ok {
+		settings.Put("mtu", int64(1280))
 	}
-	if _, ok := settings.get("domainStrategy"); !ok {
-		settings.put("domainStrategy", "ForceIPv4v6")
+	if _, ok := settings.Get("domainStrategy"); !ok {
+		settings.Put("domainStrategy", "ForceIPv4v6")
 	}
-	if _, ok := settings.get("noKernelTun"); !ok {
-		settings.put("noKernelTun", true)
+	if _, ok := settings.Get("noKernelTun"); !ok {
+		settings.Put("noKernelTun", true)
 	}
 
 	privateKey := account.PrivateKey

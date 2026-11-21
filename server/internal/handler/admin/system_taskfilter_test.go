@@ -46,9 +46,11 @@ func eventCommands(t *testing.T, obj *jsObj) []string {
 	t.Helper()
 	var eventsVal any
 	found := false
-	for i, k := range obj.keys {
+	keys := obj.Keys()
+	vals := obj.Vals()
+	for i, k := range keys {
 		if k == "events" {
-			eventsVal = obj.vals[i]
+			eventsVal = vals[i]
 			found = true
 			break
 		}
@@ -66,9 +68,11 @@ func eventCommands(t *testing.T, obj *jsObj) []string {
 		if !ok {
 			continue
 		}
-		for i, k := range o.keys {
+		keys := o.Keys()
+		vals := o.Vals()
+		for i, k := range keys {
 			if k == "command" {
-				if s, ok := o.vals[i].(string); ok {
+				if s, ok := vals[i].(string); ok {
 					out = append(out, s)
 				}
 				break

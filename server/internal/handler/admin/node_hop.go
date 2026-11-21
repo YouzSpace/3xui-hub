@@ -86,7 +86,7 @@ func (d *NodeDomain) hopProbe(c *gin.Context) {
 		"exclude", jsArr{},
 	)
 	if exclude := d.hopExcludePorts(c, node, inputInt(input["inbound_id"])); len(exclude) > 0 {
-		payload.put("exclude", hopPortsJSArr(exclude))
+		payload.Put("exclude", hopPortsJSArr(exclude))
 	}
 
 	d.runHopCommand(c, node, nodeapi.ActionPortProbe, payload)
@@ -621,7 +621,7 @@ func (d *NodeDomain) applyHysteriaHopAfterSave(c *gin.Context, node *NodeRecord,
 
 	hop := jo("auto", auto, "ports", ports, "applied", false)
 	fail := func(reason string) *jsObj {
-		hop.put("reason", reason)
+		hop.Put("reason", reason)
 		return hop
 	}
 	if degradeReason != "" {
@@ -647,6 +647,6 @@ func (d *NodeDomain) applyHysteriaHopAfterSave(c *gin.Context, node *NodeRecord,
 		return fail(out.ErrMsg)
 	}
 
-	hop.put("applied", true)
+	hop.Put("applied", true)
 	return hop
 }

@@ -325,7 +325,7 @@ func (d *NodeDomain) pickCertRenewNode(cert *XrayCertificate, ids []uint64, node
 func (d *NodeDomain) renewCertificateOnNode(ctx context.Context, node *NodeRecord, cert *XrayCertificate, domain string, force bool) (string, string, error) {
 	payload := jo("domain", domain, "method", certRenewMethod)
 	if force {
-		payload.put("force", true)
+		payload.Put("force", true)
 	}
 	out := d.runNodeCommandWait(ctx, node, "cert_issue", payload, d.cfg.CertIssueWait)
 	switch {

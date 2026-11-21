@@ -358,13 +358,13 @@ func outboundXHTTPQuery(xhttp any) string {
 	ext := jo()
 	padding := strings.TrimSpace(jsonGetString(xhttp, "xPaddingBytes"))
 	if padding != "" {
-		ext.put("xPaddingBytes", padding)
+		ext.Put("xPaddingBytes", padding)
 	}
 	if jsonBoolAt(xhttp, "xPaddingObfsMode") {
-		ext.put("xPaddingObfsMode", true)
+		ext.Put("xPaddingObfsMode", true)
 		for _, field := range []string{"xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"} {
 			if v := strings.TrimSpace(jsonGetString(xhttp, field)); v != "" {
-				ext.put(field, v)
+				ext.Put(field, v)
 			}
 		}
 	}
@@ -381,15 +381,15 @@ func outboundXHTTPQuery(xhttp any) string {
 		if v == "" || v == coreDefaults[field] {
 			continue
 		}
-		ext.put(field, v)
+		ext.Put(field, v)
 	}
 	if v := jsonIntAt(xhttp, "uplinkChunkSize"); v != 0 {
-		ext.put("uplinkChunkSize", v)
+		ext.Put("uplinkChunkSize", v)
 	}
 	if jsonBoolAt(xhttp, "noGRPCHeader") {
-		ext.put("noGRPCHeader", true)
+		ext.Put("noGRPCHeader", true)
 	}
-	if len(ext.keys) > 0 {
+	if len(ext.Keys()) > 0 {
 		query += "&extra=" + phpRawURLEncode(string(phpEncode(ext)))
 	}
 	if padding != "" {
@@ -465,23 +465,23 @@ func parseVMessLink(link string) (*jsObj, error) {
 	if net == "ws" {
 		ws := jo("path", stringOr(nodeScalarString(valueOrNil(d, "path")), "/"))
 		if host := nodeScalarString(valueOrNil(d, "host")); host != "" {
-			ws.put("headers", jo("Host", host))
+			ws.Put("headers", jo("Host", host))
 		}
-		stream.put("wsSettings", ws)
+		stream.Put("wsSettings", ws)
 	} else if net == "xhttp" {
 		xhttp := jo("path", stringOr(nodeScalarString(valueOrNil(d, "path")), "/"))
 		if host := nodeScalarString(valueOrNil(d, "host")); host != "" {
-			xhttp.put("host", host)
+			xhttp.Put("host", host)
 		}
-		stream.put("xhttpSettings", xhttp)
+		stream.Put("xhttpSettings", xhttp)
 	}
 	if tls {
 		sni := stringOr(nodeScalarString(valueOrNil(d, "sni")), nodeScalarString(valueOrNil(d, "host")))
 		tlsSettings := jo()
 		if sni != "" {
-			tlsSettings.put("serverName", sni)
+			tlsSettings.Put("serverName", sni)
 		}
-		stream.put("tlsSettings", tlsSettings)
+		stream.Put("tlsSettings", tlsSettings)
 	}
 
 	settings := jo("vnext", jsArr{jo(
@@ -542,21 +542,21 @@ func parseDispatchLink(link, protocol string) (*jsObj, error) {
 	if security == "reality" {
 		reality := jo()
 		if v := query["sni"]; v != "" {
-			reality.put("serverName", v)
+			reality.Put("serverName", v)
 		}
 		if v := query["pbk"]; v != "" {
-			reality.put("publicKey", v)
+			reality.Put("publicKey", v)
 		}
 		if v := query["sid"]; v != "" {
-			reality.put("shortId", v)
+			reality.Put("shortId", v)
 		}
 		if v := query["fp"]; v != "" {
-			reality.put("fingerprint", v)
+			reality.Put("fingerprint", v)
 		}
 		if v := query["spx"]; v != "" {
-			reality.put("spiderX", v)
+			reality.Put("spiderX", v)
 		}
-		stream.put("realitySettings", reality)
+		stream.Put("realitySettings", reality)
 	} else if security == "tls" {
 		sni := query["sni"]
 		if sni == "" {
@@ -564,9 +564,9 @@ func parseDispatchLink(link, protocol string) (*jsObj, error) {
 		}
 		tlsSettings := jo()
 		if sni != "" {
-			tlsSettings.put("serverName", sni)
+			tlsSettings.Put("serverName", sni)
 		}
-		stream.put("tlsSettings", tlsSettings)
+		stream.Put("tlsSettings", tlsSettings)
 	}
 	applyLinkTransport(stream, network, query)
 
@@ -579,7 +579,7 @@ func parseDispatchLink(link, protocol string) (*jsObj, error) {
 	if protocol == "vless" {
 		user := jo("id", u.UserDecoded, "encryption", "none")
 		if flow := query["flow"]; flow != "" {
-			user.put("flow", flow)
+			user.Put("flow", flow)
 		}
 		settings = jo("vnext", jsArr{jo(
 			"address", host,
@@ -694,26 +694,26 @@ func parseHysteriaLink(link string) (*jsObj, error) {
 
 	tls := jo()
 	if sni := strings.TrimSpace(query["sni"]); sni != "" {
-		tls.put("serverName", sni)
+		tls.Put("serverName", sni)
 	}
 	if nodeTruthy(query["insecure"]) {
-		tls.put("allowInsecure", true)
+		tls.Put("allowInsecure", true)
 	}
-	stream.put("tlsSettings", tls)
+	stream.Put("tlsSettings", tls)
 
 	// 数值一律 int64：jsonInt 不认 Go 的 int，回读会变 0（DB 来回一趟才会被规范成 float64）。
 	hy := jo("version", int64(2))
 	if auth := hysteriaLinkAuth(u.UserDecoded); auth != "" {
-		hy.put("auth", auth)
+		hy.Put("auth", auth)
 	}
-	stream.put("hysteriaSettings", hy)
+	stream.Put("hysteriaSettings", hy)
 
 	if obfs := strings.TrimSpace(query["obfs"]); obfs != "" {
 		mask := jo("type", obfs)
 		if password := query["obfs-password"]; password != "" {
-			mask.put("settings", jo("password", password))
+			mask.Put("settings", jo("password", password))
 		}
-		stream.put("finalmask", jo("udp", jsArr{mask}))
+		stream.Put("finalmask", jo("udp", jsArr{mask}))
 	}
 
 	tag := linkFragment(link)
@@ -791,52 +791,54 @@ func applyLinkTransport(stream *jsObj, network string, query map[string]string) 
 		}
 		request := jo("version", "1.1", "method", "GET", "path", jsArr{path})
 		if host := strings.TrimSpace(query["host"]); host != "" {
-			request.put("headers", jo("Host", jsArr{host}))
+			request.Put("headers", jo("Host", jsArr{host}))
 		}
-		stream.put("tcpSettings", jo("header", jo("type", "http", "request", request)))
+		stream.Put("tcpSettings", jo("header", jo("type", "http", "request", request)))
 	case "ws":
 		ws := jo("path", stringOr(query["path"], "/"))
 		if query["host"] != "" {
-			ws.put("headers", jo("Host", query["host"]))
+			ws.Put("headers", jo("Host", query["host"]))
 		}
-		stream.put("wsSettings", ws)
+		stream.Put("wsSettings", ws)
 	case "xhttp":
 		xhttp := jo("path", stringOr(query["path"], "/"))
 		for _, key := range []string{"host", "mode"} {
 			if query[key] != "" {
-				xhttp.put(key, query[key])
+				xhttp.Put(key, query[key])
 			}
 		}
 		if extra := query["extra"]; extra != "" {
 			if parsed, err := parseOrderedJS([]byte(extra)); err == nil {
 				if obj, isObj := parsed.(*jsObj); isObj {
-					for i, k := range obj.keys {
-						xhttp.put(k, obj.vals[i])
+					keys := obj.Keys()
+					vals := obj.Vals()
+					for i, k := range keys {
+						xhttp.Put(k, vals[i])
 					}
 				}
 			}
 		}
 		if v := query["x_padding_bytes"]; v != "" {
-			if _, exists := xhttp.get("xPaddingBytes"); !exists {
-				xhttp.put("xPaddingBytes", v)
+			if _, exists := xhttp.Get("xPaddingBytes"); !exists {
+				xhttp.Put("xPaddingBytes", v)
 			}
 		}
-		stream.put("xhttpSettings", xhttp)
+		stream.Put("xhttpSettings", xhttp)
 	case "httpupgrade":
 		hu := jo("path", stringOr(query["path"], "/"))
 		if query["host"] != "" {
-			hu.put("host", query["host"])
+			hu.Put("host", query["host"])
 		}
-		stream.put("httpupgradeSettings", hu)
+		stream.Put("httpupgradeSettings", hu)
 	case "grpc":
 		grpc := jo()
 		if v := query["serviceName"]; v != "" {
-			grpc.put("serviceName", v)
+			grpc.Put("serviceName", v)
 		}
 		if v := query["authority"]; v != "" {
-			grpc.put("authority", v)
+			grpc.Put("authority", v)
 		}
-		stream.put("grpcSettings", grpc)
+		stream.Put("grpcSettings", grpc)
 	}
 }
 

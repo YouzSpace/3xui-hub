@@ -225,9 +225,11 @@ func normalizeThreeXStream(raw any) map[string]any {
 		if !ok {
 			return map[string]any{}
 		}
-		out := make(map[string]any, len(obj.keys))
-		for i, k := range obj.keys {
-			out[k] = jsToNative(obj.vals[i])
+		out := make(map[string]any, len(obj.Keys()))
+		keys := obj.Keys()
+		vals := obj.Vals()
+		for i, k := range keys {
+			out[k] = jsToNative(vals[i])
 		}
 		return out
 	}
@@ -238,9 +240,11 @@ func normalizeThreeXStream(raw any) map[string]any {
 func jsToNative(v any) any {
 	switch t := v.(type) {
 	case *jsObj:
-		out := make(map[string]any, len(t.keys))
-		for i, k := range t.keys {
-			out[k] = jsToNative(t.vals[i])
+		out := make(map[string]any, len(t.Keys()))
+		keys := t.Keys()
+		vals := t.Vals()
+		for i, k := range keys {
+			out[k] = jsToNative(vals[i])
 		}
 		return out
 	case jsArr:

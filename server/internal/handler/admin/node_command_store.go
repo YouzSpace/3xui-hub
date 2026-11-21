@@ -42,8 +42,10 @@ func toPHPOrdered(v any) any {
 	switch t := v.(type) {
 	case *jsObj:
 		out := ordObj{}
-		for i, k := range t.keys {
-			out = append(out, ordMember{Key: k, Value: toPHPOrdered(t.vals[i])})
+		keys := t.Keys()
+		vals := t.Vals()
+		for i, k := range keys {
+			out = append(out, ordMember{Key: k, Value: toPHPOrdered(vals[i])})
 		}
 		return out
 	case jsArr:

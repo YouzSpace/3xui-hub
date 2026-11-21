@@ -49,7 +49,7 @@ func wireGuardPeers(raw string) (jsArr, bool) {
 			}
 		}
 		if len(allowed) > 0 {
-			peer.put("allowedIPs", allowed)
+			peer.Put("allowedIPs", allowed)
 		}
 		peers = append(peers, peer)
 	}

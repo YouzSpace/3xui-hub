@@ -175,7 +175,7 @@ func (d *UserDomain) userIndex(c *gin.Context) {
 		// 余额只在按余额排序时回传：默认列表契约保持不变（不强塞新字段），
 		// 而余额页拿到后可直接显示，不必再逐行发 50 个余额请求。
 		if balanceOrder != "" {
-			item.put("balance", rows[i].Balance)
+			item.Put("balance", rows[i].Balance)
 		}
 		items = append(items, item)
 	}

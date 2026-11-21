@@ -43,7 +43,7 @@ func (d *NodeDomain) suggestInboundTag(c *gin.Context, node *NodeRecord, protoco
 	return tag, true
 }
 
-// sanitizeTagChars 复刻 preg_replace('/[^A-Za-z0-9_-]/', '', $base)。
+// sanitizeTagChars 复刻 preg_replace('/[^A-Za-z0-9_-]/', ”, $base)。
 func sanitizeTagChars(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -105,27 +105,27 @@ func xhttpSettings(input map[string]any) *jsObj {
 	// → 键序恒为 path → host → mode，空值只是被删掉，不会挪位。
 	s := jo("path", path)
 	if host := nodeStringField(input, "xhttp_host"); host != "" {
-		s.put("host", host)
+		s.Put("host", host)
 	}
-	s.put("mode", mode)
+	s.Put("mode", mode)
 
 	for _, pair := range xhttpStringFields {
 		if v := strings.TrimSpace(nodeStringField(input, pair[1])); v != "" {
-			s.put(pair[0], v)
+			s.Put(pair[0], v)
 		}
 	}
 	for _, pair := range xhttpBoolFields {
 		if inputBool(input[pair[1]]) {
-			s.put(pair[0], true)
+			s.Put(pair[0], true)
 		}
 	}
 	for _, pair := range xhttpIntFields {
 		if v := inputInt(input[pair[1]]); v > 0 {
-			s.put(pair[0], v)
+			s.Put(pair[0], v)
 		}
 	}
 	if headers := parseHeaderLines(nodeStringField(input, "xhttp_headers")); headers != nil {
-		s.put("headers", headers)
+		s.Put("headers", headers)
 	}
 
 	xmux := jo()
@@ -138,11 +138,11 @@ func xhttpSettings(input map[string]any) *jsObj {
 		{"hKeepAlivePeriod", "xhttp_xmux_h_keep_alive_period"},
 	} {
 		if v := strings.TrimSpace(nodeStringField(input, pair[1])); v != "" {
-			xmux.put(pair[0], v)
+			xmux.Put(pair[0], v)
 		}
 	}
-	if len(xmux.keys) > 0 {
-		s.put("xmux", xmux)
+	if len(xmux.Keys()) > 0 {
+		s.Put("xmux", xmux)
 	}
 	return s
 }
@@ -160,9 +160,9 @@ func parseHeaderLines(text string) *jsObj {
 		if k == "" {
 			continue
 		}
-		out.put(k, strings.TrimSpace(line[idx+1:]))
+		out.Put(k, strings.TrimSpace(line[idx+1:]))
 	}
-	if len(out.keys) == 0 {
+	if len(out.Keys()) == 0 {
 		return nil
 	}
 	return out
@@ -174,9 +174,11 @@ func headerLinesFrom(raw any) string {
 	if !ok {
 		return ""
 	}
-	lines := make([]string, 0, len(obj.keys))
-	for i, k := range obj.keys {
-		val := obj.vals[i]
+	lines := make([]string, 0, len(obj.Keys()))
+	keys := obj.Keys()
+	vals := obj.Vals()
+	for i, k := range keys {
+		val := vals[i]
 		if arr, isArr := val.(jsArr); isArr {
 			first := ""
 			if len(arr) > 0 {

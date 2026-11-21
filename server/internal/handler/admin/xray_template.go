@@ -592,7 +592,7 @@ func templatePlainJSON(v any) any {
 	case map[string]any:
 		obj := jo()
 		for _, k := range sortedKeys(t) {
-			obj.put(k, templatePlainJSON(t[k]))
+			obj.Put(k, templatePlainJSON(t[k]))
 		}
 		return obj
 	case []any:

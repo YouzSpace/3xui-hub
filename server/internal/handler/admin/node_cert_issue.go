@@ -106,10 +106,10 @@ func (d *NodeDomain) certIssue(c *gin.Context) {
 	payload := jo("domain", domain, "method", method)
 	if inputBool(input["force"]) {
 		// 立即重签：让 agent 给 acme.sh 带 --force（否则 acme 认为没到期会直接跳过）。
-		payload.put("force", true)
+		payload.Put("force", true)
 	}
 	if email := strings.TrimSpace(nodeStringField(input, "email")); email != "" {
-		payload.put("email", email)
+		payload.Put("email", email)
 	}
 	out := d.runNodeCommandSync(c, node, nodeapi.ActionCertIssue, payload, d.cfg.CertIssueWait)
 	switch {

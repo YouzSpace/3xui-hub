@@ -62,9 +62,9 @@ func (d *NodeDomain) warpRegister(c *gin.Context) {
 	}
 	if obj, isObj := presented.(*jsObj); isObj {
 		if applyError != "" {
-			obj.put("apply_error", applyError)
+			obj.Put("apply_error", applyError)
 		} else {
-			obj.put("apply_error", nil)
+			obj.Put("apply_error", nil)
 		}
 	}
 	d.success(c, presented)
@@ -100,7 +100,7 @@ func (d *NodeDomain) warpApply(c *gin.Context) {
 		return
 	}
 	if obj, isObj := presented.(*jsObj); isObj {
-		obj.put("config_version", fresh.ConfigVersion)
+		obj.Put("config_version", fresh.ConfigVersion)
 	}
 	d.success(c, presented)
 }
@@ -150,7 +150,7 @@ func (d *NodeDomain) warpRotate(c *gin.Context) {
 		return
 	}
 	if obj, isObj := presented.(*jsObj); isObj {
-		obj.put("config_version", fresh.ConfigVersion)
+		obj.Put("config_version", fresh.ConfigVersion)
 	}
 	d.success(c, presented)
 }
@@ -274,18 +274,18 @@ func (d *NodeDomain) presentWarp(c *gin.Context, node *NodeRecord) (any, bool) {
 		return presented, true
 	}
 
-	presented.put("device_id", nullableOrEmpty(account.DeviceID))
-	presented.put("peer_endpoint", nullableOrEmpty(account.PeerEndpoint))
-	presented.put("addresses", stringsToJSArr(account.Addresses))
+	presented.Put("device_id", nullableOrEmpty(account.DeviceID))
+	presented.Put("peer_endpoint", nullableOrEmpty(account.PeerEndpoint))
+	presented.Put("addresses", stringsToJSArr(account.Addresses))
 	reserved := make(jsArr, len(account.Reserved))
 	for i, v := range account.Reserved {
 		reserved[i] = v
 	}
-	presented.put("reserved", reserved)
-	presented.put("license_set", len(account.LicenseKey) >= 26)
-	presented.put("auto_rotate_hours", account.AutoRotateHours)
-	presented.put("last_rotate_at", nullableISO(account.LastRotateAt))
-	presented.put("updated_at", nullableISO(account.UpdatedAt))
+	presented.Put("reserved", reserved)
+	presented.Put("license_set", len(account.LicenseKey) >= 26)
+	presented.Put("auto_rotate_hours", account.AutoRotateHours)
+	presented.Put("last_rotate_at", nullableISO(account.LastRotateAt))
+	presented.Put("updated_at", nullableISO(account.UpdatedAt))
 	return presented, true
 }
 

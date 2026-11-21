@@ -72,13 +72,13 @@ func resultMap(results []GeodataUpdateResult) *jsObj {
 	for _, r := range results {
 		item := jo("status", r.Status)
 		if r.Status != "failed" {
-			item.put("size", r.Size)
-			item.put("sha256", r.SHA256)
+			item.Put("size", r.Size)
+			item.Put("sha256", r.SHA256)
 		}
 		if r.Message != "" {
-			item.put("message", r.Message)
+			item.Put("message", r.Message)
 		}
-		out.put(r.Name, item)
+		out.Put(r.Name, item)
 	}
 	return out
 }

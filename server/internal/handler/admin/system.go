@@ -121,13 +121,13 @@ func (d *SystemDomain) taskStatuses(ctx context.Context) (*jsObj, error) {
 			"has_mutex", ev.HasMutex,
 		)
 		if last != nil {
-			item.put("last_run", nullableEloq(last.RanAt))
-			item.put("last_status", last.Status)
-			item.put("last_error", nullableStr(last.Error))
+			item.Put("last_run", nullableEloq(last.RanAt))
+			item.Put("last_status", last.Status)
+			item.Put("last_error", nullableStr(last.Error))
 			if last.DurationMS != nil {
-				item.put("last_dur_ms", *last.DurationMS)
+				item.Put("last_dur_ms", *last.DurationMS)
 			} else {
-				item.put("last_dur_ms", nil)
+				item.Put("last_dur_ms", nil)
 			}
 		}
 		events = append(events, item)
@@ -339,10 +339,10 @@ func presentOperationLog(l *OperationLogRow, withIP bool) *jsObj {
 		"error", nullableStr(l.Error),
 	)
 	if withIP {
-		out.put("ip", nullableStr(l.IP))
+		out.Put("ip", nullableStr(l.IP))
 	}
 	// auditLogs 用 toISOString()（Eloquent 口径 .000000Z）；status() 的 logs 是 Eloquent 模型输出同款
-	out.put("created_at", nullableEloq(l.CreatedAt))
+	out.Put("created_at", nullableEloq(l.CreatedAt))
 	return out
 }
 

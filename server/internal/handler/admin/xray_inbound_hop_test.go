@@ -71,9 +71,11 @@ func jsField(o *jsObj, key string) any {
 	if o == nil {
 		return nil
 	}
-	for i, k := range o.keys {
+	iKeys := o.Keys()
+	iVals := o.Vals()
+	for i, k := range iKeys {
 		if k == key {
-			return o.vals[i]
+			return iVals[i]
 		}
 	}
 	return nil

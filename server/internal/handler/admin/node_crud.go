@@ -183,9 +183,9 @@ func (d *NodeDomain) nodeStore(c *gin.Context) {
 	}
 	message := "创建成功，接入初始化进行中（日志页可跟踪进度）"
 	if obj, isObj := presented.(*jsObj); isObj {
-		obj.put("init_task_id", task.ID)
-		obj.put("init_status", task.Status)
-		obj.put("message", message)
+		obj.Put("init_task_id", task.ID)
+		obj.Put("init_status", task.Status)
+		obj.Put("message", message)
 	}
 	d.success(c, presented, message)
 }
@@ -334,8 +334,8 @@ func (d *NodeDomain) nodeUpdate(c *gin.Context) {
 	if syncTask != nil {
 		message := "已更新，用户正在后台同步到新入站（日志页可看进度）"
 		if obj, isObj := presented.(*jsObj); isObj {
-			obj.put("sync_task_id", syncTask.ID)
-			obj.put("message", message)
+			obj.Put("sync_task_id", syncTask.ID)
+			obj.Put("message", message)
 		}
 		d.success(c, presented, message)
 		return
@@ -563,8 +563,8 @@ func (d *NodeDomain) probeInbounds(c *gin.Context) {
 	grouped := jo("vless", jsArr{}, "trojan", jsArr{})
 	for _, in := range inbounds {
 		proto := nodeScalarString(in["protocol"])
-		if _, exists := grouped.get(proto); !exists {
-			grouped.put(proto, jsArr{})
+		if _, exists := grouped.Get(proto); !exists {
+			grouped.Put(proto, jsArr{})
 		}
 		remark := nodeScalarString(in["remark"])
 		if remark == "" {
@@ -577,8 +577,8 @@ func (d *NodeDomain) probeInbounds(c *gin.Context) {
 		if port == "" {
 			port = "?"
 		}
-		arr, _ := grouped.get(proto)
-		grouped.put(proto, append(arr.(jsArr), jo(
+		arr, _ := grouped.Get(proto)
+		grouped.Put(proto, append(arr.(jsArr), jo(
 			"id", jsonInt(in["id"]),
 			"remark", remark,
 			"label", remark+" ("+proto+" :"+port+")",

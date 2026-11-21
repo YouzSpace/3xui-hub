@@ -63,11 +63,11 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 	if v, present := input["hy_udp_idle_timeout"]; present && inputInt(v) != 0 {
 		idle = inputInt(v)
 	}
-	hy.put("udpIdleTimeout", idle)
+	hy.Put("udpIdleTimeout", idle)
 	if masq := hysteriaMasquerade(input); masq != nil {
-		hy.put("masquerade", masq)
+		hy.Put("masquerade", masq)
 	}
-	stream.put("hysteriaSettings", hy)
+	stream.Put("hysteriaSettings", hy)
 
 	tls := jo()
 	sni := strings.TrimSpace(nodeStringField(input, "tls_server_name"))
@@ -76,15 +76,15 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 		sni = jsonGetString(prevStream, "tlsSettings", "serverName")
 	}
 	if sni != "" {
-		tls.put("serverName", sni)
+		tls.Put("serverName", sni)
 	}
 	// HY2 走 QUIC，协商的 ALPN 固定是 h3；不写这一项时部分客户端/内核组合握手失败。
 	// 只对 hysteria 生效，通用 TLS 入站分支不碰。
-	tls.put("alpn", jsArr{"h3"})
+	tls.Put("alpn", jsArr{"h3"})
 	// 高级 TLS 开关（3x-ui tlsSettings 同名字段）：缺省 false = 内核默认。
 	// 编辑时没带字段就沿用原值，避免一次改备注把开关清零。
-	tls.put("rejectUnknownSni", hyBoolField(input, "hy_reject_unknown_sni", prevStream, "tlsSettings", "rejectUnknownSni"))
-	tls.put("enableSessionResumption", hyBoolField(input, "hy_session_resumption", prevStream, "tlsSettings", "enableSessionResumption"))
+	tls.Put("rejectUnknownSni", hyBoolField(input, "hy_reject_unknown_sni", prevStream, "tlsSettings", "rejectUnknownSni"))
+	tls.Put("enableSessionResumption", hyBoolField(input, "hy_session_resumption", prevStream, "tlsSettings", "enableSessionResumption"))
 	// 证书走引用：只存证书库 id，渲染时解密注入 certificates。
 	certID := int64(0)
 	if v, present := input["tls_cert_id"]; present && v != nil {
@@ -95,9 +95,9 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 		certID = jsonInt(jsonGet(prevStream, "tlsSettings", xray.CertRefKey))
 	}
 	if certID > 0 {
-		tls.put(xray.CertRefKey, certID)
+		tls.Put(xray.CertRefKey, certID)
 	}
-	stream.put("tlsSettings", tls)
+	stream.Put("tlsSettings", tls)
 
 	// finalmask：congestion、brutal 带宽、QUIC 窗口与端口跳跃都在 quicParams 下。
 	quic := jo()
@@ -107,7 +107,7 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 		cong = jsonGetString(prevStream, "finalmask", "quicParams", "congestion")
 	}
 	if cong != "" {
-		quic.put("congestion", cong)
+		quic.Put("congestion", cong)
 	}
 	// 内核硬约束（实测 26.3.27）：force-brutal 必须带上行带宽，否则整份节点配置被
 	// 「force-brutal requires up」拒掉 —— 面板要在提交时就拦住。
@@ -124,7 +124,7 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 			{"hy_brutal_down", "brutalDown"},
 		} {
 			if mbps := hyMbpsField(input, b.inputKey, prevStream, b.wireKey); mbps > 0 {
-				quic.put(b.wireKey, strconv.FormatInt(mbps, 10)+" Mbps")
+				quic.Put(b.wireKey, strconv.FormatInt(mbps, 10)+" Mbps")
 			}
 		}
 	}
@@ -143,13 +143,13 @@ func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, s
 			d.fail(c, "HY2 的 "+w.label+"至少 16384 字节，或留空/填 0 用内核默认（内核会拒掉更小的值）", 500)
 			return false
 		}
-		quic.put(w.wireKey, n)
+		quic.Put(w.wireKey, n)
 	}
 	if hopPorts != "" {
-		quic.put("udpHop", jo("ports", hopPorts, "interval", hopInterval))
+		quic.Put("udpHop", jo("ports", hopPorts, "interval", hopInterval))
 	}
-	if len(quic.keys) > 0 {
-		stream.put("finalmask", jo("quicParams", quic))
+	if len(quic.Keys()) > 0 {
+		stream.Put("finalmask", jo("quicParams", quic))
 	}
 	return true
 }
@@ -200,13 +200,13 @@ func applyHysteriaSalamander(input map[string]any, stream *jsObj, prevStream any
 
 // setSalamanderUDP 把 udp 段写进 stream.finalmask，保留同层的 quicParams 等键。
 func setSalamanderUDP(stream *jsObj, udp jsArr) {
-	finalmask, _ := stream.get("finalmask")
+	finalmask, _ := stream.Get("finalmask")
 	fm, ok := finalmask.(*jsObj)
 	if !ok {
 		fm = jo()
 	}
-	fm.put("udp", udp)
-	stream.put("finalmask", fm)
+	fm.Put("udp", udp)
+	stream.Put("finalmask", fm)
 }
 
 // hyBoolField 取布尔开关：请求里带了就按请求；没带则沿用落库原值；都没有 → false（内核默认）。
@@ -281,13 +281,13 @@ func hysteriaMasquerade(input map[string]any) *jsObj {
 	m := jo("type", typ)
 	switch typ {
 	case "proxy":
-		m.put("url", url)
+		m.Put("url", url)
 	case "file":
-		m.put("dir", dir)
+		m.Put("dir", dir)
 	case "string":
-		m.put("content", content)
+		m.Put("content", content)
 		if status != 0 {
-			m.put("statusCode", status)
+			m.Put("statusCode", status)
 		}
 	}
 	return m

@@ -456,7 +456,7 @@ func (d *PaymentDomain) validateConfig(c *gin.Context, isUpdate bool, existing *
 	return out, true
 }
 
-// paymentConfigStringValue 对齐 PHP `is_scalar($v) ? trim((string)$v) : ''`。
+// paymentConfigStringValue 对齐 PHP `is_scalar($v) ? trim((string)$v) : ”`。
 func paymentConfigStringValue(v any) string {
 	if v == nil {
 		return ""
@@ -488,12 +488,12 @@ func (d *PaymentDomain) present(row *PaymentRow, full bool) *jsObj {
 		"created_at", nullableISO(row.CreatedAt),
 	)
 	if full {
-		out.put("api_key", row.APIKey)
+		out.Put("api_key", row.APIKey)
 	} else {
 		has := row.APIKey != "" || row.DriverConfig["api_key"] != ""
-		out.put("has_api_key", has)
+		out.Put("has_api_key", has)
 	}
-	out.put("driver_config", d.presentDriverConfig(row, driverType))
+	out.Put("driver_config", d.presentDriverConfig(row, driverType))
 	return out
 }
 
@@ -537,7 +537,7 @@ func (d *PaymentDomain) presentDriverConfig(row *PaymentRow, driverType string) 
 		if secret {
 			val = ""
 		}
-		out.put(k, val)
+		out.Put(k, val)
 	}
 
 	if fromLegacy {

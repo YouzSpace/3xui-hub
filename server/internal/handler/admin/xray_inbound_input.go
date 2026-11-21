@@ -148,7 +148,7 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 			publicKey = jsonGetString(prev, "realitySettings", "publicKey")
 		}
 
-		stream.put("realitySettings", d.realitySettings(input, publicKey))
+		stream.Put("realitySettings", d.realitySettings(input, publicKey))
 		in.RealityPrivateKey = &privateKey
 		in.RealityKeySet = true
 	} else if existing != nil {
@@ -187,24 +187,24 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		if path == "" {
 			path = "/"
 		}
-		ws.put("path", path)
+		ws.Put("path", path)
 		if host := nodeStringField(input, "ws_host"); host != "" {
-			ws.put("host", host)
+			ws.Put("host", host)
 		}
-		stream.put("wsSettings", ws)
+		stream.Put("wsSettings", ws)
 	} else if network == "xhttp" {
-		stream.put("xhttpSettings", xhttpSettings(input))
+		stream.Put("xhttpSettings", xhttpSettings(input))
 	} else if network == "httpupgrade" {
 		hu := jo()
 		path := nodeStringField(input, "httpupgrade_path")
 		if path == "" {
 			path = "/"
 		}
-		hu.put("path", path)
+		hu.Put("path", path)
 		if host := nodeStringField(input, "httpupgrade_host"); host != "" {
-			hu.put("host", host)
+			hu.Put("host", host)
 		}
-		stream.put("httpupgradeSettings", hu)
+		stream.Put("httpupgradeSettings", hu)
 	}
 
 	// TCP header 伪装（type=http 时构造 request；响应段用内核默认）。
@@ -215,9 +215,9 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		}
 		request := jo("version", "1.1", "method", "GET", "path", jsArr{reqPath})
 		if host := nodeStringField(input, "tcp_header_host"); host != "" {
-			request.put("headers", jo("Host", jsArr{host}))
+			request.Put("headers", jo("Host", jsArr{host}))
 		}
-		stream.put("tcpSettings", jo("header", jo("type", "http", "request", request)))
+		stream.Put("tcpSettings", jo("header", jo("type", "http", "request", request)))
 	}
 
 	// hysteria 的 tlsSettings 已在 buildHysteriaStream 里按证书引用写好
@@ -233,7 +233,7 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		tls := jo()
 		sni := strings.ToLower(strings.TrimSpace(nodeStringField(input, "tls_server_name")))
 		if sni != "" {
-			tls.put("serverName", sni)
+			tls.Put("serverName", sni)
 		}
 		cert := nodeStringField(input, "tls_certificate")
 		key := nodeStringField(input, "tls_key")
@@ -260,11 +260,11 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 				return XrayInboundInput{}, false
 			}
 		}
-		tls.put(xray.CertRefKey, certID)
+		tls.Put(xray.CertRefKey, certID)
 		if cert != "" && key != "" {
-			tls.put("certificates", jsArr{jo("certificate", jsArr{cert}, "key", jsArr{key})})
+			tls.Put("certificates", jsArr{jo("certificate", jsArr{cert}, "key", jsArr{key})})
 		}
-		stream.put("tlsSettings", tls)
+		stream.Put("tlsSettings", tls)
 	}
 
 	if protocol == "hysteria" {
@@ -378,7 +378,7 @@ func sniffingSettings(input map[string]any) []byte {
 	}
 	config := jo("enabled", enabled, "destOverride", destOverride)
 	if v, ok := s["routeOnly"]; ok && inputBool(v) {
-		config.put("routeOnly", true)
+		config.Put("routeOnly", true)
 	}
 	return phpEncode(config)
 }
