@@ -8,7 +8,7 @@ ControlHub is an enterprise cross-border network service platform that handles a
 
 | 版本 / Version | 是否接收报告 / Accepting reports |
 |---|---|
-| 2.x 最新发布版 / latest 2.x release | 是 / Yes |
+| 3.x 最新发布版 / latest 3.x release | 是 / Yes |
 | 更早版本 / Older releases | 否，请先升级 / No — please upgrade first |
 
 我们会先确认漏洞在当前最新版上仍可复现，再评估影响。旧版本不做单独修复，修复进入下一个发布版。

@@ -1,7 +1,6 @@
 # CLAUDE.md —— 给 AI 编码助手的仓库说明
 
-开工前读完这一页：结构、命令、硬规矩。人类的贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，
-细则（组件分四类、composables、大文件拆分判据、反模式清单）见 [docs/CODE-STYLE.md](docs/CODE-STYLE.md)。
+开工前读完这一页：结构、命令、硬规矩。人类的贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 一句话 / What this is
 
