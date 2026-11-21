@@ -16,6 +16,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	protoimpl "controlhub-server/internal/protocol"
+	protosec "controlhub-server/internal/protocol/security"
+	prototrans "controlhub-server/internal/protocol/transport"
 )
 
 // 系统保留 tag 与不可作「借道出站」的协议（与 PHP 常量一致）。
@@ -508,11 +512,9 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		port = 53
 	}
 
+	// freedom / blackhole：无地址端口的固定 settings；其它未知协议回空对象。
 	switch protocol {
-	case "freedom":
-		return phpEncode(jo("domainStrategy", "AsIs"))
-	case "blackhole":
-		return phpEncode(jo())
+	case "freedom", "blackhole":
 	case "vmess", "vless", "trojan", "shadowsocks", "socks", "http", "hysteria", "dns":
 	default:
 		return phpEncode(jo())
@@ -527,87 +529,24 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		return nil
 	}
 
-	switch protocol {
-	case "vmess":
-		id, ok := requireField(nodeStringField(input, "user_id"), "user_id")
-		if !ok {
-			return nil
-		}
-		security := nodeStringField(input, "encryption")
-		if security == "" {
-			security = "auto"
-		}
-		return phpEncode(jo("vnext", jsArr{jo(
-			"address", addr,
-			"port", p,
-			"users", jsArr{jo("id", id, "alterId", int64(0), "security", security)},
-		)}))
-	case "vless":
-		id, ok := requireField(nodeStringField(input, "user_id"), "user_id")
-		if !ok {
-			return nil
-		}
-		user := jo("id", id, "encryption", "none")
-		if flow := nodeStringField(input, "flow"); flow != "" {
-			user.Put("flow", flow)
-		}
-		return phpEncode(jo("vnext", jsArr{jo(
-			"address", addr,
-			"port", p,
-			"users", jsArr{user},
-		)}))
-	case "trojan":
-		password, ok := requireField(nodeStringField(input, "password"), "password")
-		if !ok {
-			return nil
-		}
-		return phpEncode(jo("servers", jsArr{jo("address", addr, "port", p, "password", password)}))
-	case "shadowsocks":
-		method, ok := requireField(nodeStringField(input, "method"), "method")
-		if !ok {
-			return nil
-		}
-		password, ok := requireField(nodeStringField(input, "password"), "password")
-		if !ok {
-			return nil
-		}
-		return phpEncode(jo("servers", jsArr{jo(
-			"address", addr, "port", p, "method", method, "password", password,
-		)}))
-	case "socks", "http":
-		return phpEncode(jo("servers", jsArr{jo(
-			"address", addr,
-			"port", p,
-			"users", jsArr{jo(
-				"user", nodeStringField(input, "username"),
-				"pass", nodeStringField(input, "password"),
-			)},
-		)}))
-	case "hysteria":
-		// xray-core 的 hysteria 出站 settings 只认 version / address / port 三个键，
-		// 其余键（auth、up/down 之类）会被内核静默忽略 —— 写进来就是死配置。
-		// auth 属于传输层，见 buildOutboundStream 的 hysteriaSettings.auth；
-		// version 必须写 2（写 1 或省略，内核直接 "version != 2" 拒掉整份配置）。
-		// 落库形状（实测 xray 26.3.27）：
-		//   settings        = {version: 2, address, port}
-		//   streamSettings  = {network: hysteria, security: tls,
-		//                      hysteriaSettings: {version: 2, auth},
-		//                      tlsSettings: {serverName?, alpn: [h3]}}
-		return phpEncode(jo(
-			"version", int64(2),
-			"address", addr,
-			"port", p,
-		))
-	case "dns":
-		// dns 出站：官方 settings 形状 = {network: udp|tcp, address, port}。
-		network := "udp"
-		if s := nodeStringField(input, "dns_network"); s != "" {
-			network = s
-		}
-		return phpEncode(jo("network", network, "address", addr, "port", p))
+	// 协议无关字段直接用空地址/端口（freedom/blackhole 用不到）；协议 → settings 构造走 protocol 包。
+	obj, ok, handled := protoimpl.BuildOutboundSettings(protocol,
+		outboundFields{input}, addr, p,
+		func(v string) (string, bool) { return requireField(v, "") })
+	if !handled {
+		return phpEncode(jo())
 	}
-	return phpEncode(jo())
+	if !ok {
+		return nil
+	}
+	return phpEncode(obj)
 }
+
+// outboundFields 把出站表单 map 适配成 protocol/fields.Fields。
+type outboundFields struct{ m map[string]any }
+
+func (f outboundFields) Str(key string) string { return nodeStringField(f.m, key) }
+func (f outboundFields) Int(key string) int64  { return inputInt(f.m[key]) }
 
 // buildOutboundStream 对齐 buildStream()：按协议组装 streamSettings。
 func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, protocol string, input map[string]any, existing *XrayOutboundRecord) ([]byte, bool) {
@@ -672,75 +611,20 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 		stream.Put("hysteriaSettings", jo("version", int64(2), "auth", auth))
 	}
 
-	if network == "ws" {
-		ws := jo()
-		path := nodeStringField(input, "ws_path")
-		if path == "" {
-			path = "/"
-		}
-		ws.Put("path", path)
-		if host := nodeStringField(input, "ws_host"); host != "" {
-			ws.Put("headers", jo("Host", host))
-		}
-		stream.Put("wsSettings", ws)
-	} else if network == "xhttp" {
-		stream.Put("xhttpSettings", xhttpSettings(input))
-	} else if network == "httpupgrade" {
-		hu := jo()
-		path := nodeStringField(input, "httpupgrade_path")
-		if path == "" {
-			path = "/"
-		}
-		hu.Put("path", path)
-		if host := nodeStringField(input, "httpupgrade_host"); host != "" {
-			hu.Put("host", host)
-		}
-		stream.Put("httpupgradeSettings", hu)
-	}
-
-	if network == "tcp" && nodeStringField(input, "tcp_header_type") == "http" {
-		reqPath := nodeStringField(input, "tcp_header_path")
-		if reqPath == "" {
-			reqPath = "/"
-		}
-		request := jo("version", "1.1", "method", "GET", "path", jsArr{reqPath})
-		if host := nodeStringField(input, "tcp_header_host"); host != "" {
-			request.Put("headers", jo("Host", jsArr{host}))
-		}
-		stream.Put("tcpSettings", jo("header", jo("type", "http", "request", request)))
-	}
+	// 传输层（ws/xhttp/httpupgrade/tcp-header）走 protocol/transport 公共包。
+	prototrans.Apply(stream, network, input)
 
 	if security == "tls" {
-		tls := jo()
-		if sni := nodeStringField(input, "tls_server_name"); sni != "" {
-			tls.Put("serverName", sni)
-		}
-		if protocol == "hysteria" {
-			// HY2 走 QUIC，ALPN 固定协商 h3（与入站侧同规矩）：不写时默认 alpn 是 h2/http1.1，
-			// 对端 QUIC 握手不认，出站直接连不上。
-			tls.Put("alpn", jsArr{"h3"})
-		}
-		stream.Put("tlsSettings", tls)
+		// HY2 走 QUIC，ALPN 固定协商 h3；其它协议不写 alpn。
+		protosec.ApplyTLS(stream, nodeStringField(input, "tls_server_name"), protocol == "hysteria")
 	} else if security == "reality" {
-		reality := jo()
-		if v := nodeStringField(input, "reality_server_name"); v != "" {
-			reality.Put("serverName", v)
-		}
-		if v := nodeStringField(input, "reality_public_key"); v != "" {
-			reality.Put("publicKey", v)
-		}
-		if v := nodeStringField(input, "reality_short_id"); v != "" {
-			reality.Put("shortId", v)
-		}
-		fp := nodeStringField(input, "reality_fingerprint")
-		if fp == "" {
-			fp = "chrome"
-		}
-		reality.Put("fingerprint", fp)
-		if v := nodeStringField(input, "reality_spider_x"); v != "" {
-			reality.Put("spiderX", v)
-		}
-		stream.Put("realitySettings", reality)
+		protosec.ApplyReality(stream,
+			nodeStringField(input, "reality_server_name"),
+			nodeStringField(input, "reality_public_key"),
+			nodeStringField(input, "reality_short_id"),
+			nodeStringField(input, "reality_fingerprint"),
+			nodeStringField(input, "reality_spider_x"),
+		)
 	}
 
 	if dialerProxy != "" {
