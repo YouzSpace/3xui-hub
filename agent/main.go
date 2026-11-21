@@ -63,6 +63,9 @@ func main() {
 		logf("缺少 %s 内核（请重新执行安装命令）", p.XrayBin)
 		os.Exit(1)
 	}
+	// 手工替换内核后 state.json 里还是安装时的版本：实测校准一次，
+	// 注册 / 心跳才能把真实版本报给面板（探测失败沿用旧值，不阻断启动）。
+	syncXrayVersion(p, st)
 
 	hub := newHubClientMulti(hubCandidateURLs(st), st.NodeSecret)
 	logf("启动 agent v%s（%s → %s）", agentVersion, p.Dir, st.HubURL)

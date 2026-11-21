@@ -842,6 +842,9 @@ onBeforeUnmount(stopPoll)
           <span>容量上限（留空 = 不限）</span>
           <Input v-model="assignCapacity" type="number" min="1" step="1" mono placeholder="留空 = 不限" />
         </label>
+        <p class="rg-muted" data-test="capacity-hint">
+          容量是比例权重：按 已绑/容量 决定分配优先级，不是先填满小容量节点。
+        </p>
       </div>
       <template #footer>
         <Button variant="secondary" size="sm" @click="assignOpen = false">取消</Button>

@@ -24,8 +24,12 @@ import (
 var testSchema = fmt.Sprintf("ch_region08_scheduler_%d", os.Getpid())
 
 // testDSN 连本机 MySQL（root / 空密码），可用 REGION08_MYSQL_DSN 覆盖。
+// TEST_DSN 与仓库其他集成测试（handler/admin、subscription、task）同一口径，便于一把跑全量。
 func testDSN() string {
 	if dsn := os.Getenv("REGION08_MYSQL_DSN"); dsn != "" {
+		return dsn
+	}
+	if dsn := os.Getenv("TEST_DSN"); dsn != "" {
 		return dsn
 	}
 	return "root:@tcp(127.0.0.1:3306)/?timeout=3s"
