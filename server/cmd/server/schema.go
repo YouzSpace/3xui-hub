@@ -225,6 +225,16 @@ func ensureSchema(db *sql.DB) error {
 		// 非 NULL = 该入站属于这个地区；订阅按 COALESCE(入站, 节点) 过滤。
 		{"xray_inbounds", "region_id", "bigint unsigned DEFAULT NULL COMMENT '归属地区 id，NULL=跟随节点地区'"},
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
+		// 极老库（v2.7 之前的 Laravel 时代建表）users 缺这几列，而新代码的
+		// 批量入组 / 流量重置 / 邀请返佣都会直接引用 → SQL 1054。
+		// 全部按「可空 / 有默认值」补，老数据不受影响（客户报的就是缺 deleted_at）。
+		{"users", "deleted_at", "timestamp NULL DEFAULT NULL COMMENT '软删除时间'"},
+		{"users", "traffic_disabled_at", "timestamp NULL DEFAULT NULL COMMENT '最近一次关闭流量的时间'"},
+		{"users", "used_invite_code_id", "bigint unsigned DEFAULT NULL COMMENT '用过的邀请码 id'"},
+		{"users", "invite_code_used_at", "timestamp NULL DEFAULT NULL COMMENT '邀请码使用时间'"},
+		{"users", "next_traffic_reset_at", "datetime DEFAULT NULL COMMENT '下次流量重置时间'"},
+		{"users", "monthly_traffic_used", "bigint NOT NULL DEFAULT 0 COMMENT '本月已用流量'"},
+		{"users", "monthly_traffic_limit", "bigint NOT NULL DEFAULT 0 COMMENT '本月流量上限'"},
 		// App 版本分布（#App版本页 500 修复）：handler 与客户端上报都在写这三列，
 		// 老库从来没有建过 → /admin-api/app-versions 一直 500、上报静默失败。
 		{"users", "app_version_code", "int DEFAULT NULL COMMENT '客户端上报的版本号（build code）'"},
