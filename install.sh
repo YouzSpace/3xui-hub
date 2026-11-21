@@ -985,6 +985,16 @@ NGINX
     [ "${PIPESTATUS[0]}" -eq 0 ] || error_exit "Nginx 配置错误"
     systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
 
+    # reload 可能没生效（首次安装时 nginx 刚被拉起、或 reload 与 conf 落盘有竞态），
+    # 以 nginx -T 的**实际生效配置**为准：不一致就 restart 一次再验；仍不一致直接报错。
+    # 不验的话用户装完访问到的是旧端口（502 / 串站），而日志里全是「Nginx 配置完成」。
+    if ! nginx -T 2>/dev/null | grep -q "server 127.0.0.1:${PANEL_PORT};"; then
+        systemctl restart nginx 2>/dev/null || true
+        sleep 1
+    fi
+    nginx -T 2>/dev/null | grep -q "server 127.0.0.1:${PANEL_PORT};" \
+        || error_exit "Nginx 已写入 ${PANEL_PORT}，但 nginx -T 的生效配置里没有该 upstream，请执行 nginx -t 查看原因"
+
     success "Nginx 配置完成"
 }
 

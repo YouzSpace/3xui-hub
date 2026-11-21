@@ -647,6 +647,10 @@ ensure_nginx_go_proxy() {
     fi
     if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx >/dev/null 2>&1 || true
+        # reload 不生效时（rare）提示运维，不让「配置完成」变成假绿。
+        if ! nginx -T 2>/dev/null | grep -q "server 127.0.0.1:$(hub_listen_port);"; then
+            echo -e "${YELLOW}⚠ nginx 已写入 $(hub_listen_port) 端口，但生效配置里没找到该 upstream，请执行: nginx -t && systemctl restart nginx${NC}"
+        fi
         echo "Nginx: 已按规范模板重写 $(basename "$CONF")（纯反代 + 登录限流）"
         rm -f "${CONF}.bak-3hub"
     else
