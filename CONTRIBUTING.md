@@ -2,7 +2,7 @@
 
 ControlHub（仓库 `3xui-hub`）是 Go + Vue 3 的代理运营面板。提交前读完这一页，能省掉大部分来回沟通。
 
-Thanks for improving ControlHub. This page is the short version; the long version (component tiers, composables, splitting big files, anti-patterns) is in [docs/CODE-STYLE.md](docs/CODE-STYLE.md).
+Thanks for improving ControlHub. This page is the short version of the conventions we expect.
 
 ## 环境 / Requirements
 
@@ -52,7 +52,7 @@ cd frontend && npm run build && npx vitest run && npm run typecheck
 
 ## 代码规范 / Code Conventions
 
-细则见 [docs/CODE-STYLE.md](docs/CODE-STYLE.md)。这里是要点。
+这里的要点：
 
 ### Go
 
