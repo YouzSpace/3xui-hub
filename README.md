@@ -2,7 +2,7 @@
 
 企业级跨境电商网络服务运营平台 | Enterprise Cross-border Network Service Platform
 
-**版本：2.15.4**
+**版本：3.0.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -175,7 +175,7 @@ MIT License
 
 Enterprise cross-border network service platform — centralized management of nodes, users, plans, orders and payments.
 
-**Version: 2.15.4**
+**Version: 3.0.0**
 
 ## Screenshots
 
@@ -229,7 +229,7 @@ Visit http://localhost:8080
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-2.15.4-blue
+[version-shield]: https://img.shields.io/badge/version-3.0.0-blue
 [version-url]: https://github.com/YouzSpace/3xui-hub/releases
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
