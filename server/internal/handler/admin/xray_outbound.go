@@ -508,6 +508,7 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		port = 53
 	}
 
+	// freedom / blackhole：无地址端口的固定 settings；其它未知协议回空对象（与改动前一致）。
 	switch protocol {
 	case "freedom":
 		return phpEncode(jo("domainStrategy", "AsIs"))
@@ -527,84 +528,9 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		return nil
 	}
 
-	switch protocol {
-	case "vmess":
-		id, ok := requireField(nodeStringField(input, "user_id"), "user_id")
-		if !ok {
-			return nil
-		}
-		security := nodeStringField(input, "encryption")
-		if security == "" {
-			security = "auto"
-		}
-		return phpEncode(jo("vnext", jsArr{jo(
-			"address", addr,
-			"port", p,
-			"users", jsArr{jo("id", id, "alterId", int64(0), "security", security)},
-		)}))
-	case "vless":
-		id, ok := requireField(nodeStringField(input, "user_id"), "user_id")
-		if !ok {
-			return nil
-		}
-		user := jo("id", id, "encryption", "none")
-		if flow := nodeStringField(input, "flow"); flow != "" {
-			user.put("flow", flow)
-		}
-		return phpEncode(jo("vnext", jsArr{jo(
-			"address", addr,
-			"port", p,
-			"users", jsArr{user},
-		)}))
-	case "trojan":
-		password, ok := requireField(nodeStringField(input, "password"), "password")
-		if !ok {
-			return nil
-		}
-		return phpEncode(jo("servers", jsArr{jo("address", addr, "port", p, "password", password)}))
-	case "shadowsocks":
-		method, ok := requireField(nodeStringField(input, "method"), "method")
-		if !ok {
-			return nil
-		}
-		password, ok := requireField(nodeStringField(input, "password"), "password")
-		if !ok {
-			return nil
-		}
-		return phpEncode(jo("servers", jsArr{jo(
-			"address", addr, "port", p, "method", method, "password", password,
-		)}))
-	case "socks", "http":
-		return phpEncode(jo("servers", jsArr{jo(
-			"address", addr,
-			"port", p,
-			"users", jsArr{jo(
-				"user", nodeStringField(input, "username"),
-				"pass", nodeStringField(input, "password"),
-			)},
-		)}))
-	case "hysteria":
-		// xray-core 的 hysteria 出站 settings 只认 version / address / port 三个键，
-		// 其余键（auth、up/down 之类）会被内核静默忽略 —— 写进来就是死配置。
-		// auth 属于传输层，见 buildOutboundStream 的 hysteriaSettings.auth；
-		// version 必须写 2（写 1 或省略，内核直接 "version != 2" 拒掉整份配置）。
-		// 落库形状（实测 xray 26.3.27）：
-		//   settings        = {version: 2, address, port}
-		//   streamSettings  = {network: hysteria, security: tls,
-		//                      hysteriaSettings: {version: 2, auth},
-		//                      tlsSettings: {serverName?, alpn: [h3]}}
-		return phpEncode(jo(
-			"version", int64(2),
-			"address", addr,
-			"port",    p,
-		))
-	case "dns":
-		// dns 出站：官方 settings 形状 = {network: udp|tcp, address, port}。
-		network := "udp"
-		if s := nodeStringField(input, "dns_network"); s != "" {
-			network = s
-		}
-		return phpEncode(jo("network", network, "address", addr, "port", p))
+	// 协议 → settings 构造走 outboundSettingsBuilders 注册表（见 xray_outbound_settings.go）。
+	if build, ok := outboundSettingsBuilders[protocol]; ok {
+		return build(outboundSettingsCtx{d: d, c: c, address: addr, port: p, input: input})
 	}
 	return phpEncode(jo())
 }
@@ -618,16 +544,16 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 		}
 	}
 
-	if protocol == "freedom" || protocol == "blackhole" {
-		return phpEncode(jo()), true
-	}
-	// dns 出站没有传输层（udp/tcp 写在 settings.network 里），只保留「借道出口」。
-	if protocol == "dns" {
-		stream := jo()
-		if dialerProxy != "" {
-			stream.put("sockopt", jo("dialerProxy", dialerProxy))
+	if outboundEmptyStreamProtocols[protocol] {
+		if protocol == "dns" {
+			// dns 出站没有传输层（udp/tcp 写在 settings.network 里），只保留「借道出口」。
+			stream := jo()
+			if dialerProxy != "" {
+				stream.put("sockopt", jo("dialerProxy", dialerProxy))
+			}
+			return phpEncode(stream), true
 		}
-		return phpEncode(stream), true
+		return phpEncode(jo()), true
 	}
 
 	network := "tcp"
@@ -641,16 +567,16 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 
 	// hysteria 出站的传输层固定：内核只认 network=hysteria，且必须带 TLS
 	// （hysteria 传输 Dial 里拿不到 tlsSettings 就直接 "tls config is nil"）。
-	if protocol == "hysteria" {
-		network = "hysteria"
-		security = "tls"
+	if forced, ok := outboundStreamForced[protocol]; ok {
+		network = forced.network
+		security = forced.security
 	} else if network == "hysteria" {
 		d.fail(c, "hysteria 传输只用于 hysteria 出站", 500)
 		return nil, false
 	}
 
 	// 组合合法性（与入站同守）：Reality 仅 VLESS。
-	if security == "reality" && protocol != "vless" {
+	if security == "reality" && !outboundRealityAllowedProtocols[protocol] {
 		d.fail(c, "Reality 仅支持 VLESS 协议", 500)
 		return nil, false
 	}
