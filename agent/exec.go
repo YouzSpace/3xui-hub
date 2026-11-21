@@ -96,32 +96,75 @@ func runRmu(p Paths, cmd Command) AckResult {
 	return AckResult{ID: cmd.ID, Success: true, Output: truncate(out, 1500)}
 }
 
-// runTestOutbound 出站连通测试：本机直连目标 host:port（TCP 探活）。
-// payload = {host, port}；面板据回执判断网络层可达性。
+// runTestOutbound 出站连通性延时测试。
+//
+// 载荷（面板 #3.1.x）：{"targets":[{"tag":"美国","server":"1.2.3.4","port":6336}, ...]}
+// 回执：JSON 数组 [{"tag":"美国","ok":true,"latency_ms":35}, {"tag":"x","ok":false,"error":"..."}]
+// 面板 mergeOutboundTestResults 按 tag 对齐结果；一次指令测多条，别逐条下发。
+//
+// 兼容旧的单目标载荷 {"host":..., "port":...}（老面板 + 新 agent 的滚动升级）。
 func runTestOutbound(p Paths, cmd Command) AckResult {
 	var payload struct {
+		Targets []struct {
+			Tag    string `json:"tag"`
+			Server string `json:"server"`
+			Port   int    `json:"port"`
+		} `json:"targets"`
 		Host string `json:"host"`
 		Port int    `json:"port"`
 	}
 	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 		return AckResult{ID: cmd.ID, Success: false, Output: "载荷解析失败: " + err.Error()}
 	}
-	if payload.Host == "" || payload.Port <= 0 {
-		return AckResult{ID: cmd.ID, Success: false, Output: "host/port 缺失"}
+
+	targets := payload.Targets
+	if len(targets) == 0 && payload.Host != "" && payload.Port > 0 {
+		targets = append(targets, struct {
+			Tag    string `json:"tag"`
+			Server string `json:"server"`
+			Port   int    `json:"port"`
+		}{Tag: payload.Host, Server: payload.Host, Port: payload.Port})
+	}
+	if len(targets) == 0 {
+		return AckResult{ID: cmd.ID, Success: false, Output: "targets 缺失"}
 	}
 
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
+	type result struct {
+		Tag       string `json:"tag"`
+		OK        bool   `json:"ok"`
+		LatencyMS int64  `json:"latency_ms,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}
+	out := make([]result, 0, len(targets))
+	for _, t := range targets {
+		if t.Server == "" || t.Port <= 0 {
+			out = append(out, result{Tag: t.Tag, Error: "host/port 缺失"})
+			continue
+		}
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		dialer := netDialer()
+		conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", t.Server, t.Port))
+		elapsed := time.Since(start).Milliseconds()
+		// 回环/同机目标握手常 <1ms，整数毫秒会得 0；面板把 0ms 当「回执异常」
+		// （normalizeOutboundTestResult 不认 0 延迟），这里向上取到 1ms。
+		if elapsed == 0 {
+			elapsed = 1
+		}
+		cancel()
+		if err != nil {
+			out = append(out, result{Tag: t.Tag, Error: fmt.Sprintf("不可达（%dms）: %v", elapsed, err)})
+			continue
+		}
+		_ = conn.Close()
+		out = append(out, result{Tag: t.Tag, OK: true, LatencyMS: elapsed})
+	}
 
-	dialer := netDialer()
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", payload.Host, payload.Port))
-	elapsed := time.Since(start).Milliseconds()
+	body, err := json.Marshal(out)
 	if err != nil {
-		return AckResult{ID: cmd.ID, Success: false, Output: fmt.Sprintf("不可达（%dms）: %v", elapsed, err)}
+		return AckResult{ID: cmd.ID, Success: false, Output: "回执序列化失败: " + err.Error()}
 	}
-	_ = conn.Close()
-	return AckResult{ID: cmd.ID, Success: true, Output: fmt.Sprintf("可达 %s:%d（%dms）", payload.Host, payload.Port, elapsed)}
+	return AckResult{ID: cmd.ID, Success: true, Output: string(body)}
 }
 
 // execXrayAPI 运行 xray api 子命令，返回合并输出。
