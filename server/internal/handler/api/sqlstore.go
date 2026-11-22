@@ -296,8 +296,8 @@ func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
 // 节点上只要配了任何入站就该出现在列表里）。
 //
 // userID 决定绑定口径（与 nodeapi / subscription 同语义）：
-//   - 该用户在 user_nodes 里没有任何绑定 → 不做节点过滤（老用户升级后行为不变）；
-//   - 有绑定 → 只返回绑定给他的节点。
+//   - 该节点未归属地区（region_id IS NULL）→ 对所有用户全量下发（不看绑定）；
+//   - 该节点已归属地区 → 只对绑定到它的用户下发。
 //
 // 套餐地区（#地区功能-15，口径见 internal/planregion）：套餐绑了地区就只看得到这些地区，
 // 但 region_id 为 NULL 的老节点不受限 —— 套餐不限地区时不加任何条件。
@@ -317,10 +317,10 @@ func (s *sqlStore) OnlineNodesForProtocol(ctx context.Context, protocol string, 
 		                    WHERE xi.node_id = n.id AND xi.enabled = 1))
 		  )
 		  AND (
-		    NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)
+		    n.region_id IS NULL
 		    OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = ? AND un.node_id = n.id)
 		  )`
-	args := []any{userID, userID}
+	args := []any{userID}
 	if restricted {
 		clause, extra := planregion.NodeFilter(allowed)
 		query += clause

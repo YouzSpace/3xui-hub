@@ -1,14 +1,19 @@
 package subscription
 
-// 订阅按用户绑定过滤（#地区功能-03）集成测试。
+// 订阅按「节点是否归属地区」过滤（#地区功能-03）集成测试。
 //
 // 全部打真实 MySQL（独立库 ch_region03_*，用例内自建、结束即删），连不上就 skip ——
-// 要验证的正是「user_nodes 里有没有该用户的行」如何改变 SQL 结果，
+// 要验证的正是「region_id 是否为空 + 用户有没有绑定到已归属节点」如何改变 SQL 结果，
 // 打桩只会测到自己的 if 判断，等于没测。
 //
+// 口径（与 nodeapi / api 同语义）：
+//   - 未归属地区（region_id IS NULL）的节点 → 对所有用户全量下发；
+//   - 已归属地区的节点 → 只下发给绑定到它的用户。
+//
 // 变异测试靶子（去掉即必须变红）：
-//   - store.go 的 `NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)`
-//     兼容分支改成恒假 → TestRegion03UnboundUserGetsAllNodes 红。
+//   - store.go 的 `n.region_id IS NULL` 改成旧的
+//     `NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)` →
+//     TestRegion03UnassignedNodesVisibleToBoundUser 红。
 
 import (
 	"context"
@@ -127,13 +132,24 @@ func newRegion03Fixture(t *testing.T, schemaName string) *region03Fixture {
 	return &region03Fixture{repo: NewSQLRepository(db, nil), db: db}
 }
 
-// addNode 插一个节点；3x-ui 节点同时补一条 node_inbounds（否则它在原查询里也不可订阅）。
+// addNode 插一个节点（未归属地区）；3x-ui 节点同时补一条 node_inbounds。
 func (f *region03Fixture) addNode(t *testing.T, id int64, name, status string) {
 	t.Helper()
 	host := fmt.Sprintf("10.0.0.%d", id)
 	mustExec(t, f.db,
 		"INSERT INTO nodes (id, name, host, port, driver_type, status, enabled) VALUES (?, ?, ?, 443, '3x-ui', ?, 1)",
 		id, name, host, status)
+	mustExec(t, f.db,
+		"INSERT INTO node_inbounds (node_id, protocol, inbound_id) VALUES (?, 'vless', ?)", id, id)
+}
+
+// addAssignedNode 插一个已归属地区(region_id)的节点（+ 一条 node_inbounds）。
+func (f *region03Fixture) addAssignedNode(t *testing.T, id int64, name, status string, regionID int64) {
+	t.Helper()
+	host := fmt.Sprintf("10.1.0.%d", id)
+	mustExec(t, f.db,
+		"INSERT INTO nodes (id, name, host, port, driver_type, status, enabled, region_id) VALUES (?, ?, ?, 443, '3x-ui', ?, 1, ?)",
+		id, name, host, status, regionID)
 	mustExec(t, f.db,
 		"INSERT INTO node_inbounds (node_id, protocol, inbound_id) VALUES (?, 'vless', ?)", id, id)
 }
@@ -166,7 +182,7 @@ func equalIDs(t *testing.T, got, want []int64) {
 	}
 }
 
-// ─────────── 用例 1：用户无任何绑定 → 返回全部在线可订阅节点（老行为） ───────────
+// ─────────── 用例 1：未归属地区的节点 → 对所有用户全量下发（不看绑定） ───────────
 
 func TestRegion03UnboundUserGetsAllNodes(t *testing.T) {
 	f := newRegion03Fixture(t, "ch_region03_all")
@@ -181,13 +197,13 @@ func TestRegion03UnboundUserGetsAllNodes(t *testing.T) {
 	equalIDs(t, nodeIDs(nodes), []int64{1, 2, 3})
 }
 
-// ─────────── 用例 2：用户绑定 1 个节点（共 3 个在线）→ 只返回那 1 个 ───────────
+// ─────────── 用例 2：已归属地区的节点，只有绑定它的用户才看得到 ───────────
 
-func TestRegion03BoundUserGetsOnlyBoundNode(t *testing.T) {
+func TestRegion03AssignedNodeOnlyForBoundUser(t *testing.T) {
 	f := newRegion03Fixture(t, "ch_region03_one")
-	f.addNode(t, 1, "node-1", "online")
-	f.addNode(t, 2, "node-2", "online")
-	f.addNode(t, 3, "node-3", "online")
+	f.addAssignedNode(t, 1, "node-1", "online", 7)
+	f.addAssignedNode(t, 2, "node-2", "online", 7)
+	f.addAssignedNode(t, 3, "node-3", "online", 7)
 	f.bind(t, 7, 2)
 
 	nodes, err := f.repo.SubscribableNodes(context.Background(), "vless", 7)
@@ -196,39 +212,54 @@ func TestRegion03BoundUserGetsOnlyBoundNode(t *testing.T) {
 	}
 	equalIDs(t, nodeIDs(nodes), []int64{2})
 
-	// 同一份数据、没绑定的用户仍拿全部 —— 证明过滤是按用户走的，不是全局收敛
+	// 没绑定的用户：全部是三台已归属节点 → 一台都看不到（不再"无绑定即全量"）。
 	nodes, err = f.repo.SubscribableNodes(context.Background(), "vless", 8)
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
+	equalIDs(t, nodeIDs(nodes), []int64{})
+}
+
+// ─────────── 用例 2b：未归属节点 + 已归属节点混布：未归属的对绑定用户仍全量可见 ───────────
+
+func TestRegion03UnassignedNodesVisibleToBoundUser(t *testing.T) {
+	f := newRegion03Fixture(t, "ch_region03_mix")
+	f.addNode(t, 1, "node-1", "online")            // 未归属
+	f.addNode(t, 2, "node-2", "online")            // 未归属
+	f.addAssignedNode(t, 3, "node-3", "online", 7) // 已归属，绑给用户 7
+	f.addAssignedNode(t, 4, "node-4", "online", 7) // 已归属，未绑给用户 7
+	f.bind(t, 7, 3)
+
+	nodes, err := f.repo.SubscribableNodes(context.Background(), "vless", 7)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	// 1/2 未归属 → 全量；3 已归属且绑定 → 可见；4 已归属未绑定 → 排除。
 	equalIDs(t, nodeIDs(nodes), []int64{1, 2, 3})
 }
 
-// ─────────── 用例 3：用户绑定的节点离线 → 返回空（不是返回全部） ───────────
+// ─────────── 用例 3：绑定的已归属节点离线 → 该节点不出现（未归属的仍在） ───────────
 
-func TestRegion03BoundNodeOfflineReturnsEmpty(t *testing.T) {
+func TestRegion03BoundNodeOfflineExcluded(t *testing.T) {
 	f := newRegion03Fixture(t, "ch_region03_offline")
-	f.addNode(t, 1, "node-1", "online")
-	f.addNode(t, 2, "node-2", "offline") // 绑给他的是这个，但离线
-	f.addNode(t, 3, "node-3", "online")
+	f.addNode(t, 1, "node-1", "online")             // 未归属 → 全量
+	f.addAssignedNode(t, 2, "node-2", "offline", 7) // 已归属、绑给用户 7、但离线
 	f.bind(t, 7, 2)
 
 	nodes, err := f.repo.SubscribableNodes(context.Background(), "vless", 7)
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
-	if len(nodes) != 0 {
-		t.Fatalf("绑定节点离线时必须返回空，实际返回 %v", nodeIDs(nodes))
-	}
+	equalIDs(t, nodeIDs(nodes), []int64{1})
 }
 
-// ─────────── 用例 4：两个用户绑定不同节点 → 各拿各的 ───────────
+// ─────────── 用例 4：两个用户绑定不同已归属节点 → 各拿各的 ───────────
 
 func TestRegion03TwoUsersGetOwnNodes(t *testing.T) {
 	f := newRegion03Fixture(t, "ch_region03_two")
-	f.addNode(t, 1, "node-1", "online")
-	f.addNode(t, 2, "node-2", "online")
-	f.addNode(t, 3, "node-3", "online")
+	f.addAssignedNode(t, 1, "node-1", "online", 7)
+	f.addAssignedNode(t, 2, "node-2", "online", 7)
+	f.addAssignedNode(t, 3, "node-3", "online", 7)
 	f.bind(t, 11, 1)
 	f.bind(t, 12, 3)
 

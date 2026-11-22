@@ -229,7 +229,8 @@ func parseIDList(raw sql.NullString) []int64 {
 // map[string]any 的协议参数与 PHP 的 $user->protocol 字符串比较同义。
 //
 // userID 的口径与 internal/handler/api 的 OnlineNodesForProtocol 一致：
-// user_nodes 里没有该用户的任何一行 → 不过滤（升级前行为）；有行 → 只留绑定的节点。
+// 未归属地区（region_id IS NULL）的节点对所有用户全量下发（不看绑定）；
+// 已归属地区的节点只对绑定到它的用户下发。
 // 套餐地区（#地区功能-15）走同一份口径（internal/planregion）：套餐不限地区时不加任何条件。
 func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string, userID uint64) ([]Node, error) {
 	// api_key 必须一起取：它决定该节点走「并发组」还是「串行组」，
@@ -255,10 +256,10 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string, 
 			))
 		  )
 		  AND (
-			NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)
+			n.region_id IS NULL
 			OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.user_id = ? AND un.node_id = n.id)
 		  )`
-	args := []any{userID, userID}
+	args := []any{userID}
 	if restricted {
 		// 按入站过滤（#入站级分组）：只留下「有效地区命中」入站的节点；
 		// 一个命中的入站都没有 → 整台节点不出现在订阅里。

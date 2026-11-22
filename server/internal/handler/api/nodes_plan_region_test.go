@@ -68,7 +68,8 @@ func addPlanUser(t *testing.T, db *sql.DB, planID int64, regionIDs string, userI
 	}
 }
 
-// TestOnlineNodesPlanRegionFilters 套餐 [1]：2 号地区的节点不可见，老节点（region_id NULL）仍然可见。
+// TestOnlineNodesPlanRegionFilters 套餐 [1]：2 号地区的节点不可见（未绑），
+// 1 号地区可见（已绑），未归属地区的老节点 3 仍可见（region_id NULL 全量）。
 func TestOnlineNodesPlanRegionFilters(t *testing.T) {
 	db := newNodesBindingDB(t, planRegionSchema("planregion"))
 	addOnlineNode(t, db, 1, 1)
@@ -81,6 +82,7 @@ func TestOnlineNodesPlanRegionFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
+	// 1（已绑、套餐允许）、3（未归属，全量）；2 虽绑了但套餐 [1] 不允许 → 排除。
 	assertNodeIDs(t, nodes, []uint64{1, 3})
 }
 
