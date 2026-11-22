@@ -59,6 +59,7 @@ func (h *Handler) Register(r gin.IRouter) {
 	r.PUT("/site-settings", h.updateSiteSettings)
 	r.GET("/subscription-settings", h.showSubscriptionSettings)
 	r.PUT("/subscription-settings", h.updateSubscriptionSettings)
+	r.GET("/subscription-settings/clash-template", h.showDefaultClashTemplate)
 	r.GET("/app-version-settings", h.showAppVersionSettings)
 	r.PUT("/app-version-settings", h.updateAppVersionSettings)
 }

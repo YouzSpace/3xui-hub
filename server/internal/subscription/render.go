@@ -181,7 +181,6 @@ func (s *Service) generateClash(user *User, plan *Plan, links []string, cfg *sit
 	}
 
 	var b strings.Builder
-	b.WriteString(clashDNSConfig)
 	b.WriteString("proxies:\n")
 	for _, proxy := range proxies {
 		b.WriteString("  - name: \"" + phpString(field(proxy, "name")) + "\"\n")
@@ -237,12 +236,52 @@ func (s *Service) generateClash(user *User, plan *Plan, links []string, cfg *sit
 					b.WriteString("        " + kv.Key + ": \"" + phpString(kv.Value) + "\"\n")
 				}
 			}
+			// httpupgrade 在 mihomo 里是 ws + 这个开关（没有独立 network 值）。
+			if flag, has := wsOpts.get("v2ray-http-upgrade"); has && phpBoolText(flag) == "true" {
+				b.WriteString("      v2ray-http-upgrade: true\n")
+			}
+		}
+
+		// grpc：serviceName 必须输出，否则客户端用空值建 stream（服务端非空时必失败）。
+		if grpcOpts, ok := field(proxy, "grpc-opts").(phpMap); ok {
+			b.WriteString("    grpc-opts:\n")
+			b.WriteString("      grpc-service-name: \"" + phpString(field(grpcOpts, "grpc-service-name")) + "\"\n")
+		}
+
+		// tcp 的 HTTP 伪装：mihomo 用独立 network=http + http-opts（path / Host 都是数组）。
+		if httpOpts, ok := field(proxy, "http-opts").(phpMap); ok {
+			b.WriteString("    http-opts:\n")
+			if paths, hasPath := httpOpts.get("path"); hasPath {
+				if arr, isArr := paths.([]any); isArr {
+					b.WriteString("      path:\n")
+					for _, p := range arr {
+						b.WriteString("        - \"" + phpString(p) + "\"\n")
+					}
+				}
+			}
+			if headers, okHeaders := field(httpOpts, "headers").(phpMap); okHeaders {
+				b.WriteString("      headers:\n")
+				for _, kv := range headers {
+					if arr, isArr := kv.Value.([]any); isArr {
+						b.WriteString("        " + kv.Key + ":\n")
+						for _, v := range arr {
+							b.WriteString("          - \"" + phpString(v) + "\"\n")
+						}
+						continue
+					}
+					b.WriteString("        " + kv.Key + ": \"" + phpString(kv.Value) + "\"\n")
+				}
+			}
 		}
 
 		if xhttpOpts, ok := field(proxy, "xhttp-opts").(phpMap); ok {
 			b.WriteString("    xhttp-opts:\n")
 			b.WriteString("      path: \"" + phpString(field(xhttpOpts, "path")) + "\"\n")
 			b.WriteString("      mode: \"" + phpString(field(xhttpOpts, "mode")) + "\"\n")
+			// host 是服务端 XHTTP 的 Host 匹配（入站配了就必须带）。
+			if host, hasHost := xhttpOpts.get("host"); hasHost && phpString(host) != "" {
+				b.WriteString("      host: \"" + phpString(host) + "\"\n")
+			}
 			if v, has := xhttpOpts.get("x-padding-bytes"); has {
 				b.WriteString("      x-padding-bytes: " + phpString(v) + "\n")
 			}
@@ -252,18 +291,13 @@ func (s *Service) generateClash(user *User, plan *Plan, links []string, cfg *sit
 		// （httpupgrade 只影响 network 值），此处保持一致 —— 不是遗漏。
 	}
 
-	b.WriteString("\nproxy-groups:\n")
-	b.WriteString("  - name: \"Proxy\"\n")
-	b.WriteString("    type: select\n")
-	b.WriteString("    proxies:\n")
-	for _, name := range proxyNames {
-		b.WriteString("      - \"" + name + "\"\n")
+	// 模板：管理员在「订阅配置 → Clash 模板」里填的优先；空则用内置默认。
+	// 内置默认 = 抽取前的硬编码输出（DNS + proxies + Proxy 组 + clashRules），逐字节一致。
+	tmpl := cfg.get("sub_clash_template", "")
+	if tmpl == "" {
+		tmpl = DefaultClashTemplate
 	}
-
-	b.WriteString("\nrules:\n")
-	b.WriteString(clashRules)
-
-	return b.String()
+	return RenderClashTemplate(tmpl, b.String(), proxyNames, cfg.get("site_title", ""))
 }
 
 // writeClashScalar 输出 `    {label}: {value}`（键存在即输出，空串也输出）。

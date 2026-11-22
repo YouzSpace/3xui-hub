@@ -151,6 +151,7 @@ export const adminApi = {
   // 订阅格式配置
   getSubscriptionSettings: () => client.get('/admin-api/subscription-settings'),
   updateSubscriptionSettings: (data) => client.put('/admin-api/subscription-settings', data),
+  getDefaultClashTemplate: () => client.get('/admin-api/subscription-settings/clash-template'),
 
   // App 版本分发（升级规则 + 版本分布）
   getAppVersionSettings: () => client.get('/admin-api/app-version-settings'),

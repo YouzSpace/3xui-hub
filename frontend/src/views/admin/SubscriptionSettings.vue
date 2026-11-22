@@ -27,6 +27,7 @@ const form = ref({
   sub_custom_info_enabled: '0',
   sub_custom_info_text: '',
   sub_title: '',
+  sub_clash_template: '',
 })
 
 const load = async () => {
@@ -55,6 +56,20 @@ const save = async () => {
 
 const toggleFormat = (key) => {
   form.value[key] = form.value[key] === '1' ? '0' : '1'
+}
+
+// 载入内置默认模板到编辑器（方便在默认基础上改），保存后即成为自定义模板。
+const loadingTemplate = ref(false)
+const loadDefaultTemplate = async () => {
+  loadingTemplate.value = true
+  try {
+    const tmpl = await adminApi.getDefaultClashTemplate()
+    form.value.sub_clash_template = typeof tmpl === 'string' ? tmpl : ''
+  } catch (e) {
+    toast.error('读取默认模板失败')
+  } finally {
+    loadingTemplate.value = false
+  }
 }
 
 onMounted(load)
@@ -243,6 +258,38 @@ onActivated(load)
               ></textarea>
               <p class="sub-settings-field-hint">每行生成一个信息条目，排在真实节点之前，空行忽略</p>
             </div>
+          </div>
+        </div>
+
+        <!-- Clash 模板 -->
+        <div class="sub-settings-section">
+          <h3 class="sub-settings-section-title">Clash 模板</h3>
+          <p class="sub-settings-section-desc">
+            自定义 Clash 订阅的结构（DNS、代理组、分流规则）。留空使用内置默认模板。
+          </p>
+
+          <div class="sub-settings-field">
+            <textarea
+              v-model="form.sub_clash_template"
+              class="sub-settings-textarea sub-settings-textarea--mono"
+              rows="14"
+              spellcheck="false"
+              placeholder="留空使用内置默认模板；点「载入默认模板」可以拿到当前默认内容再改"
+            ></textarea>
+            <p class="sub-settings-field-hint">
+              占位符：<code v-pre>{{proxies}}</code> 节点列表（必须保留）、<code v-pre>{{app_name}}</code> 站点标题；
+              代理组里写 <code v-pre>- "regex:香港|HK"</code> 会自动展开成匹配的节点名。
+              保存前会检查 YAML 语法，写坏了会拦下来。
+            </p>
+          </div>
+
+          <div class="sub-settings-inline-actions">
+            <Button variant="secondary" size="sm" :disabled="loadingTemplate" @click="loadDefaultTemplate">
+              <Icon name="refresh" :size="16" /> {{ loadingTemplate ? '读取中...' : '载入默认模板' }}
+            </Button>
+            <Button variant="ghost" size="sm" @click="form.sub_clash_template = ''">
+              清空（用默认）
+            </Button>
           </div>
         </div>
 

@@ -143,6 +143,12 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		if h := jsonFieldString(stream, "httpupgradeSettings", "host"); h != "" {
 			query += "&host=" + rawurlencode(h)
 		}
+	case "grpc":
+		// v2ray/xray 链接约定：grpc 的 serviceName 走 serviceName 参数。
+		// 缺了它，客户端会用空 serviceName 建 stream，服务端配了非空就必然握手失败。
+		if sn := jsonFieldString(stream, "grpcSettings", "serviceName"); sn != "" {
+			query += "&serviceName=" + rawurlencode(sn)
+		}
 	case "xhttp":
 		// 与出站链接生成器同源：xhttp 参数（含高级字段 extra / x_padding_bytes）
 		query += xhttpQuery(jsonFieldMap(stream, "xhttpSettings"))
@@ -183,6 +189,25 @@ func xrayVmessURI(node Node, inbound XrayInbound, user *User, host string) strin
 	}
 	wsHost := jsonFieldString(stream, "wsSettings", "host")
 	wsPath := jsonFieldString(stream, "wsSettings", "path")
+	// vmess 分享 JSON 的 "type" 表示 tcp 伪装方式；grpc 的 serviceName 放在 path。
+	vmType := "none"
+	switch network {
+	case "grpc":
+		wsPath = jsonFieldString(stream, "grpcSettings", "serviceName")
+	case "tcp":
+		if jsonFieldString(stream, "tcpSettings", "header", "type") == "http" {
+			vmType = "http"
+			headerHost, _ := firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "request", "headers", "Host"))
+			reqPath, okPath := firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "request", "path"))
+			if !okPath {
+				reqPath = "/"
+			}
+			if headerHost != "" {
+				wsHost = headerHost
+			}
+			wsPath = reqPath
+		}
+	}
 
 	tls, sni := "", ""
 	if security == "tls" {
@@ -202,7 +227,7 @@ func xrayVmessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		"aid", "0",
 		"scy", "auto",
 		"net", network,
-		"type", "none",
+		"type", vmType,
 		"host", wsHost,
 		"path", wsPath,
 		"tls", tls,

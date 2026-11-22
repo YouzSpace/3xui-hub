@@ -617,7 +617,7 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 			}
 		}
 	}
-	mergeSegment(prototrans.BuildOutbound(network, input))
+	mergeSegment(prototrans.BuildOutbound(network, transportFriendlyInput(input)))
 	if security == "tls" {
 		mergeSegment(protosec.TLS(nodeStringField(input, "tls_server_name"), protocol == "hysteria"))
 	} else if security == "reality" {

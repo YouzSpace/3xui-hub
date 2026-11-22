@@ -64,7 +64,7 @@ func sanitizeTagChars(s string) string {
 // xhttpSettings 组装入站 xhttp settings —— 委托 internal/protocol/transport（单一真相源），
 // 转换回 admin 的 jsObj（protocol.Object 与 admin jsObj 是不同类型，用 parseOrderedJS 桥接）。
 func xhttpSettings(input map[string]any) *jsObj {
-	parsed, err := parseOrderedJS(prototrans.EncodeXHTTP(input))
+	parsed, err := parseOrderedJS(prototrans.EncodeXHTTP(transportFriendlyInput(input)))
 	if err != nil {
 		return jo()
 	}

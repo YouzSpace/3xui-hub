@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"controlhub-server/internal/subscription"
 )
 
 // ---- 自定义公开首页 ----
@@ -232,11 +234,13 @@ var siteSettingKeys = []string{
 }
 
 // subscriptionSettingKeys 是 SubscriptionSettingController::FIELDS。
+// sub_clash_template 是 Go 侧新增（照 Xboard 的 ClashMeta 模板）：整段 Clash YAML，
+// 留空 = 内置默认模板；保存时由 updateSubscriptionSettings 校验。
 var subscriptionSettingKeys = []string{
 	"sub_clash_enabled", "sub_singbox_enabled", "sub_show_traffic", "sub_show_expire",
 	"sub_show_flag", "sub_show_userid", "sub_rename_enabled", "sub_rename_regex",
 	"sub_rename_replacement", "sub_custom_info_enabled", "sub_custom_info_text",
-	"sub_title",
+	"sub_title", "sub_clash_template",
 }
 
 // showSiteSettings 对齐 GET /admin-api/site-settings（缺失键补空串）。
@@ -255,8 +259,26 @@ func (h *Handler) showSubscriptionSettings(c *gin.Context) {
 }
 
 // updateSubscriptionSettings 对齐 PUT /admin-api/subscription-settings。
+//
+// sub_clash_template 额外校验：一份写坏的模板会让所有 Clash 用户订阅全废，
+// 所以在落库前拦掉（体积 / {{proxies}} 占位符 / YAML 语法）。
 func (h *Handler) updateSubscriptionSettings(c *gin.Context) {
-	h.saveKeyValues(c, subscriptionSettingKeys, "保存订阅格式配置")
+	input := jsonInput(c)
+	if v, ok := input["sub_clash_template"]; ok {
+		tmpl := phpScalarString(v)
+		if tmpl != "" {
+			if err := subscription.ValidateClashTemplate(tmpl); err != nil {
+				h.fail(c, err.Error(), 400)
+				return
+			}
+		}
+	}
+	h.saveKeyValuesFrom(c, input, subscriptionSettingKeys, "保存订阅格式配置")
+}
+
+// showDefaultClashTemplate 返回内置默认 Clash 模板（前端「载入默认模板」用）。
+func (h *Handler) showDefaultClashTemplate(c *gin.Context) {
+	h.success(c, subscription.DefaultClashTemplate, "ok")
 }
 
 // ---- App 版本分发（系统设置 → App 版本）----
@@ -319,7 +341,12 @@ func (h *Handler) showKeyValues(c *gin.Context, keys []string, what string) {
 
 // saveKeyValues 只写入请求里出现过的白名单键（对齐 $request->only(self::FIELDS)）。
 func (h *Handler) saveKeyValues(c *gin.Context, keys []string, what string) {
-	input := jsonInput(c)
+	h.saveKeyValuesFrom(c, jsonInput(c), keys, what)
+}
+
+// saveKeyValuesFrom 是 saveKeyValues 的「已读到 input」版本：调用方需要先读 body
+// 做额外校验（如 Clash 模板）时用，避免 body 被读两次。
+func (h *Handler) saveKeyValuesFrom(c *gin.Context, input map[string]any, keys []string, what string) {
 	allowed := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
 		allowed[k] = struct{}{}

@@ -112,7 +112,9 @@ func (h *Handler) Show(c *gin.Context) {
 		return
 	}
 
-	format := resolveFormat(c.Request.URL.Query())
+	format := resolveFormat(c.Request.URL.Query(), c.GetHeader("User-Agent"), func(f Format) bool {
+		return isFormatEnabled(f, cfg)
+	})
 	if !isFormatEnabled(format, cfg) {
 		h.text(c, "[400] 不支持的订阅格式: "+string(format), 400, "不支持的订阅格式")
 		return
@@ -176,16 +178,28 @@ func (h *Handler) textStatus(c *gin.Context, status int, body string, code int, 
 	c.String(status, body)
 }
 
-// resolveFormat 对应 resolveFormat()：`?clash`/`?clash=任意值` 优先，其次 singbox，默认 base64。
+// resolveFormat 决定用哪种订阅格式，优先级：
+//
+//  1. `?clash` / `?singbox` 显式参数（键存在即生效，`?clash=` 空值也算）
+//  2. User-Agent 自动识别（Clash 系 → clash，sing-box 系 → singbox）
+//  3. 默认 base64
+//
+// 显式参数保持原有语义，用户/脚本的旧链接行为完全不变。
+// UA 只是「省掉参数」的便利：推断出的格式必须已启用（enabled 返回 true），
+// 否则回落 base64 —— 管理员关掉 clash 格式时，Clash 用户仍能拿到 base64 订阅，
+// 不会因为 UA 认出是 Clash 就直接 400。
 //
 // PHP 用 `$request->has('clash')`，语义是「该键存在且值不为 null」（值为空串也算存在）；
 // 键名大小写敏感 —— `?Clash=1` 在 PHP 里不命中，这里同样不命中。
-func resolveFormat(query url.Values) Format {
+func resolveFormat(query url.Values, ua string, enabled func(Format) bool) Format {
 	if _, ok := query["clash"]; ok {
 		return FormatClash
 	}
 	if _, ok := query["singbox"]; ok {
 		return FormatSingbox
+	}
+	if f, ok := formatFromUA(ua); ok && (enabled == nil || enabled(f)) {
+		return f
 	}
 	return FormatBase64
 }

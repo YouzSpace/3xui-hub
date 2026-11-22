@@ -273,6 +273,78 @@ func phpTruthy(s string) bool {
 	return true
 }
 
+// applyClashNetwork 把分享链接的传输参数映射成 mihomo 认的 proxy 字段。
+//
+// mihomo 的 network 只有 tcp / ws / http / h2 / grpc / xhttp，没有 httpupgrade：
+//   - httpupgrade 必须写成 ws + ws-opts.v2ray-http-upgrade: true；
+//   - tcp 的 HTTP 伪装写成 network: http + http-opts；
+//   - grpc 的 serviceName 写 grpc-opts.grpc-service-name（链接参数名 serviceName）。
+//
+// 两处 parse（vless/trojan/ss 一组、vmess 一组）共用，避免只改一侧的漂移。
+func applyClashNetwork(proxy *phpMap, params map[string]string) {
+	network := mapOr(params, "type", "tcp")
+	switch network {
+	case "ws":
+		proxy.set("network", "ws")
+		wsOpts := obj("path", mapOr(params, "path", "/"))
+		if host, hasHost := params["host"]; hasHost {
+			wsOpts.set("headers", obj("Host", host))
+		}
+		proxy.set("ws-opts", wsOpts)
+	case "httpupgrade":
+		// mihomo 没有 network: httpupgrade（未知值会回落 tcp），
+		// 官方写法是 ws + v2ray-http-upgrade 开关。
+		proxy.set("network", "ws")
+		wsOpts := obj("path", mapOr(params, "path", "/"))
+		if host, hasHost := params["host"]; hasHost {
+			wsOpts.set("headers", obj("Host", host))
+		}
+		wsOpts.set("v2ray-http-upgrade", true)
+		proxy.set("ws-opts", wsOpts)
+	case "grpc":
+		proxy.set("network", "grpc")
+		g := phpMap{}
+		if sn := params["serviceName"]; sn != "" {
+			g.set("grpc-service-name", sn)
+		}
+		if len(g) > 0 {
+			proxy.set("grpc-opts", g)
+		}
+	case "xhttp":
+		proxy.set("network", "xhttp")
+		xhttpOpts := obj(
+			"path", mapOr(params, "path", "/"),
+			"mode", mapOr(params, "mode", "auto"),
+		)
+		if host := params["host"]; host != "" {
+			xhttpOpts.set("host", host)
+		}
+		if extra, hasExtra := params["extra"]; hasExtra {
+			if decoded, isMap := decodeJSONAny(extra).(phpMap); isMap {
+				if padding, found := decoded.get("xPaddingBytes"); found {
+					xhttpOpts.set("x-padding-bytes", padding)
+				}
+			}
+		}
+		proxy.set("xhttp-opts", xhttpOpts)
+	case "tcp":
+		if strings.EqualFold(params["headerType"], "http") {
+			// mihomo 的 HTTP 伪装是独立 network（不是 tcp + header），
+			// path / Host 都是数组（客户端每次请求随机取一个）。
+			proxy.set("network", "http")
+			httpOpts := obj("path", []any{mapOr(params, "path", "/")})
+			if host := params["host"]; host != "" {
+				httpOpts.set("headers", obj("Host", []any{host}))
+			}
+			proxy.set("http-opts", httpOpts)
+		} else {
+			proxy.set("network", "tcp")
+		}
+	default:
+		proxy.set("network", "tcp")
+	}
+}
+
 // applyClashTlsAndNetwork 对应 applyClashTlsAndNetwork()：mihomo 的 TLS / 传输段（vmess 分支复用）。
 func applyClashTlsAndNetwork(proxy *phpMap, params map[string]string, server string) {
 	// TLS / Reality
@@ -300,42 +372,8 @@ func applyClashTlsAndNetwork(proxy *phpMap, params map[string]string, server str
 	}
 
 	// 传输协议
-	proxy.set("network", mapOr(params, "type", "tcp"))
-	if typ, has := params["type"]; has {
-		switch typ {
-		case "ws":
-			wsOpts := obj("path", mapOr(params, "path", "/"))
-			if host, hasHost := params["host"]; hasHost {
-				wsOpts.set("headers", obj("Host", host))
-			}
-			proxy.set("ws-opts", wsOpts)
-		case "xhttp":
-			xhttpOpts := obj(
-				"path", mapOr(params, "path", "/"),
-				"mode", mapOr(params, "mode", "auto"),
-			)
-			if extra, hasExtra := params["extra"]; hasExtra {
-				if decoded, isMap := decodeJSONAny(extra).(phpMap); isMap {
-					if padding, found := decoded.get("xPaddingBytes"); found {
-						xhttpOpts.set("x-padding-bytes", padding)
-					}
-				}
-			}
-			proxy.set("xhttp-opts", xhttpOpts)
-		case "httpupgrade":
-			// mihomo：network=httpupgrade + http-upgrade-opts（键名与 3x-ui clash 输出一致）
-			huOpts := phpMap{}
-			if p := params["path"]; p != "" {
-				huOpts.set("path", p)
-			}
-			if h := params["host"]; h != "" {
-				huOpts.set("headers", obj("Host", h))
-			}
-			if len(huOpts) > 0 {
-				proxy.set("http-upgrade-opts", huOpts)
-			}
-		}
-	}
+	// 传输协议：映射规则收敛在 applyClashNetwork（两处 parse 共用）。
+	applyClashNetwork(proxy, params)
 }
 
 // mapOr 对应 PHP 的 `$arr[$key] ?? $default`。
@@ -490,42 +528,8 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 	}
 
 	// 传输协议
-	proxy.set("network", mapOr(parsed.Params, "type", "tcp"))
-	if typ, has := parsed.Params["type"]; has {
-		switch typ {
-		case "ws":
-			wsOpts := obj("path", mapOr(parsed.Params, "path", "/"))
-			if host, hasHost := parsed.Params["host"]; hasHost {
-				wsOpts.set("headers", obj("Host", host))
-			}
-			proxy.set("ws-opts", wsOpts)
-		case "xhttp":
-			// clash 的 xhttp-opts 保留（mihomo 1.19.31 实测支持）
-			xhttpOpts := obj(
-				"path", mapOr(parsed.Params, "path", "/"),
-				"mode", mapOr(parsed.Params, "mode", "auto"),
-			)
-			if extra, hasExtra := parsed.Params["extra"]; hasExtra {
-				if decoded, isMap := decodeJSONAny(extra).(phpMap); isMap {
-					if padding, found := decoded.get("xPaddingBytes"); found {
-						xhttpOpts.set("x-padding-bytes", padding)
-					}
-				}
-			}
-			proxy.set("xhttp-opts", xhttpOpts)
-		case "httpupgrade":
-			huOpts := phpMap{}
-			if p := parsed.Params["path"]; p != "" {
-				huOpts.set("path", p)
-			}
-			if h := parsed.Params["host"]; h != "" {
-				huOpts.set("headers", obj("Host", h))
-			}
-			if len(huOpts) > 0 {
-				proxy.set("http-upgrade-opts", huOpts)
-			}
-		}
-	}
+	// 传输协议：与 applyClashTlsAndNetwork 共用同一套映射。
+	applyClashNetwork(&proxy, parsed.Params)
 
 	return proxy
 }
@@ -677,6 +681,12 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 			return nil
 		}
 		transport := obj("type", network)
+		if network == "grpc" {
+			// sing-box 的 grpc transport 字段是 service_name（缺省空串会连到错误的 service）。
+			if sn := parsed.Params["serviceName"]; sn != "" {
+				transport.set("service_name", sn)
+			}
+		}
 		if path, has := parsed.Params["path"]; has {
 			transport.set("path", path)
 		}
