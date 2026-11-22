@@ -80,18 +80,18 @@ type ReconcileReport struct {
 	DriftSafe     int
 	DriftEarlyCut int
 	DriftLoose    int
-	Opened        int      // 该开被关 → 打开
-	Closed        int      // 该关还开 → 关闭
+	Opened        int // 该开被关 → 打开
+	Closed        int // 该关还开 → 关闭
 	// Attached 是「节点上已有这个 client，但没挂到该协议的全部入站」→ 补挂的数量
 	// （节点后加了入站、或上次入站同步失败留下的缺口）。attach 幂等，重复修无副作用。
-	Attached      int
-	Unchanged     int      // 一致，零写入
-	Unknown       int      // 未知（超时/业务错/字段读不全）→ 本轮不动
-	Deferred      int      // 本轮没探测（预算外）或命中写入上限 → 下轮
-	Foreign       int      // 节点上**不是我们建的** client → 只报告
-	ForeignNames  []string // 上面这些 email 的样本（最多 10 个）
-	SnapshotBy    string   // 本轮快照来源：inbounds / probe / mixed / none
-	OfflineNodes  []string // 快照读失败的节点（不判失败，下轮再来）
+	Attached     int
+	Unchanged    int      // 一致，零写入
+	Unknown      int      // 未知（超时/业务错/字段读不全）→ 本轮不动
+	Deferred     int      // 本轮没探测（预算外）或命中写入上限 → 下轮
+	Foreign      int      // 节点上**不是我们建的** client → 只报告
+	ForeignNames []string // 上面这些 email 的样本（最多 10 个）
+	SnapshotBy   string   // 本轮快照来源：inbounds / probe / mixed / none
+	OfflineNodes []string // 快照读失败的节点（不判失败，下轮再来）
 	// ProbeFailed 是退化探测路径里「探测本身失败」（超时/5xx/登录态失效）的条数。
 	// 它们既不进 Probed 也不进 Unknown（Unknown 记的是「探测到了但字段读不全」），
 	// 所以必须单独计数：否则整轮全是探测失败时，快照看起来「干净」，实际一个人都没看到
@@ -117,8 +117,8 @@ type reconcileUser struct {
 	Protocol string
 	// UUID 是 users.uuid：补注册（AddClient）时组协议凭据用。
 	// 更新路径不用它 —— 那边的凭据由 NormalizeForUpdate 从节点原对象带回。
-	UUID     string
-	Intent   bool // 面板判「该可用」
+	UUID   string
+	Intent bool // 面板判「该可用」
 	// AccountEnabled 是 users.enabled（账号级开关），与 Intent 分开：裸内核对账的基准是
 	// 「重拉配置后节点应该长什么样」，判据只认 enabled + 套餐 + 无标记（reconcile_bare.go）。
 	AccountEnabled bool
@@ -572,14 +572,14 @@ func canAutoFixDrift(entry nodeSnapshotEntry) bool {
 // autoFixDrift 把一条「可判定」的字段漂移按面板值写回节点（3x-ui 整条替换 + 复核）。
 //
 // 安全靠三件事（缺一不可）：
-//   1. **现取完整对象、整条替换、只覆盖三个字段**：先 GetClientStrict 读回节点上的完整
-//      client，NormalizeForUpdate 归一后只覆盖 email/enable/totalGB/expiryTime；uuid/flow/
-//      limitIp/subId 等由原对象原样带回 —— 直接发几个字段会把没带上的按零值写掉
-//      （3x-ui update 是 replace 非 patch）。绝不拿共享快照里的对象当底稿：那份可能只是
-//      clientStats 行（没有 uuid），拿它替换会毁掉凭据。
-//   2. **逐入站 + 兜底各更新一次**：与 applyEnableOnNode 同序，避免漏改某条入站的副本。
-//   3. **写后复核**：GetClientStrict 读回确认 totalGB/expiryTime 已与面板一致才算成功；
-//      不一致/读不到按失败（落「待人工」审计、下轮再来），绝不假成功。
+//  1. **现取完整对象、整条替换、只覆盖三个字段**：先 GetClientStrict 读回节点上的完整
+//     client，NormalizeForUpdate 归一后只覆盖 email/enable/totalGB/expiryTime；uuid/flow/
+//     limitIp/subId 等由原对象原样带回 —— 直接发几个字段会把没带上的按零值写掉
+//     （3x-ui update 是 replace 非 patch）。绝不拿共享快照里的对象当底稿：那份可能只是
+//     clientStats 行（没有 uuid），拿它替换会毁掉凭据。
+//  2. **逐入站 + 兜底各更新一次**：与 applyEnableOnNode 同序，避免漏改某条入站的副本。
+//  3. **写后复核**：GetClientStrict 读回确认 totalGB/expiryTime 已与面板一致才算成功；
+//     不一致/读不到按失败（落「待人工」审计、下轮再来），绝不假成功。
 func (c *Collector) autoFixDrift(ctx context.Context, client *threexui.Client, node nodeRow,
 	u reconcileUser, entry nodeSnapshotEntry) error {
 	email := clientEmail(u.ID)
@@ -1330,22 +1330,31 @@ func (c *Collector) pendingOrRecentDeliveryUsers(ctx context.Context) (map[int64
 
 // reconcileUsers 取「参与本节点比对」的面板用户（意图在 Go 侧算，不再用 SQL 排除带标记的人）。
 //
-// nodeID > 0 且 user_nodes 里有该节点的绑定记录 → 只取绑到该节点的用户；
-// 该节点没有任何绑定记录（含老用户升级后的空表）→ 取全量，行为与升级前一致；
+// nodeID > 0 时按节点取，判据与 nodeapi.eligibleUsers / subscription / api 一致（看节点是否归属地区）：
+//   - 节点未归属地区（region_id IS NULL）→ 取全量（不看绑定；移出地区即全量注册）；
+//   - 节点已归属地区 → 只取绑到该节点的用户。
+//
 // nodeID <= 0 → 不过滤（全量）。
 //
-// 为什么必须按节点取：全量用户逐节点比对时，「绑到别的节点的用户」在每台节点上都会
-// 被判成「节点上缺人」→ 每轮都补挂 → bump config_version → 内核反复重启。
+// 为什么已归属节点必须按绑定取：全量用户逐节点比对时，「绑到别的节点的用户」在每台
+// 已归属节点上都会被判成「节点上缺人」→ 每轮补挂 → bump config_version → 内核反复重启。
 func (c *Collector) reconcileUsers(ctx context.Context, nodeID int64) ([]reconcileUser, error) {
 	query := "SELECT u.id, u.uuid, u.protocol, u.enabled, u.traffic_disabled_at, u.expired_at, u.traffic_limit, " +
 		"u.traffic_used, u.monthly_traffic_used, u.monthly_traffic_limit, u.plan_id, p.type, u.email " +
 		"FROM users u LEFT JOIN plans p ON p.id = u.plan_id "
 	var args []any
 	if nodeID > 0 {
-		// 该节点无绑定 → 全量；有绑定 → 只取绑定的（与订阅/下发同一口径）。
-		query += "WHERE (NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.node_id = ?) " +
-			"OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id)) "
-		args = append(args, nodeID, nodeID)
+		var regionID sql.NullInt64
+		if err := c.db.QueryRowContext(ctx, "SELECT region_id FROM nodes WHERE id = ?", nodeID).Scan(&regionID); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("节点 %d 不存在", nodeID)
+			}
+			return nil, fmt.Errorf("查询节点地区失败: %w", err)
+		}
+		if regionID.Valid {
+			query += "WHERE EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id) "
+			args = append(args, nodeID)
+		}
 	}
 	query += "ORDER BY u.id"
 

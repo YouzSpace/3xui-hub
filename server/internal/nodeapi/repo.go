@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
 )
 
 // 数据访问：与 Laravel 侧（Eloquent / Query Builder）逐条 SQL 对齐。
@@ -45,6 +44,8 @@ type Node struct {
 	Status       string
 	DriverConfig json.RawMessage // 原始 JSON 文本（NULL → nil）
 	Enabled      bool
+	// RegionID 是该节点的地区归属；nil = 未归属地区（全量下发）。决定下发是否按绑定分片。
+	RegionID *int64
 }
 
 // ConfigObject 解析 driver_config 为保序对象。
@@ -89,7 +90,7 @@ func (n Node) RoutingOptions() RoutingOptions {
 // 这是现状，不在本次迁移中改变）。
 func (r *Repo) XrayNodes(ctx context.Context) ([]Node, error) {
 	rows, err := r.DB.QueryContext(ctx,
-		"SELECT id, name, host, driver_type, status, driver_config, enabled FROM nodes WHERE driver_type = 'xray'")
+		"SELECT id, name, host, driver_type, status, driver_config, enabled, region_id FROM nodes WHERE driver_type = 'xray'")
 	if err != nil {
 		return nil, fmt.Errorf("查询 xray 节点失败: %w", err)
 	}
@@ -98,17 +99,22 @@ func (r *Repo) XrayNodes(ctx context.Context) ([]Node, error) {
 	var out []Node
 	for rows.Next() {
 		var (
-			n       Node
-			cfg     sql.NullString
-			enabled int64
+			n        Node
+			cfg      sql.NullString
+			enabled  int64
+			regionID sql.NullInt64
 		)
-		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.DriverType, &n.Status, &cfg, &enabled); err != nil {
+		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.DriverType, &n.Status, &cfg, &enabled, &regionID); err != nil {
 			return nil, fmt.Errorf("读取 xray 节点失败: %w", err)
 		}
 		if cfg.Valid {
 			n.DriverConfig = json.RawMessage(cfg.String)
 		}
 		n.Enabled = enabled != 0
+		if regionID.Valid {
+			v := regionID.Int64
+			n.RegionID = &v
+		}
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {
@@ -120,13 +126,14 @@ func (r *Repo) XrayNodes(ctx context.Context) ([]Node, error) {
 // NodeByID 重新读取节点（鉴权后取最新状态）。
 func (r *Repo) NodeByID(ctx context.Context, id int64) (Node, error) {
 	var (
-		n       Node
-		cfg     sql.NullString
-		enabled int64
+		n        Node
+		cfg      sql.NullString
+		enabled  int64
+		regionID sql.NullInt64
 	)
 	err := r.DB.QueryRowContext(ctx,
-		"SELECT id, name, host, driver_type, status, driver_config, enabled FROM nodes WHERE id = ?", id).
-		Scan(&n.ID, &n.Name, &n.Host, &n.DriverType, &n.Status, &cfg, &enabled)
+		"SELECT id, name, host, driver_type, status, driver_config, enabled, region_id FROM nodes WHERE id = ?", id).
+		Scan(&n.ID, &n.Name, &n.Host, &n.DriverType, &n.Status, &cfg, &enabled, &regionID)
 	if err != nil {
 		return Node{}, fmt.Errorf("读取节点 #%d 失败: %w", id, err)
 	}
@@ -134,6 +141,10 @@ func (r *Repo) NodeByID(ctx context.Context, id int64) (Node, error) {
 		n.DriverConfig = json.RawMessage(cfg.String)
 	}
 	n.Enabled = enabled != 0
+	if regionID.Valid {
+		v := regionID.Int64
+		n.RegionID = &v
+	}
 	return n, nil
 }
 
@@ -288,7 +299,7 @@ func (r *Repo) LoadRenderData(ctx context.Context, node Node) (*RenderData, erro
 		},
 	}
 
-	users, err := r.eligibleUsers(ctx, node.ID)
+	users, err := r.eligibleUsers(ctx, node)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +350,6 @@ func (r *Repo) LoadRenderData(ctx context.Context, node Node) (*RenderData, erro
 	return d, nil
 }
 
-
 // enabledCertificates 读 TLS 证书库并按 id 索引（私钥解密）。
 //
 // 只有入站 streamSettings.tlsSettings.tlsCertId 引用到的证书才会被渲染使用；
@@ -382,21 +392,32 @@ func inboundIDs(inbounds []RenderInbound) []int64 {
 // 判据与 PHP 侧 eligibleUserRows() 一致：plan_id 非空 + enabled + traffic_disabled_at 为空，
 // **无 ORDER BY**（渲染顺序由调用方 payload 决定，不能在这里引入排序）。
 //
-// 地区分片（只在 nodeapi 侧过滤，不影响订阅/对账的判据）：
-//   - user_nodes 里本节点**没有任何绑定记录** → 全量下发（老行为，region_id/user_nodes
-//     都为空的老部署升级后行为不变）；
-//   - 本节点**有绑定记录** → 只下发绑到本节点的人。
+// 地区分片（只看节点有没有归属地区，不看它身上有没有历史绑定）：
+//   - 节点未归属地区（region_id IS NULL）→ 全量下发，注入全部合格用户；
+//     「移出地区=全量下发」因此真正成立，且不删除该节点上已有的 user_nodes 绑定（保留）；
+//   - 节点归属了地区（region_id 非空）→ 只下发绑到本节点的用户（缺绑定的用户在
+//     该节点配置里不出现，这是分片的本意，不是漏人）。
 //
-// 有绑定但某个用户没绑到本节点时该用户不出现 —— 这是分片的本意，不是漏人。
-func (r *Repo) eligibleUsers(ctx context.Context, nodeID int64) ([]RenderUser, error) {
-	rows, err := r.DB.QueryContext(ctx,
-		"SELECT u.id, u.uuid, u.protocol, u.traffic_limit, u.expired_at FROM users u "+
-			"WHERE u.plan_id IS NOT NULL AND u.enabled = 1 AND u.traffic_disabled_at IS NULL "+
-			"AND ("+
-			"EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ?) "+
-			"AND EXISTS (SELECT 1 FROM user_nodes un2 WHERE un2.node_id = ? AND un2.user_id = u.id) "+
-			"OR NOT EXISTS (SELECT 1 FROM user_nodes un3 WHERE un3.node_id = ?)"+
-			")", nodeID, nodeID, nodeID)
+// 为什么不再用「本节点有没有绑定记录」判断：绑定只增不减，节点移出地区后旧绑定仍在，
+// 会导致它移出后仍按旧切片过滤、永远回不到全量。
+func (r *Repo) eligibleUsers(ctx context.Context, node Node) ([]RenderUser, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if node.RegionID == nil {
+		// 未归属地区：全量下发（不看绑定）。
+		rows, err = r.DB.QueryContext(ctx,
+			"SELECT u.id, u.uuid, u.protocol, u.traffic_limit, u.expired_at FROM users u "+
+				"WHERE u.plan_id IS NOT NULL AND u.enabled = 1 AND u.traffic_disabled_at IS NULL")
+	} else {
+		// 已归属地区：只下发绑到本节点的用户。
+		rows, err = r.DB.QueryContext(ctx,
+			"SELECT u.id, u.uuid, u.protocol, u.traffic_limit, u.expired_at FROM users u "+
+				"WHERE u.plan_id IS NOT NULL AND u.enabled = 1 AND u.traffic_disabled_at IS NULL "+
+				"AND EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id)",
+			node.ID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("查询渲染用户失败: %w", err)
 	}

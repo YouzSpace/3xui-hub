@@ -68,7 +68,9 @@ func (s *recFakeStore) RegionNodes(context.Context, uint64) ([]RegionNode, error
 
 func (s *recFakeStore) UnassignedNodes(context.Context) ([]RegionNode, error) { return nil, nil }
 
-func (s *recFakeStore) NodeTotals(context.Context) (int64, int64, int64, error) { return 0, 0, 0, nil }
+func (s *recFakeStore) NodeTotals(context.Context) (int64, int64, int64, int64, int64, error) {
+	return 0, 0, 0, 0, 0, nil
+}
 
 func (s *recFakeStore) NodeBinding(_ context.Context, nodeID uint64) (*uint64, *int64, error) {
 	if !s.nodes[nodeID] {

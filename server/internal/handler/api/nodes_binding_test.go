@@ -1,17 +1,17 @@
 package api
 
-// /api/nodes 按 user_nodes 绑定过滤的集成测试（真连 MySQL，独立库 ch_region04_*，自建自删）。
+// /api/nodes 按「节点是否归属地区」过滤的集成测试（真连 MySQL，独立库 ch_region04_*，自建自删）。
 //
 // 口径（与 nodeapi / subscription 同语义）：
-//   - 用户没有任何绑定 → 全量（老用户升级后看到的节点与升级前完全一致）；
-//   - 有绑定 → 只返回绑定给他的节点；
-//   - 绑定的节点离线/禁用 → 该用户拿到空列表（不允许回退成全量）。
+//   - 未归属地区（region_id IS NULL）的节点 → 对所有用户全量下发；
+//   - 已归属地区的节点 → 只返回绑定给该用户的那些；
+//   - 绑定的节点离线/禁用 → 该用户拿不到它（不会回退成全量）。
 //
-// 为什么必须连真库：这段过滤是 SQL 语义（NOT EXISTS / EXISTS 组合 + 参数顺序），
+// 为什么必须连真库：这段过滤是 SQL 语义（EXISTS 组合 + region 判空 + 参数顺序），
 // 用 fake store 只能证明「参数传下去了」，证明不了「SQL 写对了」。
 //
-// 变异测试锚点：删掉 `NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.user_id = ?)`
-// 那一行，「无绑定 → 全量」用例必须变红（只剩绑定分支时无绑定用户拿到 0 条）。
+// 变异测试锚点：把 `n.region_id IS NULL` 换成 `NOT EXISTS (user_nodes un0 ...)`
+// （旧的按绑定判定），「未归属节点对所有用户全量」用例必须变红。
 
 import (
 	"context"
@@ -165,12 +165,14 @@ func newNodesBindingDB(t *testing.T, schema string) *sql.DB {
 
 // nodesFilterFixture 铺 6 个节点 + 3 条绑定：
 //
-//	1、2、3 = 在线且有 node_inbounds（合格的 3 个节点，也就是「全量」应为 [1 2 3]）
+//	1、2、3 = 在线、有 node_inbounds、未归属地区（region_id=NULL）→ 对所有用户全量可见
 //	4       = 在线但没有入站（基础筛选的第 2 条，任何用户都不该看到）
 //	5       = 有入站但 enabled=0（第 1 条）
 //	6       = 有入站但 status=offline（第 1 条；case C 绑定的就是它）
+//	7       = 在线、有入站、已归属地区(region=5)，只对绑定用户可见
 //
-// 绑定：user 102 → 节点 2；user 103 → 节点 6（离线）；user 101 无绑定。
+// 绑定：user 102 → 节点 7（已归属地区，应只看到 7）；user 103 → 节点 6（离线，应看到空）；
+// user 101 无任何绑定（未归属的 1/2/3 仍全对他可见）。
 func nodesFilterFixture(t *testing.T, db *sql.DB) {
 	t.Helper()
 
@@ -178,19 +180,21 @@ func nodesFilterFixture(t *testing.T, db *sql.DB) {
 		status  string
 		enabled int
 		inbound bool
+		region  any // nil = 未归属；否则地区 id
 	}{
-		{"online", 1, true},  // 1
-		{"online", 1, true},  // 2
-		{"online", 1, true},  // 3
-		{"online", 1, false}, // 4 无入站
-		{"online", 0, true},  // 5 禁用
-		{"offline", 1, true}, // 6 离线
+		{"online", 1, true, nil},      // 1
+		{"online", 1, true, nil},      // 2
+		{"online", 1, true, nil},      // 3
+		{"online", 1, false, nil},     // 4 无入站
+		{"online", 0, true, nil},      // 5 禁用
+		{"offline", 1, true, nil},     // 6 离线
+		{"online", 1, true, int64(5)}, // 7 已归属地区
 	} {
 		nodeID := id + 1
 		if _, err := db.Exec(
-			`INSERT INTO nodes (id, name, host, port, enabled, status, driver_type, latency)
-			 VALUES (?, ?, ?, 443, ?, ?, '3x-ui', 20)`,
-			nodeID, fmt.Sprintf("节点%02d", nodeID), fmt.Sprintf("10.0.0.%d", nodeID), row.enabled, row.status,
+			`INSERT INTO nodes (id, name, host, port, enabled, status, driver_type, latency, region_id)
+			 VALUES (?, ?, ?, 443, ?, ?, '3x-ui', 20, ?)`,
+			nodeID, fmt.Sprintf("节点%02d", nodeID), fmt.Sprintf("10.0.0.%d", nodeID), row.enabled, row.status, row.region,
 		); err != nil {
 			t.Fatalf("插入节点 %d 失败: %v", nodeID, err)
 		}
@@ -204,7 +208,7 @@ func nodesFilterFixture(t *testing.T, db *sql.DB) {
 		}
 	}
 
-	for _, bind := range []struct{ user, node uint64 }{{102, 2}, {103, 6}} {
+	for _, bind := range []struct{ user, node uint64 }{{102, 7}, {103, 6}} {
 		if _, err := db.Exec(`INSERT INTO user_nodes (user_id, node_id) VALUES (?, ?)`, bind.user, bind.node); err != nil {
 			t.Fatalf("插入绑定 (%d→%d) 失败: %v", bind.user, bind.node, err)
 		}
@@ -233,7 +237,7 @@ func assertNodeIDs(t *testing.T, got []Node, want []uint64) {
 	}
 }
 
-// TestOnlineNodesForProtocolNoBindingReturnsAll：无绑定的用户拿到全部在线节点（老行为）。
+// TestOnlineNodesForProtocolNoBindingReturnsAll：用户没有任何绑定 → 未归属地区的节点全量可见。
 func TestOnlineNodesForProtocolNoBindingReturnsAll(t *testing.T) {
 	db := newNodesBindingDB(t, region04Schema("nobind"))
 	nodesFilterFixture(t, db)
@@ -243,10 +247,11 @@ func TestOnlineNodesForProtocolNoBindingReturnsAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
+	// 1/2/3 未归属地区 → 全量可见；7 已归属地区且未绑给 101 → 不可见；4/5/6 被基础筛选排除。
 	assertNodeIDs(t, nodes, []uint64{1, 2, 3})
 }
 
-// TestOnlineNodesForProtocolBoundReturnsOnlyBound：有绑定 → 只返回绑定的那个。
+// TestOnlineNodesForProtocolBoundReturnsOnlyBound：已归属地区的节点只对绑定用户可见。
 func TestOnlineNodesForProtocolBoundReturnsOnlyBound(t *testing.T) {
 	db := newNodesBindingDB(t, region04Schema("bound"))
 	nodesFilterFixture(t, db)
@@ -256,12 +261,13 @@ func TestOnlineNodesForProtocolBoundReturnsOnlyBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
-	assertNodeIDs(t, nodes, []uint64{2})
+	// 1/2/3 未归属地区 → 仍全量可见；7 绑给了 102（已归属）→ 也可见。共 [1 2 3 7]。
+	assertNodeIDs(t, nodes, []uint64{1, 2, 3, 7})
 }
 
-// TestOnlineNodesForProtocolBoundOfflineReturnsEmpty：绑定的节点离线 → 空列表，
-// 不能回退成全量（那是「绑了个寂寞」的漏洞）。
-func TestOnlineNodesForProtocolBoundOfflineReturnsEmpty(t *testing.T) {
+// TestOnlineNodesForProtocolBoundOfflineKeepsOnlyUnassigned：绑定的节点离线时，
+// 该用户看不到它，但未归属地区(region=NULL)的全量节点仍在（1/2/3）。
+func TestOnlineNodesForProtocolBoundOfflineKeepsOnlyUnassigned(t *testing.T) {
 	db := newNodesBindingDB(t, region04Schema("offline"))
 	nodesFilterFixture(t, db)
 	store := NewSQLStore(db)
@@ -270,7 +276,6 @@ func TestOnlineNodesForProtocolBoundOfflineReturnsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("查询失败: %v", err)
 	}
-	if len(nodes) != 0 {
-		t.Fatalf("返回节点 id = %v, 期望空列表（绑定节点已离线）", nodeIDsOf(nodes))
-	}
+	// 6 绑给 103 但离线（排除）；1/2/3 未归属地区 → 全量可见。
+	assertNodeIDs(t, nodes, []uint64{1, 2, 3})
 }

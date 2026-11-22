@@ -151,7 +151,7 @@ func (d *RegionDomain) regionOverview(c *gin.Context) {
 		d.failServer(c, "计算容量告警", err)
 		return
 	}
-	nodeTotal, capacityTotal, capacityUsed, err := d.store.NodeTotals(ctxOf(c))
+	nodeTotal, capacityTotal, capacityUsed, boundUsers, unlimitedNodes, err := d.store.NodeTotals(ctxOf(c))
 	if err != nil {
 		d.failServer(c, "查询节点合计", err)
 		return
@@ -169,6 +169,8 @@ func (d *RegionDomain) regionOverview(c *gin.Context) {
 		"node_total", nodeTotal,
 		"capacity_total", capacityTotal,
 		"capacity_used", capacityUsed,
+		"bound_users", boundUsers,
+		"unlimited_nodes", unlimitedNodes,
 		"regions", presentRegionSummaries(regions),
 		"unassigned_nodes", items,
 		"counts", presentAlertCounts(metrics.CountAlerts(alerts)),
@@ -550,6 +552,7 @@ func presentRegionNode(n *RegionNode) *jsObj {
 		"driver_type", n.DriverType,
 		"status", n.Status,
 		"capacity", nullableInt(n.Capacity),
+		"region_id", nullableUint(n.RegionID),
 		"bound_users", n.BoundUsers,
 		"agree_ratio", regionAgreeRatio(n.BoundUsers, n.Capacity),
 		"inbounds", inbounds,

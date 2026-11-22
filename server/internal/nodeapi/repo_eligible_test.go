@@ -176,11 +176,11 @@ func bindRegion02(t *testing.T, r *Repo, nodeID int64, userIDs ...int64) {
 }
 
 // eligibleIDs 跑一次 eligibleUsers 并把结果压成排序后的 id 列表。
-func eligibleIDs(t *testing.T, r *Repo, nodeID int64) []int64 {
+func eligibleIDs(t *testing.T, r *Repo, node Node) []int64 {
 	t.Helper()
-	users, err := r.eligibleUsers(context.Background(), nodeID)
+	users, err := r.eligibleUsers(context.Background(), node)
 	if err != nil {
-		t.Fatalf("eligibleUsers(node=%d) 出错: %v", nodeID, err)
+		t.Fatalf("eligibleUsers(node=%d) 出错: %v", node.ID, err)
 	}
 	ids := make([]int64, 0, len(users))
 	for _, u := range users {
@@ -189,6 +189,13 @@ func eligibleIDs(t *testing.T, r *Repo, nodeID int64) []int64 {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
 }
+
+// nodeIn 构造一个节点：region=nil 表示未归属地区（全量下发），非空表示归属某地区（按绑定切片）。
+func nodeIn(id int64, region *int64) Node {
+	return Node{ID: id, RegionID: region}
+}
+
+func int64p(v int64) *int64 { return &v }
 
 func assertIDs(t *testing.T, label string, got, want []int64) {
 	t.Helper()
@@ -207,15 +214,17 @@ func TestEligibleUsersRegionBinding(t *testing.T) {
 	seedRegion02Users(t, r)
 
 	const (
-		nodeUnbound    = 101 // 一条绑定都没有
-		nodeBound2     = 102 // 绑 u1、u2
-		nodeBoundMixed = 103 // 绑 u1 + 三个不合格用户
-		nodeA          = 104 // 绑 u3
-		nodeB          = 105 // 无绑定
+		nodeUnbound    = 101 // 从未绑定、未归属地区
+		nodeBound2     = 102 // 归属地区，绑 u1、u2
+		nodeBoundMixed = 103 // 归属地区，绑 u1 + 三个不合格用户
+		nodeA          = 104 // 归属地区，绑 u3
+		nodeB          = 105 // 归属地区，但无绑定
+		nodeMovedOut   = 106 // 曾归属地区并绑过 u1，现已移出地区（region=nil）但旧绑定仍在
 	)
 	bindRegion02(t, r, nodeBound2, 1, 2)
 	bindRegion02(t, r, nodeBoundMixed, 1, 4, 5, 6)
 	bindRegion02(t, r, nodeA, 3)
+	bindRegion02(t, r, nodeMovedOut, 1) // 移出地区后旧绑定保留在库里
 
 	// 兜底：种子没进去的话后面的断言会"整齐地"全红/全绿，先把行数钉死。
 	var userCount, bindCount int
@@ -226,19 +235,19 @@ func TestEligibleUsersRegionBinding(t *testing.T) {
 		t.Fatalf("统计 user_nodes 失败: %v", err)
 	}
 	t.Logf("种子: users=%d user_nodes=%d", userCount, bindCount)
-	if userCount != 6 || bindCount != 7 {
-		t.Fatalf("种子数据不对：users=%d（期望 6）user_nodes=%d（期望 7）", userCount, bindCount)
+	if userCount != 6 || bindCount != 8 {
+		t.Fatalf("种子数据不对：users=%d（期望 6）user_nodes=%d（期望 8）", userCount, bindCount)
 	}
 
-	t.Run("节点无任何绑定记录=全量下发（老行为）", func(t *testing.T) {
-		assertIDs(t, "无绑定节点", eligibleIDs(t, r, nodeUnbound), []int64{1, 2, 3})
+	t.Run("未归属地区=全量下发（不看它有没有绑定）", func(t *testing.T) {
+		assertIDs(t, "从未绑定、未归属地区的节点", eligibleIDs(t, r, nodeIn(nodeUnbound, nil)), []int64{1, 2, 3})
 	})
 
-	t.Run("节点有2条绑定=只返回这2人", func(t *testing.T) {
-		assertIDs(t, "绑 u1/u2 的节点", eligibleIDs(t, r, nodeBound2), []int64{1, 2})
+	t.Run("归属地区+有绑定=只返回这些绑定用户", func(t *testing.T) {
+		assertIDs(t, "归属地区、绑 u1/u2 的节点", eligibleIDs(t, r, nodeIn(nodeBound2, int64p(1))), []int64{1, 2})
 
 		// 顺带确认 RenderUser 的其余字段没被这次改动影响（u2 带 expired_at）。
-		users, err := r.eligibleUsers(context.Background(), nodeBound2)
+		users, err := r.eligibleUsers(context.Background(), nodeIn(nodeBound2, int64p(1)))
 		if err != nil {
 			t.Fatalf("eligibleUsers 出错: %v", err)
 		}
@@ -257,11 +266,26 @@ func TestEligibleUsersRegionBinding(t *testing.T) {
 	})
 
 	t.Run("无套餐/禁用/流量禁用即使绑定也不返回", func(t *testing.T) {
-		assertIDs(t, "绑了 u1+u4+u5+u6 的节点", eligibleIDs(t, r, nodeBoundMixed), []int64{1})
+		assertIDs(t, "归属地区、绑 u1+u4+u5+u6 的节点", eligibleIDs(t, r, nodeIn(nodeBoundMixed, int64p(1))), []int64{1})
 	})
 
-	t.Run("A有绑定只返回自己的_B无绑定返回全部", func(t *testing.T) {
-		assertIDs(t, "节点A（绑 u3）", eligibleIDs(t, r, nodeA), []int64{3})
-		assertIDs(t, "节点B（无绑定）", eligibleIDs(t, r, nodeB), []int64{1, 2, 3})
+	t.Run("A归属地区只返回自己的_B归属地区无绑定返回空", func(t *testing.T) {
+		assertIDs(t, "节点A（归属地区，绑 u3）", eligibleIDs(t, r, nodeIn(nodeA, int64p(2))), []int64{3})
+		// 已归属地区但没绑任何人 → 该地区没人可分到这台，返回空（分片本意）。
+		assertIDs(t, "节点B（归属地区，无绑定）", eligibleIDs(t, r, nodeIn(nodeB, int64p(2))), []int64{})
+	})
+
+	t.Run("移出地区后旧绑定仍在，但仍是全量下发（回归：曾经回不到全量）", func(t *testing.T) {
+		// 关键回归：这台节点库里有旧绑定(u1)，但 region=nil → 必须全量，且不因旧绑定被切片。
+		assertIDs(t, "移出地区、仍留旧绑定的节点", eligibleIDs(t, r, nodeIn(nodeMovedOut, nil)), []int64{1, 2, 3})
+
+		// 同时确认：移出地区不会删除旧绑定（保留原则）。
+		var still int
+		if err := r.DB.QueryRow("SELECT COUNT(*) FROM user_nodes WHERE node_id = ?", nodeMovedOut).Scan(&still); err != nil {
+			t.Fatalf("统计移出节点绑定失败: %v", err)
+		}
+		if still != 1 {
+			t.Fatalf("移出地区不应删除旧绑定，期望仍 1 条，实际 %d", still)
+		}
 	})
 }

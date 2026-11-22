@@ -34,7 +34,9 @@ const NODES = [
   { id: 14, name: 'free-1', host: 'f1.example.com', driver_type: '3xui', status: 'online', capacity: null, bound_users: 5, region_id: null },
 ]
 
-const OVERVIEW = { node_total: 4, capacity_total: 4000, capacity_used: 960 }
+// 卡片口径：已绑用户走 bound_users（去重人数），使用率 = capacity_used(席位)/capacity_total。
+// 故意让两者数值不同（960 席位 vs 900 人数），回归到「拿绑定行数当人数」会直接变红。
+const OVERVIEW = { node_total: 4, capacity_total: 4000, capacity_used: 960, bound_users: 900, unlimited_nodes: 2 }
 
 // 建议容量：接口按 Go 字段名直出（Suggest / Confidence / Reason），前端两种命名都认
 const RECS = {
@@ -87,20 +89,27 @@ const mountPage = async () => {
 const regionRow = (wrapper, name) => wrapper.findAll('tbody tr.rg-row').find((tr) => tr.text().includes(name))
 
 describe('Regions.vue — 总览与地区列表', () => {
-  it('顶部总览渲染节点数 / 总容量 / 已绑 / 使用率', async () => {
+  it('顶部总览渲染节点数 / 总容量（人头=席位÷地区数）/ 已绑（去重人数）/ 使用率', async () => {
     const wrapper = await mountPage()
 
     const values = wrapper.findAll('.rg-stat-value').map((n) => n.text())
-    expect(values).toEqual(['4', '4000', '960', '24%'])
+    // 2 个地区：席位合计 4000 ÷ 2 = 人头容量 2000；已绑取 bound_users=900（去重人数）；
+    // 使用率 = 席位 960 / 席位合计 4000 = 24%
+    expect(values).toEqual(['4', '2000', '900', '24%'])
+    // 口径说明统一在卡片下方一行，可自证「席位 ÷ 地区数」
+    const caption = wrapper.find('.rg-stats-caption').text()
+    expect(caption).toContain('席位合计 4000 ÷ 2 个地区')
+    expect(caption).toContain('2 台不限容量')
   })
 
   it('总览接口不可用时按地区汇总兜底，不抛错也不弹错误', async () => {
     adminApi.regionOverview = vi.fn(() => Promise.reject({ message: '404 page not found' }))
     const wrapper = await mountPage()
 
-    // 地区列表合计：capacity_total = 4000，capacity_used = 960，节点数用已加载节点数
+    // 兜底按地区行汇总：席位合计 4000 ÷ 2 地区 = 人头容量 2000；席位 960 / 4000 = 24%；
+    // bound_users 缺失时用各地区 user_count 之和（香港 900 + 日本 60 = 960）。
     const values = wrapper.findAll('.rg-stat-value').map((n) => n.text())
-    expect(values).toEqual(['4', '4000', '960', '24%'])
+    expect(values).toEqual(['4', '2000', '960', '24%'])
     expect(toast.error).not.toHaveBeenCalled()
   })
 
@@ -149,6 +158,61 @@ describe('Regions.vue — 迁移入口', () => {
     expect(document.body.textContent).toContain('迁移 · hk-1')
     // 目标节点排除自己，其余 3 台都能选
     expect(wrapper.vm.targetOptions.map((o) => o.value)).toEqual([12, 13, 14])
+  })
+})
+
+describe('Regions.vue — 地区内节点改归属 / 移出', () => {
+  // 内表精确找节点行（外层还有一条 colspan 容器行，text 也含节点名）
+  const nodeRowOf = (wrapper, name) =>
+    wrapper.findAll('table.rg-table--inner tbody tr').find((tr) => tr.findAll('td')[0]?.text() === name)
+
+  it('展开地区后每个节点行都有「设置归属 / 容量」入口（不再只能在未归属块里改）', async () => {
+    const wrapper = await mountPage()
+    await regionRow(wrapper, '香港').trigger('click')
+    await flushPromises()
+
+    expect(nodeRowOf(wrapper, 'hk-1').findAll('button').some((b) => b.text() === '设置归属 / 容量')).toBe(true)
+    expect(nodeRowOf(wrapper, 'hk-2').findAll('button').some((b) => b.text() === '设置归属 / 容量')).toBe(true)
+  })
+
+  it('在地区内点「设置归属 / 容量」把节点移出地区（region_id=null）并刷新列表', async () => {
+    adminApi.setNodeRegion = vi.fn(() => Promise.resolve({}))
+    adminApi.setNodeCapacity = vi.fn(() => Promise.resolve({}))
+    const wrapper = await mountPage()
+    await regionRow(wrapper, '香港').trigger('click')
+    await flushPromises()
+    expect(adminApi.listRegions).toHaveBeenCalledTimes(1)
+
+    await nodeRowOf(wrapper, 'hk-1').findAll('button').find((b) => b.text() === '设置归属 / 容量').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.assignOpen).toBe(true)
+    // 下拉带「不设置」（= 移出）与当前归属「香港」
+    expect(wrapper.vm.regionOptions[0].label).toContain('不设置')
+    expect(wrapper.vm.regionOptions.map((o) => o.label)).toContain('香港')
+
+    wrapper.vm.assignRegionId = null
+    await wrapper.vm.saveAssign()
+    await flushPromises()
+
+    expect(adminApi.setNodeRegion).toHaveBeenCalledWith(11, null)
+    expect(toast.success).toHaveBeenCalledWith('已保存')
+    expect(adminApi.listRegions).toHaveBeenCalledTimes(2)
+  })
+
+  it('在地区内也能改容量（以前进了地区就改不了）', async () => {
+    adminApi.setNodeRegion = vi.fn(() => Promise.resolve({}))
+    adminApi.setNodeCapacity = vi.fn(() => Promise.resolve({}))
+    const wrapper = await mountPage()
+    await regionRow(wrapper, '香港').trigger('click')
+    await flushPromises()
+
+    wrapper.vm.openAssign(NODES.find((n) => n.id === 11))
+    await flushPromises()
+    wrapper.vm.assignCapacity = '5000'
+    await wrapper.vm.saveAssign()
+    await flushPromises()
+
+    expect(adminApi.setNodeCapacity).toHaveBeenCalledWith(11, 5000)
   })
 })
 
@@ -293,6 +357,21 @@ describe('Regions.vue — 老用户批量入组', () => {
     const runBtn = footerButton('没有待入组用户')
     expect(runBtn).toBeTruthy()
     expect(runBtn.disabled).toBe(true)
+  })
+
+  it('有候选人但一批就全处理完（remaining=0）时按钮必须可点——不能因 remaining=0 误判「没人」', async () => {
+    // 复现线上 bug：140 个候选、单批上限 500，一批就全补完 → remaining=0。
+    // 旧逻辑按 remaining 判禁用，按钮被写成「没有待入组用户」且灰掉，管理员点了没反应。
+    adminApi.backfillRegions = vi.fn(() =>
+      Promise.resolve({ dry: true, candidates: 140, assigned: 280, users_done: 140, remaining: 0, by_node: [{ node_id: 33, count: 70 }], skipped: [] }),
+    )
+    const wrapper = await mountPage()
+    await wrapper.findAll('button').find((b) => b.text().includes('老用户批量入组')).trigger('click')
+    await flushPromises()
+
+    const runBtn = footerButton('确认入组')
+    expect(runBtn, '有 140 个待入组用户时按钮应是「确认入组」').toBeTruthy()
+    expect(runBtn.disabled).toBe(false)
   })
 
   it('预览接口失败时弹后端原话，不静默', async () => {

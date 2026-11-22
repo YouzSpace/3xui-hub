@@ -89,4 +89,19 @@ describe('useConfirm', () => {
     await clickFooter('取消')
     expect(await second).toBe(false)
   })
+
+  it('确认框层级高于页面弹窗（1400 > 1000），否则叠在弹窗里点「确认」时会被盖在底层点不到', async () => {
+    mountHost()
+
+    const answer = confirm({ message: '嵌套在弹窗里的确认' })
+    await flushPromises()
+
+    const overlay = document.querySelector('.ch-modal-overlay')
+    expect(overlay).toBeTruthy()
+    // 页面弹窗默认 z-index:1000（Modal.css），确认框必须显式抬高，同层级下 DOM 靠后的弹窗会盖住它。
+    expect(Number(overlay.style.zIndex)).toBeGreaterThan(1000)
+
+    await clickFooter('确定')
+    expect(await answer).toBe(true)
+  })
 })

@@ -2,10 +2,10 @@ package admin
 
 // 管理端「协议分布」按节点统计的集成测试（地区功能 #06，实连 MySQL）。
 //
-// 验证 EligibleProtocolCounts(ctx, nodeID) 的绑定过滤口径：
-//   - 节点 A 绑了 1 个 vless 用户、另 2 个 vless 用户未绑定 → A = vless:1；
+// 验证 EligibleProtocolCounts(ctx, nodeID) 的下发过滤口径（按节点是否归属地区）：
+//   - 已归属地区的节点 A 绑了 1 个 vless 用户 → A = vless:1（按绑定切片）；
 //   - nodeID = 0 → 不过滤（全局面板口径）→ vless:3；
-//   - 没有任何绑定的节点 → 全量（老用户升级后空表 = 行为不变）。
+//   - 未归属地区（region_id=NULL）的节点，即使有旧绑定 → 全量（移出地区即全量，保留绑定）。
 //
 // 自建 schema（ch_region06_counts）、跑完 DROP，不碰任何已有库。
 
@@ -20,7 +20,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// countsScopeDDL 只建这条统计 SQL 用到的表与列（users 的筛选列 + user_nodes）。
+// countsScopeDDL 只建这条统计 SQL 用到的表与列（users 的筛选列 + user_nodes + nodes 的 region_id）。
 const countsScopeDDL = `
 CREATE TABLE users (
   id bigint unsigned NOT NULL AUTO_INCREMENT,
@@ -36,6 +36,12 @@ CREATE TABLE user_nodes (
   node_id bigint unsigned NOT NULL,
   PRIMARY KEY (user_id, node_id),
   KEY idx_node (node_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE nodes (
+  id bigint unsigned NOT NULL AUTO_INCREMENT,
+  region_id bigint unsigned DEFAULT NULL,
+  PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -116,15 +122,17 @@ func newCountsSchema(t *testing.T, schema, ddl string) *sql.DB {
 }
 
 // TestEligibleProtocolCountsByNodeScope 是 #06 的验收用例：
-// 节点 A 绑 1 个 vless 用户、另 2 个 vless 用户未绑定 → A = vless:1，nodeID=0 = vless:3。
+// 节点 A（归属地区）绑 1 个 vless 用户 → A = vless:1，nodeID=0 = vless:3；
+// 节点 B 未归属地区（region=NULL）但有旧绑定 → 全量 vless:3（移出地区即全量）。
 func TestEligibleProtocolCountsByNodeScope(t *testing.T) {
 	db := newCountsSchema(t, "ch_region06_counts", countsScopeDDL)
 	store := NewNodeSQLStore(db, nil)
 	ctx := context.Background()
 
 	const (
-		nodeA int64 = 201 // 绑了 user 1
-		nodeB int64 = 202 // 一条绑定都没有
+		nodeA     int64 = 201 // 已归属地区，绑了 user 1
+		nodeB     int64 = 202 // 未归属地区（NULL），绑了 user 1（旧绑定保留）
+		regionOfA int64 = 7
 	)
 
 	mustExec := func(query string, args ...any) {
@@ -136,10 +144,14 @@ func TestEligibleProtocolCountsByNodeScope(t *testing.T) {
 	for id := 1; id <= 3; id++ {
 		mustExec("INSERT INTO users (id, protocol, enabled, plan_id) VALUES (?, 'vless', 1, 9)", id)
 	}
-	// 只把 user 1 绑到节点 A；节点 B 不写任何绑定。
+	// 节点 A 归属地区 7；节点 B 未归属地区（NULL）。
+	mustExec("INSERT INTO nodes (id, region_id) VALUES (?, ?)", nodeA, regionOfA)
+	mustExec("INSERT INTO nodes (id, region_id) VALUES (?, NULL)", nodeB)
+	// 两个节点都有 user 1 的绑定（快照旧数据：B 移出地区后旧绑定仍在）。
 	mustExec("INSERT INTO user_nodes (user_id, node_id) VALUES (1, ?)", nodeA)
+	mustExec("INSERT INTO user_nodes (user_id, node_id) VALUES (1, ?)", nodeB)
 
-	// ① 节点 A：只算绑给它的 1 个 vless。
+	// ① 节点 A（已归属地区）：只算绑给它的 1 个 vless。
 	gotA, err := store.EligibleProtocolCounts(ctx, nodeA)
 	if err != nil {
 		t.Fatalf("EligibleProtocolCounts(A) 报错: %v", err)
@@ -157,12 +169,12 @@ func TestEligibleProtocolCountsByNodeScope(t *testing.T) {
 		t.Fatalf("nodeID=0 期望 vless:3 且只有 vless，实际 %v", gotAll)
 	}
 
-	// ③ 节点 B：没有任何绑定 → 兼容分支，全量 vless:3（老用户升级后的行为）。
+	// ③ 节点 B（未归属地区，有旧绑定）：全量 vless:3 —— 移出地区即全量，不因旧绑定被切片。
 	gotB, err := store.EligibleProtocolCounts(ctx, nodeB)
 	if err != nil {
 		t.Fatalf("EligibleProtocolCounts(B) 报错: %v", err)
 	}
 	if gotB["vless"] != 3 || len(gotB) != 1 {
-		t.Fatalf("节点 B 无绑定，期望 vless:3，实际 %v", gotB)
+		t.Fatalf("节点 B 未归属地区，期望全量 vless:3（旧绑定不应切片），实际 %v", gotB)
 	}
 }

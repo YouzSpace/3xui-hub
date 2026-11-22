@@ -98,6 +98,8 @@ export const ConfirmHost = defineComponent({
           modelValue: !!req,
           title: req?.title || DEFAULTS.title,
           width: '420px',
+          // 确认框要压在页面弹窗之上：两者默认都是 1000，同层级下页面弹窗（DOM 更靠后）会盖住它。
+          zIndex: 1400,
           'onUpdate:modelValue': (open) => {
             // 关闭态只可能来自用户操作（遮罩 / 右上角 X），按取消处理
             if (!open && state.current) settle(state.current.id, false)

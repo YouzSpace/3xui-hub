@@ -43,7 +43,7 @@ type RegionSummary struct {
 	CapacityUsed  int64
 }
 
-// RegionNode 是「地区内的节点」一行（/regions/:id/nodes 与总览的未归属节点块共用）。
+// RegionNode 是「地区内/未归属的节点」一行（/regions/:id/nodes 与总览的未归属节点块共用）。
 type RegionNode struct {
 	ID         uint64
 	Name       string
@@ -51,6 +51,8 @@ type RegionNode struct {
 	DriverType string
 	Status     string
 	Capacity   *int64 // NULL = 不限
+	// RegionID 是节点当前归属；NULL = 未归属（全量下发）。前端「设置归属」弹窗回填当前地区用。
+	RegionID   *uint64
 	BoundUsers int64
 	// Inbounds 是挂在节点上的入站及其归属（#入站级分组），只读展示。
 	// 节点列表页的表格不展开它，前端在「地区节点」接口的返回里按需展示。
@@ -72,11 +74,20 @@ type RegionInbound struct {
 }
 
 // RegionOverview 是调度看板首屏数据。
+//
+// 口径（与卡片一一对应，不能再混用绑定行数）：
+//   - NodeTotal     节点总数；
+//   - CapacityTotal 有上限节点的容量合计（capacity 为 NULL 的不计）；
+//   - CapacityUsed  这些有上限节点上的绑定席位（不含不限容量节点），与 CapacityTotal 同范围；
+//   - BoundUsers    去重绑定用户数（一人绑多地区只算 1）；
+//   - UnlimitedNodes 无上限（不限容量）的节点数，前端据此说明「N 台未计入使用率」。
 type RegionOverview struct {
-	NodeTotal     int64
-	CapacityTotal int64
-	CapacityUsed  int64
-	Regions       []RegionSummary
+	NodeTotal      int64
+	CapacityTotal  int64
+	CapacityUsed   int64
+	BoundUsers     int64
+	UnlimitedNodes int64
+	Regions        []RegionSummary
 	// UnassignedNodes 是 region_id IS NULL 的节点（不参与地区过滤、全量下发的老节点）。
 	UnassignedNodes []RegionNode
 }
@@ -103,8 +114,9 @@ type RegionStore interface {
 	RegionNodeCount(ctx context.Context, id uint64) (int64, error)
 	RegionNodes(ctx context.Context, id uint64) ([]RegionNode, error)
 	UnassignedNodes(ctx context.Context) ([]RegionNode, error)
-	// NodeTotals 是全局合计：节点数、容量合计、绑定合计。
-	NodeTotals(ctx context.Context) (nodes, capacityTotal, capacityUsed int64, err error)
+	// NodeTotals 是全局合计：节点数、有上限节点容量合计、这些节点的绑定席位、
+	// 去重绑定用户数、无上限节点数（见 region_sqlstore.go 的口径说明）。
+	NodeTotals(ctx context.Context) (nodes, capacityTotal, capacityUsed, userCount, unlimitedNodes int64, err error)
 	// NodeBinding 读节点当前归属；节点不存在返回 sql.ErrNoRows。
 	NodeBinding(ctx context.Context, nodeID uint64) (regionID *uint64, capacity *int64, err error)
 	NodeSetRegion(ctx context.Context, nodeID uint64, regionID *uint64) error

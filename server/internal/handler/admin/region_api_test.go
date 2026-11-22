@@ -207,6 +207,7 @@ type region09Node struct {
 	DriverType string   `json:"driver_type"`
 	Status     string   `json:"status"`
 	Capacity   *int64   `json:"capacity"`
+	RegionID   *uint64  `json:"region_id"`
 	BoundUsers int64    `json:"bound_users"`
 	AgreeRatio *float64 `json:"agree_ratio"`
 }
@@ -424,6 +425,10 @@ func TestRegion09NodeRegionAndCapacity(t *testing.T) {
 	if n.AgreeRatio == nil || *n.AgreeRatio != 0.5 {
 		t.Fatalf("agree_ratio 应为 3/6=0.5，实际 %v", n.AgreeRatio)
 	}
+	// region_id 必须回传：前端「设置归属」弹窗靠它回填当前地区，缺了会把节点误当未归属。
+	if n.RegionID == nil || *n.RegionID != 1 {
+		t.Fatalf("地区内节点的 region_id 应为 1，实际 %v", n.RegionID)
+	}
 
 	// 列表统计同步：1 节点、3 个去重用户、容量 6
 	list := region09DecodeRegions(t, region09Call(t, engine, http.MethodGet, "/admin-api/regions", "").Data)
@@ -451,6 +456,14 @@ func TestRegion09NodeRegionAndCapacity(t *testing.T) {
 	if list[0].NodeCount != 0 || list[0].CapacityUsed != 0 {
 		t.Fatalf("移出后地区统计应清零: %+v", list[0])
 	}
+	// 移出地区=全量：该节点上的 user_nodes 绑定必须被清掉（否则用户列表/节点列表会显示失效残留）。
+	var left int
+	if err := db.QueryRow("SELECT COUNT(*) FROM user_nodes WHERE node_id = 1").Scan(&left); err != nil {
+		t.Fatalf("统计移出后绑定失败: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("移出地区后节点绑定应清零（全量下发），实际仍剩 %d 条", left)
+	}
 
 	// 不存在的地区 / 节点 → 业务错误，不是 500
 	if resp := region09Call(t, engine, http.MethodPut, "/admin-api/nodes/1/region", `{"region_id":999}`); resp.Code != 422 {
@@ -461,18 +474,19 @@ func TestRegion09NodeRegionAndCapacity(t *testing.T) {
 	}
 }
 
-// TestRegion09Overview 覆盖：总览的容量合计、已绑合计与真实数据一致。
+// TestRegion09Overview 覆盖：总览的容量合计、已绑（去重人数）与使用席位口径。
 //
-// 数据布局：
+// 数据布局（刻意让「绑定行数」≠「去重人数」、并让绑定落在不限容量节点上）：
 //
 //	地区1（香港）: node1(cap 10) + node2(cap 20)，绑定 (u1,n1) (u2,n1) (u2,n2)
+//	                                           ↑ u2 同时绑两台 → 行数 3、人数 2
 //	地区2（日本）: node3(cap NULL，不限)，绑定 (u3,n3)
 //	未归属      : node4(cap NULL)，无绑定
 //
-// 期望：node_total=4、capacity_total=30、capacity_used=4；
-// 地区1: node_count=2、user_count=2（u1,u2 去重）、capacity_used=3；
-// 地区2: node_count=1、capacity_total=0（NULL 不计入）、user_count=1；
-// unassigned_nodes 只有 node4。
+// 期望：node_total=4、capacity_total=30、capacity_used=3（只数有上限的 n1/n2）、
+// bound_users=3（u1,u2,u3 去重）、unlimited_nodes=2（node3、node4）。
+// 变异靶子：把 capacity_used 改回「全部绑定行数」→ 得到 4（多算了 n3 上的 u3）；
+// 把 bound_users 改回「绑定行数」→ 得到 4；两者都必须让本用例变红。
 func TestRegion09Overview(t *testing.T) {
 	db := newRegion09DB(t, "ch_region09_overview")
 	engine := newRegion09Router(t, db)
@@ -492,19 +506,27 @@ func TestRegion09Overview(t *testing.T) {
 		t.Fatalf("总览失败: code=%d msg=%s", resp.Code, resp.Msg)
 	}
 	var data struct {
-		NodeTotal     int64             `json:"node_total"`
-		CapacityTotal int64             `json:"capacity_total"`
-		CapacityUsed  int64             `json:"capacity_used"`
-		Regions       []region09Summary `json:"regions"`
-		Unassigned    []region09Node    `json:"unassigned_nodes"`
+		NodeTotal      int64             `json:"node_total"`
+		CapacityTotal  int64             `json:"capacity_total"`
+		CapacityUsed   int64             `json:"capacity_used"`
+		BoundUsers     int64             `json:"bound_users"`
+		UnlimitedNodes int64             `json:"unlimited_nodes"`
+		Regions        []region09Summary `json:"regions"`
+		Unassigned     []region09Node    `json:"unassigned_nodes"`
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
 		t.Fatalf("解析总览失败: %v（data=%s）", err, resp.Data)
 	}
 
-	if data.NodeTotal != 4 || data.CapacityTotal != 30 || data.CapacityUsed != 4 {
-		t.Fatalf("全局合计不对: node_total=%d capacity_total=%d capacity_used=%d（期望 4/30/4）",
+	if data.NodeTotal != 4 || data.CapacityTotal != 30 || data.CapacityUsed != 3 {
+		t.Fatalf("全局合计不对: node_total=%d capacity_total=%d capacity_used=%d（期望 4/30/3）",
 			data.NodeTotal, data.CapacityTotal, data.CapacityUsed)
+	}
+	if data.BoundUsers != 3 {
+		t.Fatalf("已绑用户应为去重人数 3，实际 %d（拿绑定行数会得 4）", data.BoundUsers)
+	}
+	if data.UnlimitedNodes != 2 {
+		t.Fatalf("不限容量节点数应为 2，实际 %d", data.UnlimitedNodes)
 	}
 	if len(data.Regions) != 2 {
 		t.Fatalf("应有 2 个地区，实际 %d", len(data.Regions))
@@ -518,5 +540,9 @@ func TestRegion09Overview(t *testing.T) {
 	}
 	if len(data.Unassigned) != 1 || data.Unassigned[0].Name != "old-1" || data.Unassigned[0].BoundUsers != 0 {
 		t.Fatalf("未归属节点不对: %+v", data.Unassigned)
+	}
+	// 未归属节点的 region_id 必须是 null（前端据此显示「未归属（全量）」）。
+	if data.Unassigned[0].RegionID != nil {
+		t.Fatalf("未归属节点的 region_id 应为 null，实际 %v", *data.Unassigned[0].RegionID)
 	}
 }
