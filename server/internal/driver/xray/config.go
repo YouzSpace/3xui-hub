@@ -25,7 +25,7 @@ import (
 	"controlhub-server/internal/driver/internal/phpjson"
 	"controlhub-server/internal/driver/internal/phpval"
 	"controlhub-server/internal/driver/internal/secrets"
-	"controlhub-server/internal/ss2022"
+	"controlhub-server/internal/protocol/shadowsocks/ss2022"
 )
 
 // API_PORT 是 xray 内核 API 的本地回环端口（v26 CLI 必须显式 --server 指向这里）。

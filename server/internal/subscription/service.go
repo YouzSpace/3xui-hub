@@ -403,7 +403,7 @@ func xraySubscriptionURIs(node Node, user *User, plan *Plan, ctx context.Context
 				continue
 			}
 		}
-		uris = append(uris, xrayInboundURI(node, inbound, user, inboundHost))
+		uris = append(uris, XrayInboundURI(node, inbound, user, inboundHost))
 	}
 	// PHP 侧 XrayDriver::getClientLinks 返回后还要过一遍 sanitizeLinks（过滤空串、去重）。
 	return sanitizeLinks(uris), nil

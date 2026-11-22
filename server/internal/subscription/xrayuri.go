@@ -5,7 +5,7 @@ import (
 	"net"
 	"strings"
 
-	"controlhub-server/internal/ss2022"
+	"controlhub-server/internal/protocol/shadowsocks/ss2022"
 )
 
 // 逐条复刻 app/Drivers/Xray/XrayConfigService.php 的「订阅链接」段：
@@ -25,8 +25,10 @@ const (
 	xrayDefaultSNI  = "www.cloudflare.com"
 )
 
-// xrayInboundURI 生成「该用户在该入站上」的分享链接（协议不支持时返回空串）。
-func xrayInboundURI(node Node, inbound XrayInbound, user *User, host string) string {
+// XrayInboundURI 生成「该用户在该入站上」的分享链接（协议不支持时返回空串）。
+//
+// 导出给 driver/xray.SubscriptionURIs 复用（2026-11-22 合并：订阅链接唯一真相源）。
+func XrayInboundURI(node Node, inbound XrayInbound, user *User, host string) string {
 	switch inbound.Protocol {
 	case "vless":
 		return xrayVlessURI(node, inbound, user, host)

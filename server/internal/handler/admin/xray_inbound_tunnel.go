@@ -26,47 +26,6 @@ func tunnelNetwork(input map[string]any) (string, bool) {
 	return "", false
 }
 
-// wireGuardPeers 把「每行一条：公钥 [允许IP,...]」解析成内核的 peers 数组。
-// 公钥必须是 32 字节 base64（WireGuard key）；允许IP 可省（服务端仍能握手，
-// 只是没有回程路由，实际用不起来）。
-func wireGuardPeers(raw string) (jsArr, bool) {
-	peers := jsArr{}
-	for _, line := range splitLines(raw) {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if !isWireGuardKey(fields[0]) {
-			return nil, false
-		}
-		peer := jo("publicKey", fields[0])
-		allowed := jsArr{}
-		for _, chunk := range fields[1:] {
-			for _, ip := range strings.Split(chunk, ",") {
-				if ip = strings.TrimSpace(ip); ip != "" {
-					allowed = append(allowed, ip)
-				}
-			}
-		}
-		if len(allowed) > 0 {
-			peer.put("allowedIPs", allowed)
-		}
-		peers = append(peers, peer)
-	}
-	return peers, true
-}
-
-// isWireGuardKey 判断是否为 32 字节的 base64 密钥（带/不带填充都收，
-// 客户端导出的多为带填充的 44 字符形态）。
-func isWireGuardKey(s string) bool {
-	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
-		if raw, err := enc.DecodeString(s); err == nil && len(raw) == 32 {
-			return true
-		}
-	}
-	return false
-}
-
 // wireGuardPublicKey 由 WireGuard 私钥推导公钥（同格式：标准 base64 带填充）。
 // 服务端私钥只落库、读接口只回这个公钥 —— 管理员拿它配客户端。
 func wireGuardPublicKey(privateKey string) string {
