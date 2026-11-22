@@ -62,9 +62,22 @@ const capText = (v) => (v == null || v === 0 ? '不限' : v)
 // ===== 总览 =====
 const sumBy = (key) => regions.value.reduce((acc, r) => acc + (num(r[key]) ?? 0), 0)
 const totalNodes = computed(() => num(overview.value?.node_total) ?? nodesAll.value.length)
-const totalCapacity = computed(() => num(overview.value?.capacity_total) ?? sumBy('capacity_total'))
+// 席位合计（有上限节点的容量之和）：一个用户在每个地区各占 1 个席位，所以这不是「能装多少人」。
+const seatCapacity = computed(() => num(overview.value?.capacity_total) ?? sumBy('capacity_total'))
+// 地区数：一个用户按地区分摊席位（1 人绑 N 地区 = N 个席位），故人头容量 = 席位合计 / 地区数。
+const regionCount = computed(() => regions.value.length)
+const totalCapacity = computed(() => {
+  if (!regionCount.value) return seatCapacity.value
+  return Math.round(seatCapacity.value / regionCount.value)
+})
+// 使用率的分子只数「有上限节点上的绑定席位」；分母是同一批节点的席位合计（与 personnel
+// 人头容量同源，比例一致）。不再用绑定行数（会把不限容量节点上的绑定算进去、比例虚高）。
 const totalUsed = computed(() => num(overview.value?.capacity_used) ?? sumBy('capacity_used'))
-const totalUsage = computed(() => pct(totalUsed.value, totalCapacity.value))
+// 已绑用户 = 去重人数（一人绑多个地区只算 1）；不再用绑定条数，否则按地区重复计人。
+const boundUsers = computed(() => num(overview.value?.bound_users) ?? sumBy('user_count'))
+const unlimitedNodes = computed(() => num(overview.value?.unlimited_nodes) ?? 0)
+// 使用率 = 人头 / 人头容量 = 席位 / 席位合计（两者等价，round 影响微乎其微）。
+const totalUsage = computed(() => pct(totalUsed.value, seatCapacity.value))
 
 /** 节点使用率：优先用后端算好的 agree_ratio（0~1），否则按 已绑/容量 现算 */
 const nodeUsage = (n) => {
@@ -495,7 +508,9 @@ const runBackfill = async () => {
   }
 }
 
-// ===== 未归属节点：设置归属 / 容量 =====
+// ===== 设置归属 / 容量（未归属块与地区内节点共用）=====
+// 未归属块和每个地区展开后的节点行都走这一个弹窗：改归属（含移出=全量下发）+ 改容量。
+// 以前只有未归属块有入口，节点一旦进了地区就改不了归属 / 容量、也移不出去。
 const assignOpen = ref(false)
 const assignNode = ref(null)
 const assignRegionId = ref(null)
@@ -509,7 +524,9 @@ const regionOptions = computed(() => [
 
 const openAssign = (n) => {
   assignNode.value = n
-  assignRegionId.value = n.region_id ?? null
+  // 地区内节点：接口没回 region_id（老后端）时按「当前所在地区」兜底，避免只改容量却把节点移出去。
+  // 保持数字 id：Select 用严格相等匹配选项（options 的 value 是数字）。
+  assignRegionId.value = n.region_id ?? (expandedId.value != null ? expandedId.value : null)
   assignCapacity.value = n.capacity == null ? '' : String(n.capacity)
   assignOpen.value = true
 }
@@ -597,7 +614,7 @@ onBeforeUnmount(stopPoll)
       </Card>
       <Card class="rg-stat">
         <p class="rg-stat-label">已绑用户</p>
-        <p class="rg-stat-value">{{ totalUsed }}</p>
+        <p class="rg-stat-value">{{ boundUsers }}</p>
       </Card>
       <Card class="rg-stat">
         <p class="rg-stat-label">使用率</p>
@@ -605,6 +622,11 @@ onBeforeUnmount(stopPoll)
         <ProgressBar v-if="totalUsage != null" :percent="totalUsage" />
       </Card>
     </div>
+    <!-- 口径说明：统一放四张卡下方一行，卡片内不再各自加小字（否则标题换行/数值上下不齐） -->
+    <p class="rg-stats-caption">
+      总容量 = 席位合计 {{ capText(seatCapacity) }} ÷ {{ regionCount }} 个地区（一人每地区各占 1 席位）；
+      使用率不含 {{ unlimitedNodes }} 台不限容量节点。
+    </p>
 
     <Card :padding="false" class="rg-card">
       <div class="rg-table-wrap">
@@ -712,6 +734,7 @@ onBeforeUnmount(stopPoll)
                         </td>
                         <td class="rg-col-act">
                           <div class="rg-actions">
+                            <Button variant="secondary" size="sm" @click="openAssign(n)">设置归属 / 容量</Button>
                             <Button variant="secondary" size="sm" @click="openMigrate(n)">迁移</Button>
                           </div>
                         </td>
@@ -863,6 +886,10 @@ onBeforeUnmount(stopPoll)
         <p class="rg-muted" data-test="capacity-hint">
           容量是比例权重：按 已绑/容量 决定分配优先级，不是先填满小容量节点。
         </p>
+        <p class="rg-muted">
+          「不设置」= 移出地区、回到全量下发。改归属只影响这台节点以后接哪批新用户，
+          已绑定用户的现有访问不变（续费重购时按新归属重新分配）。
+        </p>
       </div>
       <template #footer>
         <Button variant="secondary" size="sm" @click="assignOpen = false">取消</Button>
@@ -940,11 +967,11 @@ onBeforeUnmount(stopPoll)
           variant="primary"
           size="sm"
           :loading="backfillRunning"
-          :disabled="!backfillDry || backfillRemaining === 0"
+          :disabled="!backfillDry || backfillCandidateCount === 0"
           data-test="backfill-run"
           @click="runBackfill"
         >
-          {{ backfillRemaining === 0 && backfillDry ? '没有待入组用户' : '确认入组' }}
+          {{ backfillDry && backfillCandidateCount === 0 ? '没有待入组用户' : '确认入组' }}
         </Button>
       </template>
     </Modal>
@@ -999,7 +1026,14 @@ onBeforeUnmount(stopPoll)
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+/* 四张卡统一口径说明：放在卡片下方一行，不塞进卡片内（避免标题换行、数值上下错位） */
+.rg-stats-caption {
+  margin: 0 0 var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 /* 容量告警条：红 = 已超 95%，黄 = 已超 85% */
 .rg-alert {

@@ -11,6 +11,9 @@ const props = defineProps({
   title: { type: String, default: '' },
   persistent: { type: Boolean, default: false },
   width: { type: String, default: '480px' },
+  // 叠放层级：默认 1000（普通页面弹窗）。嵌套场景（如「确认框叠在某个弹窗之上」）
+  // 需要显式抬高，否则同层级下 DOM 靠后的弹窗会把确认框盖住。
+  zIndex: { type: Number, default: 1000 },
 })
 
 const emit = defineEmits(['update:modelValue', 'close'])
@@ -30,7 +33,7 @@ const close = () => {
 <template>
   <Teleport to="body">
     <Transition name="ch-modal">
-      <div v-if="modelValue" class="ch-modal-overlay" @click.self="close">
+      <div v-if="modelValue" class="ch-modal-overlay" :style="{ zIndex }" @click.self="close">
         <div class="ch-modal-card" :style="{ maxWidth: width }" role="dialog" aria-modal="true">
           <div v-if="title || $slots.header" class="ch-modal-header">
             <slot name="header">

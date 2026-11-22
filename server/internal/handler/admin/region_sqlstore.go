@@ -201,7 +201,7 @@ func (s *regionSQLStore) RegionNodeCount(ctx context.Context, id uint64) (int64,
 
 // regionNodeQuery 是「地区节点 / 未归属节点」共用的列与统计口径。
 const regionNodeQuery = `
-	SELECT n.id, n.name, n.host, n.driver_type, n.status, n.capacity,
+	SELECT n.id, n.name, n.host, n.driver_type, n.status, n.capacity, n.region_id,
 	       (SELECT COUNT(*) FROM user_nodes un WHERE un.node_id = n.id) AS bound_users
 	FROM nodes n`
 
@@ -291,35 +291,45 @@ func (s *regionSQLStore) queryRegionNodes(ctx context.Context, query string, arg
 		var (
 			n        RegionNode
 			capacity sql.NullInt64
+			regionID sql.NullInt64
 		)
 		if err := rows.Scan(&n.ID, &n.Name, &n.Host, &n.DriverType, &n.Status,
-			&capacity, &n.BoundUsers); err != nil {
+			&capacity, &regionID, &n.BoundUsers); err != nil {
 			return nil, err
 		}
 		if capacity.Valid {
 			v := capacity.Int64
 			n.Capacity = &v
 		}
+		if regionID.Valid {
+			v := uint64(regionID.Int64)
+			n.RegionID = &v
+		}
 		out = append(out, n)
 	}
 	return out, rows.Err()
 }
 
-// NodeTotals 返回全局合计：节点数、容量合计（NULL 不计）、绑定合计。
+// NodeTotals 返回全局合计：节点数、有上限节点的容量合计、这些节点上的绑定席位、
+// 去重绑定用户数、以及无上限（capacity 为 NULL）的节点数。
 //
-// 绑定合计只算「节点还在」的绑定（INNER JOIN nodes）：
-// 节点删除后 user_nodes 的残留行不该进看板，否则总已绑永远降不下来。
-func (s *regionSQLStore) NodeTotals(ctx context.Context) (nodes, capacityTotal, capacityUsed int64, err error) {
+// 席位与去重用户分开：capacity_used 只数「有上限节点上的绑定行数」，分母是同一批节点的
+// 容量合计 —— 两者范围一致，使用率才有意义；不限容量节点上的绑定不计入使用率，
+// 否则分子大、分母小，比例虚高。bound_users 是去重人数（一个用户绑多个地区只算 1 人），
+// 别拿绑定行数当人数 —— 那会把同一个人按地区重复计。
+func (s *regionSQLStore) NodeTotals(ctx context.Context) (nodes, capacityTotal, capacityUsed, userCount, unlimitedNodes int64, err error) {
 	var capacity sql.NullInt64
 	err = s.db.QueryRowContext(ctx, `
 		SELECT (SELECT COUNT(*) FROM nodes),
 		       (SELECT SUM(capacity) FROM nodes),
-		       (SELECT COUNT(*) FROM user_nodes un INNER JOIN nodes n ON n.id = un.node_id)`).
-		Scan(&nodes, &capacity, &capacityUsed)
+		       (SELECT COUNT(*) FROM user_nodes un INNER JOIN nodes n ON n.id = un.node_id WHERE n.capacity IS NOT NULL),
+		       (SELECT COUNT(DISTINCT un.user_id) FROM user_nodes un INNER JOIN nodes n ON n.id = un.node_id),
+		       (SELECT COUNT(*) FROM nodes WHERE capacity IS NULL)`).
+		Scan(&nodes, &capacity, &capacityUsed, &userCount, &unlimitedNodes)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, 0, err
 	}
-	return nodes, capacity.Int64, capacityUsed, nil
+	return nodes, capacity.Int64, capacityUsed, userCount, unlimitedNodes, nil
 }
 
 // Alerts 计算当前容量告警（节点级 + 地区级，实时算，不落库）。
