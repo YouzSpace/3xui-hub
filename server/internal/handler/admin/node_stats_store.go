@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,17 +21,27 @@ import (
 // EligibleProtocolCounts 复刻 XrayConfigService::eligibleUsers() 的协议分布
 // （present 里的 client_count：有套餐 + 启用 + 未被关闭流量）。
 //
-// nodeID > 0 时按节点统计：user_nodes 里有该节点的绑定 → 只算绑到该节点的用户；
-// 该节点没有任何绑定记录（含老用户升级后的空表）→ 全量，与升级前一致。
+// nodeID > 0 时按节点统计，判据与 nodeapi.eligibleUsers 一致（看节点有没有归属地区）：
+//   - 节点未归属地区（region_id IS NULL）→ 全量（不看绑定；移出地区即全量，保留旧绑定）；
+//   - 节点已归属地区 → 只算绑到本节点的用户。
+//
 // nodeID <= 0 → 不过滤（全局面板口径）。
 func (s *nodeSQLStore) EligibleProtocolCounts(ctx context.Context, nodeID int64) (map[string]int64, error) {
 	query := "SELECT u.protocol, COUNT(*) FROM users u WHERE u.plan_id IS NOT NULL AND u.enabled = 1 " +
 		"AND u.traffic_disabled_at IS NULL "
 	var args []any
 	if nodeID > 0 {
-		query += "AND (NOT EXISTS (SELECT 1 FROM user_nodes un0 WHERE un0.node_id = ?) " +
-			"OR EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id)) "
-		args = append(args, nodeID, nodeID)
+		var regionID sql.NullInt64
+		if err := s.db.QueryRowContext(ctx, "SELECT region_id FROM nodes WHERE id = ?", nodeID).Scan(&regionID); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("节点 %d 不存在", nodeID)
+			}
+			return nil, err
+		}
+		if regionID.Valid {
+			query += "AND EXISTS (SELECT 1 FROM user_nodes un WHERE un.node_id = ? AND un.user_id = u.id) "
+			args = append(args, nodeID)
+		}
 	}
 	query += "GROUP BY u.protocol"
 
