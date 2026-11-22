@@ -22,9 +22,17 @@ const router = useRouter()
 
 const user = computed(() => auth.user || {})
 
-// 代理转售（proxy-store）已下线：原「我的代理」入口及其 proxyEntitlements 调用一并移除。
-// userApi.proxyEntitlements 已随代理商城下线删除，此处若仍调用 undefined 会在 setup 抛错、
-// 导致整页正文空白（More-*.js，2026-11-22 线上事故）。
+// 是否买过代理：决定「我的代理」入口是否出现
+// （商城可以关闭售卖，但买过的人随时要能看自己的凭据和 IP）
+const hasProxy = ref(false)
+userApi
+  .proxyEntitlements()
+  .then((list) => {
+    hasProxy.value = Array.isArray(list) && list.length > 0
+  })
+  .catch(() => {
+    hasProxy.value = false
+  })
 
 const avatarLetter = computed(() => (user.value.email?.[0] || 'U').toUpperCase())
 
@@ -271,6 +279,15 @@ onMounted(() => {
         @press="router.push({ name: 'user-orders' })"
       >
         <template #icon><UserIcon name="cart" :size="20" /></template>
+      </ListRow>
+      <!-- 买过代理才显示：商城关闭时侧栏没有入口，这里是唯一的入口 -->
+      <ListRow
+        v-if="hasProxy"
+        label="我的代理"
+        sub="账号密码 · IP 列表 · 到期时间"
+        @press="router.push({ name: 'user-proxy-mine' })"
+      >
+        <template #icon><UserIcon name="globe" :size="20" /></template>
       </ListRow>
       <ListRow
         label="邀请好友"
