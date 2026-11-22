@@ -5,7 +5,7 @@ import (
 	"net"
 	"strings"
 
-	"controlhub-server/internal/ss2022"
+	"controlhub-server/internal/protocol/shadowsocks/ss2022"
 )
 
 // 逐条复刻 app/Drivers/Xray/XrayConfigService.php 的「订阅链接」段：

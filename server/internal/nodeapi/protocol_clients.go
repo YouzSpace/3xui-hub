@@ -14,7 +14,7 @@ package nodeapi
 //     入站级单凭据（凭据在 settings 里，没有用户维度）；
 //   - flow：只有 vless 需要按 stream 追加 xtls-rprx-vision。
 
-import "controlhub-server/internal/ss2022"
+import "controlhub-server/internal/protocol/shadowsocks/ss2022"
 
 // inboundClientEnv 是一次入站渲染的共用状态：入站相关的一次性解析（目前只有
 // shadowsocks 的 settings.method）在这里做一遍，所有用户复用 —— 节点可能挂着十万用户，

@@ -96,21 +96,21 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		RealityTransports: []string{"tcp", "xhttp", "grpc"},
 		Stream:            true,
 		Defaults:          []protocolDefault{{Key: "decryption", Value: "none"}},
-		Build:             buildVLESSInboundSettings,
+		Build:             buildInboundSettings,
 	},
 	{
 		Name:       "vmess",
 		Transports: panelInboundTransports,
 		Securities: panelInboundSecurities,
 		Stream:     true,
-		Build:      buildPlainInboundSettings,
+		Build:      buildInboundSettings,
 	},
 	{
 		Name:       "trojan",
 		Transports: panelInboundTransports,
 		Securities: panelInboundSecurities,
 		Stream:     true,
-		Build:      buildPlainInboundSettings,
+		Build:      buildInboundSettings,
 	},
 	{
 		Name:          "shadowsocks",
@@ -122,7 +122,7 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		// 默认 2022-blake3-aes-256-gcm（多用户）：与前端 emptyForm 默认一致，
 		// 新建 ss 入站开箱即按用户区分流量（对齐 3x-ui 默认）。
 		Defaults: []protocolDefault{{Key: "method", Value: "2022-blake3-aes-256-gcm"}},
-		Build:    buildShadowsocksInboundSettings,
+		Build:    buildInboundSettings,
 	},
 	{
 		Name:           "hysteria",
@@ -135,7 +135,7 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		Required:       []string{"tls_cert_id"},
 		// 内核只接受 version=2；写 1 会让**整份节点配置**被拒（不是只挂这个入站）。
 		Defaults: []protocolDefault{{Key: "version", Value: int64(2)}},
-		Build:    buildHysteriaInboundSettings,
+		Build:    buildInboundSettings,
 	},
 	{
 		Name:       "socks",
@@ -143,7 +143,7 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		Securities: panelInboundSecurities,
 		Stream:     true,
 		Required:   []string{"auth_user", "auth_pass"},
-		Build:      buildSocksHTTPInboundSettings,
+		Build:      buildInboundSettings,
 	},
 	{
 		Name:       "http",
@@ -151,7 +151,7 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		Securities: panelInboundSecurities,
 		Stream:     true,
 		Required:   []string{"auth_user", "auth_pass"},
-		Build:      buildSocksHTTPInboundSettings,
+		Build:      buildInboundSettings,
 	},
 	{
 		Name:       "tunnel",
@@ -161,7 +161,7 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		Required:   []string{"tunnel_address", "tunnel_port"},
 		// L4 网络（settings.network，不是传输层）：缺省与 tunnelNetwork() 同一个常量。
 		Defaults: []protocolDefault{{Key: "network", Value: defaultTunnelNetwork}},
-		Build:    buildTunnelInboundSettings,
+		Build:    buildInboundSettings,
 	},
 	{
 		Name:           "wireguard",
@@ -173,7 +173,7 @@ var inboundProtocolTable = []inboundProtocolSpec{
 		Stream:         false,
 		PresentNetwork: "udp",
 		Defaults:       []protocolDefault{{Key: "mtu", Value: int64(1420)}},
-		Build:          buildWireGuardInboundSettings,
+		Build:          buildInboundSettings,
 	},
 }
 
@@ -195,7 +195,7 @@ func inboundProtocolOf(name string) *inboundProtocolSpec {
 	if spec, ok := lookupInboundProtocol(name); ok {
 		return spec
 	}
-	return &inboundProtocolSpec{Name: name, Stream: true, Build: buildPlainInboundSettings}
+	return &inboundProtocolSpec{Name: name, Stream: true, Build: buildInboundSettings}
 }
 
 // inboundProtocolNames 是校验白名单里的协议名（顺序 = 表顺序）。

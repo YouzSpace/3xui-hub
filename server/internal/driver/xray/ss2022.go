@@ -10,7 +10,7 @@ package xray
 import (
 	"controlhub-server/internal/driver/internal/phpjson"
 	"controlhub-server/internal/driver/internal/phpval"
-	"controlhub-server/internal/ss2022"
+	"controlhub-server/internal/protocol/shadowsocks/ss2022"
 )
 
 // SSMethodOf 读入站 settings.method（读不到返回空串，由调用方决定默认值）。

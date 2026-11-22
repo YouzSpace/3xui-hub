@@ -16,6 +16,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	protosec "controlhub-server/internal/protocol/security"
+	prototrans "controlhub-server/internal/protocol/transport"
 )
 
 // 系统保留 tag 与不可作「借道出站」的协议（与 PHP 常量一致）。
@@ -598,75 +601,33 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 		stream.put("hysteriaSettings", jo("version", int64(2), "auth", auth))
 	}
 
-	if network == "ws" {
-		ws := jo()
-		path := nodeStringField(input, "ws_path")
-		if path == "" {
-			path = "/"
+	// 传输层（ws/xhttp/httpupgrade/tcp-header）与安全层（tls/reality）走 protocol 公共模块。
+	// protocol 返回段 JSON，这里解码合并进 admin 的 stream 保序对象（jsObj）。
+	mergeSegment := func(seg []byte) {
+		if len(seg) == 0 {
+			return
 		}
-		ws.put("path", path)
-		if host := nodeStringField(input, "ws_host"); host != "" {
-			ws.put("headers", jo("Host", host))
+		parsed, err := parseOrderedJS(seg)
+		if err != nil {
+			return
 		}
-		stream.put("wsSettings", ws)
-	} else if network == "xhttp" {
-		stream.put("xhttpSettings", xhttpSettings(input))
-	} else if network == "httpupgrade" {
-		hu := jo()
-		path := nodeStringField(input, "httpupgrade_path")
-		if path == "" {
-			path = "/"
+		if o, ok := parsed.(*jsObj); ok {
+			for i, k := range o.keys {
+				stream.put(k, o.vals[i])
+			}
 		}
-		hu.put("path", path)
-		if host := nodeStringField(input, "httpupgrade_host"); host != "" {
-			hu.put("host", host)
-		}
-		stream.put("httpupgradeSettings", hu)
 	}
-
-	if network == "tcp" && nodeStringField(input, "tcp_header_type") == "http" {
-		reqPath := nodeStringField(input, "tcp_header_path")
-		if reqPath == "" {
-			reqPath = "/"
-		}
-		request := jo("version", "1.1", "method", "GET", "path", jsArr{reqPath})
-		if host := nodeStringField(input, "tcp_header_host"); host != "" {
-			request.put("headers", jo("Host", jsArr{host}))
-		}
-		stream.put("tcpSettings", jo("header", jo("type", "http", "request", request)))
-	}
-
+	mergeSegment(prototrans.BuildOutbound(network, input))
 	if security == "tls" {
-		tls := jo()
-		if sni := nodeStringField(input, "tls_server_name"); sni != "" {
-			tls.put("serverName", sni)
-		}
-		if protocol == "hysteria" {
-			// HY2 走 QUIC，ALPN 固定协商 h3（与入站侧同规矩）：不写时默认 alpn 是 h2/http1.1，
-			// 对端 QUIC 握手不认，出站直接连不上。
-			tls.put("alpn", jsArr{"h3"})
-		}
-		stream.put("tlsSettings", tls)
+		mergeSegment(protosec.TLS(nodeStringField(input, "tls_server_name"), protocol == "hysteria"))
 	} else if security == "reality" {
-		reality := jo()
-		if v := nodeStringField(input, "reality_server_name"); v != "" {
-			reality.put("serverName", v)
-		}
-		if v := nodeStringField(input, "reality_public_key"); v != "" {
-			reality.put("publicKey", v)
-		}
-		if v := nodeStringField(input, "reality_short_id"); v != "" {
-			reality.put("shortId", v)
-		}
-		fp := nodeStringField(input, "reality_fingerprint")
-		if fp == "" {
-			fp = "chrome"
-		}
-		reality.put("fingerprint", fp)
-		if v := nodeStringField(input, "reality_spider_x"); v != "" {
-			reality.put("spiderX", v)
-		}
-		stream.put("realitySettings", reality)
+		mergeSegment(protosec.Reality(
+			nodeStringField(input, "reality_server_name"),
+			nodeStringField(input, "reality_public_key"),
+			nodeStringField(input, "reality_short_id"),
+			nodeStringField(input, "reality_fingerprint"),
+			nodeStringField(input, "reality_spider_x"),
+		))
 	}
 
 	if dialerProxy != "" {
