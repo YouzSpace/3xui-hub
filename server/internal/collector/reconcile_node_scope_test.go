@@ -2,13 +2,13 @@ package collector
 
 // 对账「按节点取用户」的集成测试（地区功能 #06，实连 MySQL）。
 //
-// 验证的只有一件事：reconcileUsers(ctx, nodeID) 的绑定过滤口径
-//   - 节点 A 绑了 1 个用户 → 只返回这 1 个；
-//   - 节点 B 没有任何绑定记录 → 返回全量（老用户升级后空表 = 行为不变）；
+// 验证的只有一件事：reconcileUsers(ctx, nodeID) 的下发过滤口径（按节点是否归属地区）
+//   - 已归属地区的节点 A 绑了 1 个用户 → 只返回这 1 个；
+//   - 未归属地区（region_id IS NULL）的节点 B 即使有旧绑定 → 返回全量（移出地区即全量）；
 //   - nodeID <= 0 → 全量（不过滤）。
 //
-// 为什么必须有这条用例：换成「全量用户逐节点比对」时，绑到别的节点的人会在每台节点上
-// 都被判成「节点上缺人」→ 每轮补挂 → bump config_version → 内核反复重启。
+// 为什么必须有这条用例：已归属节点若按全量用户逐节点比对，绑到别的节点的人会在每台
+// 都已归属节点上被判成「节点上缺人」→ 每轮补挂 → bump config_version → 内核反复重启。
 //
 // 刻意不用 controlhub_test：那里有真实业务数据，断言会被干扰。本用例自建
 // schema（ch_region06_reconcile），跑完 DROP，不碰任何已有库。
@@ -27,7 +27,7 @@ import (
 )
 
 // reconcileScopeDDL 只建 reconcileUsers 这条查询真正用到的表与列
-// （users 的全列 + plans.type + user_nodes）。
+// （users 的全列 + plans.type + user_nodes + nodes.region_id）。
 const reconcileScopeDDL = `
 CREATE TABLE plans (
   id bigint unsigned NOT NULL AUTO_INCREMENT,
@@ -56,6 +56,12 @@ CREATE TABLE user_nodes (
   node_id bigint unsigned NOT NULL,
   PRIMARY KEY (user_id, node_id),
   KEY idx_node (node_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE nodes (
+  id bigint unsigned NOT NULL AUTO_INCREMENT,
+  region_id bigint unsigned DEFAULT NULL,
+  PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -139,7 +145,8 @@ func newRegion06Schema(t *testing.T, schema, ddl string) *sql.DB {
 }
 
 // TestReconcileUsersByNodeScope 是 #06 的验收用例：
-// 3 个用户在库，节点 A 绑 1 人、节点 B 无绑定 → A 取到 1 人、B 取到 3 人。
+// 3 个用户在库，已归属地区的节点 A 绑 1 人 → 取到 1 人；
+// 未归属地区的节点 B 即使有旧绑定 → 取全量 3 人（移出地区即全量注册）。
 func TestReconcileUsersByNodeScope(t *testing.T) {
 	db := newRegion06Schema(t, "ch_region06_reconcile", reconcileScopeDDL)
 
@@ -150,8 +157,8 @@ func TestReconcileUsersByNodeScope(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		nodeA int64 = 101 // 绑了 user 1
-		nodeB int64 = 102 // 一条绑定都没有
+		nodeA int64 = 101 // 已归属地区，绑了 user 1
+		nodeB int64 = 102 // 未归属地区（NULL），绑了 user 1（旧绑定保留）
 	)
 
 	mustExec := func(query string, args ...any) {
@@ -166,8 +173,11 @@ func TestReconcileUsersByNodeScope(t *testing.T) {
 		mustExec("INSERT INTO users (id, uuid, protocol, enabled, plan_id, email) VALUES (?, ?, ?, 1, 1, ?)",
 			id, fmt.Sprintf("uuid-%d", id), proto, fmt.Sprintf("region06-u%d@example.com", id))
 	}
-	// 只把 user 1 绑到节点 A；节点 B 不写任何绑定。
+	// 节点 A 归属地区 7；节点 B 未归属地区（NULL）。两个节点都有 user 1 的旧绑定。
+	mustExec("INSERT INTO nodes (id, region_id) VALUES (?, 7)", nodeA)
+	mustExec("INSERT INTO nodes (id, region_id) VALUES (?, NULL)", nodeB)
 	mustExec("INSERT INTO user_nodes (user_id, node_id) VALUES (1, ?)", nodeA)
+	mustExec("INSERT INTO user_nodes (user_id, node_id) VALUES (1, ?)", nodeB)
 
 	ids := func(us []reconcileUser) []int64 {
 		out := make([]int64, 0, len(us))
@@ -177,25 +187,22 @@ func TestReconcileUsersByNodeScope(t *testing.T) {
 		return out
 	}
 
-	// ① 节点 A：只应该拿到绑给它的 1 个人。
+	// ① 已归属地区的节点 A：只应该拿到绑给它的 1 个人。
 	gotA, err := col.reconcileUsers(ctx, nodeA)
 	if err != nil {
 		t.Fatalf("reconcileUsers(A) 报错: %v", err)
 	}
-	if len(gotA) != 1 {
-		t.Fatalf("节点 A 绑了 1 人，reconcileUsers(A) 期望 1 人，实际 %d 人 %v", len(gotA), ids(gotA))
-	}
-	if gotA[0].ID != 1 {
-		t.Fatalf("节点 A 期望取到 user 1，实际 user %d", gotA[0].ID)
+	if len(gotA) != 1 || gotA[0].ID != 1 {
+		t.Fatalf("节点 A（已归属地区、绑 1 人）期望 [1]，实际 %v", ids(gotA))
 	}
 
-	// ② 节点 B：没有任何绑定 → 兼容分支，取全量 3 人（老用户升级后的行为）。
+	// ② 未归属地区的节点 B：即使有旧绑定，也取全量 3 人（移出地区即全量注册）。
 	gotB, err := col.reconcileUsers(ctx, nodeB)
 	if err != nil {
 		t.Fatalf("reconcileUsers(B) 报错: %v", err)
 	}
 	if len(gotB) != 3 {
-		t.Fatalf("节点 B 无绑定，reconcileUsers(B) 期望全量 3 人，实际 %d 人 %v", len(gotB), ids(gotB))
+		t.Fatalf("节点 B 未归属地区，期望全量 3 人（旧绑定不应切片），实际 %d 人 %v", len(gotB), ids(gotB))
 	}
 
 	// ③ nodeID <= 0：明确不过滤（全局面板口径）。

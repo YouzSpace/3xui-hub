@@ -133,6 +133,9 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, args []driver.N
 		return c.userRows(), nil
 	case strings.Contains(q, "FROM nodes WHERE enabled = 1"):
 		return c.nodeRows(), nil
+	case strings.Contains(q, "SELECT region_id FROM nodes WHERE id"):
+		// reconcileUsers 先读节点的地区归属，决定是否全量。测试节点按「未归属地区」处理。
+		return &fakeRows{cols: []string{"region_id"}, vals: [][]driver.Value{{nil}}}, nil
 	case strings.Contains(q, "SELECT protocol, inbound_id FROM node_inbounds"):
 		return c.inboundRows(true), nil
 	case strings.Contains(q, "SELECT inbound_id FROM node_inbounds"):
@@ -524,7 +527,7 @@ func TestReconcileAutoFixTotalTypeDrift(t *testing.T) {
 	panelLimit := int64(1000) // 面板新套餐 1000 字节（模拟 2GiB 缩小）
 	var mu sync.Mutex
 	nodeLimit := int64(500) // 节点旧套餐残留：具体值 500
-	nodeExpiry := int64(0)   // total 型套餐 expiry=0（不过期）—— 这正是 218 的形态
+	nodeExpiry := int64(0)  // total 型套餐 expiry=0（不过期）—— 这正是 218 的形态
 	updates := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
