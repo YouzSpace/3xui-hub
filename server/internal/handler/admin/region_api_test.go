@@ -456,6 +456,14 @@ func TestRegion09NodeRegionAndCapacity(t *testing.T) {
 	if list[0].NodeCount != 0 || list[0].CapacityUsed != 0 {
 		t.Fatalf("移出后地区统计应清零: %+v", list[0])
 	}
+	// 移出地区=全量：该节点上的 user_nodes 绑定必须被清掉（否则用户列表/节点列表会显示失效残留）。
+	var left int
+	if err := db.QueryRow("SELECT COUNT(*) FROM user_nodes WHERE node_id = 1").Scan(&left); err != nil {
+		t.Fatalf("统计移出后绑定失败: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("移出地区后节点绑定应清零（全量下发），实际仍剩 %d 条", left)
+	}
 
 	// 不存在的地区 / 节点 → 业务错误，不是 500
 	if resp := region09Call(t, engine, http.MethodPut, "/admin-api/nodes/1/region", `{"region_id":999}`); resp.Code != 422 {

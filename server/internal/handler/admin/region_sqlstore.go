@@ -363,8 +363,35 @@ func (s *regionSQLStore) NodeBinding(ctx context.Context, nodeID uint64) (region
 }
 
 // NodeSetRegion 设置节点归属（nil = 移出地区，回到全量下发）。
+//
+// 移出地区时顺手清掉该节点的 user_nodes 绑定：全量模式下每台节点对所有人都下发，
+// 这些绑定已无意义，留着会让「用户列表→绑定节点」「节点→绑定用户」显示失效残留。
+// 改归属 + 清绑定放同一个事务，避免半途失败留下「已全量但有绑定」的中间态。
 func (s *regionSQLStore) NodeSetRegion(ctx context.Context, nodeID uint64, regionID *uint64) error {
-	return s.execNodeUpdate(ctx, "UPDATE nodes SET region_id = ? WHERE id = ?", nodeValue(regionID), nodeID)
+	if regionID != nil {
+		return s.execNodeUpdate(ctx, "UPDATE nodes SET region_id = ? WHERE id = ?", nodeValue(regionID), nodeID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 先确认节点存在（0 行更新分不清「值相同」还是「不存在」，这里直接锁行确认）。
+	var one int
+	switch err := tx.QueryRowContext(ctx, "SELECT 1 FROM nodes WHERE id = ? FOR UPDATE", nodeID).Scan(&one); {
+	case err == sql.ErrNoRows:
+		return sql.ErrNoRows
+	case err != nil:
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE nodes SET region_id = NULL WHERE id = ?", nodeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM user_nodes WHERE node_id = ?", nodeID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // NodeSetCapacity 设置节点容量（nil = 不限）。
