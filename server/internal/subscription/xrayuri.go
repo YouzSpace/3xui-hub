@@ -119,9 +119,6 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		if pqv := phpTrim(jsonFieldString(client, "mldsa65Verify")); pqv != "" {
 			query += "&pqv=" + rawurlencode(pqv)
 		}
-		if flowApplies(inbound) {
-			query += "&flow=" + xrayFlow
-		}
 	case "tls":
 		sni := jsonFieldString(stream, "tlsSettings", "serverName")
 		if sni == "" {
@@ -171,6 +168,14 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		if headerHost != "" {
 			query += "&host=" + rawurlencode(headerHost)
 		}
+	}
+
+	// flow 统一在这里追加：vless + tcp + reality/tls 都要（见 flowApplies）。
+	// 节点侧渲染（nodeapi/render.go 的 streamAllowsFlow）给这些入站的每个 client 都写了
+	// flow=xtls-rprx-vision；链接缺 flow 就是「服务端要求 vision、客户端没开」——握手被拒，
+	// 节点整条连不上。此前只有 reality 分支加，tcp+TLS 的入站因此一直拿不到 flow。
+	if flowApplies(inbound) {
+		query += "&flow=" + xrayFlow
 	}
 
 	return "vless://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
