@@ -45,7 +45,7 @@ func (e *UserExtras) handleAffiliate(c *gin.Context) {
 	success(c, jo(
 		"rate", phpFloat(sum.Rate),
 		"total_rebate", sum.TotalRebate,
-		"invited_count", len(sum.Invitees),
+		"invited_count", sum.InvitedCount,
 		"invitees", invitees,
 	))
 }

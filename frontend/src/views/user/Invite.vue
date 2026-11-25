@@ -83,6 +83,12 @@ const statusLabel = (s) => ({
   refreshed: '已失效',
 }[s] || s)
 
+// 我的兑换码：可用的正常展示；已使用/已过期/已失效的收进可折叠的历史区，
+// 避免码一多把页面越拉越长（兑换码是拿来用的，用完的不该一直占屏）。
+const showUsedGifts = ref(false)
+const activeRedeemCodes = computed(() => redeemCodes.value.filter((c) => c.status === 'active'))
+const usedRedeemCodes = computed(() => redeemCodes.value.filter((c) => c.status !== 'active'))
+
 /**
  * 复制到剪贴板（三级降级）。
  * navigator.clipboard 只在安全上下文（https / localhost）且未被策略禁用时可用：
@@ -244,8 +250,10 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
       </template>
     </section>
 
-    <!-- 已邀请（每行 = 打码邮箱 + 贡献返佣 + 加入时间） -->
+    <!-- 已邀请（每行 = 打码邮箱 + 贡献返佣 + 加入时间）。列表只显示最近 30 天加入的人，
+         「已邀请成功 N 人」是上方全量统计，不受影响。说明放标题右侧，不占列表空间。 -->
     <ListGroup v-if="!affError" label="已邀请">
+      <template #label-extra>仅显示最近 30 天</template>
       <template v-if="affLoading">
         <div class="iv-invitee iv-invitee--skeleton">
           <div class="iv-skel iv-skel--sm"></div>
@@ -264,25 +272,23 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
       <p v-else class="iv-empty iv-empty--inset">还没有邀请好友，把邀请码发给朋友试试</p>
     </ListGroup>
 
-    <!-- 规则说明 -->
+    <!-- 规则说明（精简版：只留用户用得上的，并把「兑换码怎么用」讲清楚） -->
     <ListGroup label="规则说明">
       <ul class="iv-rules">
-        <li>邀请好友下单，好友享 {{ discountLabel || '折扣' }} 优惠</li>
-        <li>每位用户一生只能使用一次邀请码，用过即永久生效</li>
-        <li>不能使用自己的邀请码</li>
-        <li>邀请码定期刷新，刷新后旧码立即失效，只认最新码</li>
-        <li>好友支付成功后，你会自动获得一张兑换码</li>
-        <li>好友购买套餐后，你会按比例获得返佣（见上方累计返佣）</li>
+        <li>把邀请码发给好友，好友下单可享 {{ discountLabel || '折扣' }} 优惠</li>
+        <li>好友首次下单结算时，在「邀请码 / 兑换码」框填入邀请码即可；每人限用一次，用过永久生效，不能用自己或别人已用过的码</li>
+        <li>好友付款成功后，你会获得一张你的专属兑换码，可在「商店」下单时填入抵扣</li>
+        <li>好友每次购买套餐，你会按 {{ ratePercent }} 获得返佣，直接到账余额</li>
       </ul>
     </ListGroup>
 
-    <!-- 我的兑换码 -->
+    <!-- 我的兑换码：可用的正常展示；已使用/已过期折叠进历史，避免列表越拉越长 -->
     <ListGroup label="我的兑换码">
-      <template v-if="redeemCodes.length">
-        <div v-for="c in redeemCodes" :key="c.code" class="iv-gift">
+      <template v-if="activeRedeemCodes.length">
+        <div v-for="c in activeRedeemCodes" :key="c.code" class="iv-gift">
           <div class="iv-gift-head">
-            <span class="iv-gift-code" :class="{ 'iv-gift-code--dead': c.status !== 'active' }">{{ c.code }}</span>
-            <span class="iv-gift-status" :class="`iv-gift-status--${c.status}`">{{ statusLabel(c.status) }}</span>
+            <span class="iv-gift-code">{{ c.code }}</span>
+            <span class="iv-gift-status iv-gift-status--active">{{ statusLabel(c.status) }}</span>
           </div>
           <div class="iv-gift-meta">
             <span class="iv-gift-discount">{{ codeDiscount(c.discount) }}</span>
@@ -291,7 +297,28 @@ onUnmounted(() => { if (ticker) clearInterval(ticker) })
           <p v-if="c.note" class="iv-gift-note">{{ c.note }}</p>
         </div>
       </template>
-      <p v-else class="iv-empty iv-empty--inset">还没有兑换码，邀请好友下单即可获得</p>
+      <p v-else-if="!redeemCodes.length" class="iv-empty iv-empty--inset">还没有兑换码，邀请好友下单即可获得</p>
+      <p v-else class="iv-empty iv-empty--inset">暂无可用兑换码（已使用 / 已过期的见下方）</p>
+
+      <!-- 历史：已使用 / 已过期，默认收起 -->
+      <template v-if="usedRedeemCodes.length">
+        <button type="button" class="iv-gift-toggle uu-press" @click="showUsedGifts = !showUsedGifts">
+          <span>已使用 / 已过期（{{ usedRedeemCodes.length }}）</span>
+          <UserIcon :name="showUsedGifts ? 'chevronDown' : 'chevronRight'" :size="16" />
+        </button>
+        <div v-show="showUsedGifts" class="iv-gift-history">
+          <div v-for="c in usedRedeemCodes" :key="c.code" class="iv-gift iv-gift--used">
+            <div class="iv-gift-head">
+              <span class="iv-gift-code iv-gift-code--dead">{{ c.code }}</span>
+              <span class="iv-gift-status" :class="`iv-gift-status--${c.status}`">{{ statusLabel(c.status) }}</span>
+            </div>
+            <div class="iv-gift-meta">
+              <span class="iv-gift-discount">{{ codeDiscount(c.discount) }}</span>
+              <span class="iv-gift-exp">{{ c.expires_at ? `有效期至 ${new Date(c.expires_at).toLocaleDateString('zh-CN')}` : '永久有效' }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
     </ListGroup>
   </div>
 </template>

@@ -28,6 +28,7 @@ const navItems = [
     icon: 'home',
   },
   { to: '/dashboard/shop', name: 'user-shop', label: '商店', icon: 'cart' },
+  { to: '/dashboard/invite', name: 'user-invite', label: '邀请', icon: 'gift' },
   { to: '/dashboard/more', name: 'user-more', label: '我的', icon: 'person' },
 ]
 
@@ -56,7 +57,6 @@ const subPageBack = computed(() => ({
   'user-contact': { name: 'user-more' },
   'user-announcement': { name: 'user-more' },
   'user-orders': { name: 'user-shop' },
-  'user-invite': { name: 'user-more' },
   'user-balance': { name: 'user-more' },
 }[route.name] || null))
 
@@ -68,13 +68,13 @@ const goBack = () => {
 
 const activeTab = computed(() => {
   if (route.name === 'user-shop' || route.name === 'user-orders') return 'user-shop'
+  if (route.name === 'user-invite') return 'user-invite'
   if (
     route.name === 'user-more' ||
     route.name === 'user-announcement' ||
     route.name === 'user-tutorials' ||
     route.name === 'user-tutorial' ||
     route.name === 'user-contact' ||
-    route.name === 'user-invite' ||
     route.name === 'user-balance'
   ) return 'user-more'
   return 'user-dashboard'

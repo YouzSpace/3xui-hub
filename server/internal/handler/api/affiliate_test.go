@@ -254,8 +254,41 @@ func TestAffiliateSummary(t *testing.T) {
 	if sum.Rate != 0.15 || sum.TotalRebate != 1500 || len(sum.Invitees) != 2 {
 		t.Fatalf("汇总不对: %+v", sum)
 	}
+	if sum.InvitedCount != 2 {
+		t.Fatalf("InvitedCount = %d, 期望 2（全量）", sum.InvitedCount)
+	}
 	if got := maskEmail(sum.Invitees[0].Email); got != "fr***@example.com" {
 		t.Fatalf("邮箱打码 = %v, 期望 fr***@example.com", got)
+	}
+}
+
+// TestAffiliateSummaryRecentWindow 列表只保留最近 30 天加入的人，
+// 但总人数（InvitedCount）仍是全量 —— 页面「已邀请成功 N 人」不随列表窗口缩水。
+func TestAffiliateSummaryRecentWindow(t *testing.T) {
+	affiliate := &fakeAffiliateStore{
+		total: 300,
+		invitees: []AffiliateInvitee{
+			{UserID: 1, Email: sql.NullString{String: "new@example.com", Valid: true}, Rebate: 100, InvitedAt: sql.NullTime{Time: fixedNow.Add(-2 * 24 * time.Hour), Valid: true}},
+			{UserID: 2, Email: sql.NullString{String: "old@example.com", Valid: true}, Rebate: 200, InvitedAt: sql.NullTime{Time: fixedNow.Add(-40 * 24 * time.Hour), Valid: true}},
+			{UserID: 3, Email: sql.NullString{String: "unknown@example.com", Valid: true}, Rebate: 0, InvitedAt: sql.NullTime{Valid: false}},
+		},
+	}
+	svc := newAffiliateSvc(affiliate, map[string]string{affiliateRebateRateKey: "0.10"})
+
+	sum, err := svc.Summary(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("Summary 失败: %v", err)
+	}
+	if sum.InvitedCount != 3 {
+		t.Fatalf("InvitedCount = %d, 期望 3（全量，不随列表窗口变化）", sum.InvitedCount)
+	}
+	if len(sum.Invitees) != 2 {
+		t.Fatalf("列表条数 = %d, 期望 2（40 天前的被裁掉，时间未知的保留）", len(sum.Invitees))
+	}
+	for _, it := range sum.Invitees {
+		if it.UserID == 2 {
+			t.Fatalf("40 天前的被邀请人不该出现在最近 30 天列表里")
+		}
 	}
 }
 

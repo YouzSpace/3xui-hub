@@ -3,14 +3,28 @@
   flex-direction: column;
   gap: 6px;
 }
+/* 标题行：左侧标题 + 右侧小字说明 */
+.lg-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+}
 .lg-label {
   margin: 0;
-  padding: 0 16px;
   font-size: 13px;
   font-weight: 500;
   color: var(--lbl3);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+.lg-label-extra {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--lbl3);
+  text-align: right;
+  white-space: nowrap;
 }
 .lg-card {
   border-radius: 16px;

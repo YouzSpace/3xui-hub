@@ -146,7 +146,7 @@ const daysLeft = computed(() => {
 });
 const planLabel = computed(() => user.value.plan_name || "无套餐");
 
-// 重置倒计时（沿用原显示条件：周期套餐且 >1 月才显示）
+// 重置倒计时
 const resetDaysLeft = computed(() => {
   if (!user.value.next_traffic_reset_at) return null;
   const now = new Date();
@@ -154,12 +154,20 @@ const resetDaysLeft = computed(() => {
   const diff = Math.ceil((resetAt - now) / (1000 * 60 * 60 * 24));
   return diff > 0 ? diff : 0;
 });
+// 是否显示「重置日期」。
+// 2026-11-25 修：原条件用 plan_months>1，但 plan_months 是「套餐当前配置的月数」，
+// 管理员把某套餐从 3 个月改成 1 个月后，存量按 3 个月买的用户 plan_months 也变成 1，
+// 导致这批人的「重置日期」整批消失（流量仍在按 30 天重置，却看不到日期）。
+// 改为按用户自身的真实服务期判断：只要「到期日之前还真的会发生一次流量重置」就显示。
 const showResetCountdown = computed(() => {
-  return (
-    user.value.plan_type === "period" &&
-    user.value.plan_months > 1 &&
-    resetDaysLeft.value !== null
-  );
+  if (user.value.plan_type !== "period") return false;
+  if (!user.value.next_traffic_reset_at) return false;
+  // 无到期日（理论上周期套餐不会有）：只要有待重置就显示
+  if (!user.value.expired_at) return true;
+  const resetAt = new Date(user.value.next_traffic_reset_at).getTime();
+  const expiredAt = new Date(user.value.expired_at).getTime();
+  // 重置点须在到期日前 3 天以上，才排除「1 个月套餐自身那一次与到期几乎重合的重置」
+  return resetAt < expiredAt - 3 * 24 * 60 * 60 * 1000;
 });
 const resetDateLabel = computed(() => {
   if (!user.value.next_traffic_reset_at) return "";

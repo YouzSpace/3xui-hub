@@ -239,7 +239,7 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 		u.ID).Scan(&invitedCount)
 
 	rows, err := e.db.QueryContext(ctx,
-		"SELECT code, status, expires_at FROM discount_codes WHERE user_id = ? AND source = 'redeem' AND status <> 'deleted' ORDER BY id DESC",
+		"SELECT code, discount, note, status, expires_at FROM discount_codes WHERE user_id = ? AND source = 'redeem' AND status <> 'deleted' ORDER BY id DESC",
 		u.ID)
 	if err != nil {
 		fail(c, "服务器错误", 500)
@@ -251,8 +251,10 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 	redeemNow := time.Now()
 	for rows.Next() {
 		var code, status string
+		var discount float64
+		var note sql.NullString
 		var expiresAt sql.NullTime
-		if err := rows.Scan(&code, &status, &expiresAt); err != nil {
+		if err := rows.Scan(&code, &discount, &note, &status, &expiresAt); err != nil {
 			continue
 		}
 		// 与后台列表、下单校验同一口径现算有效状态（到点即过期，不靠定时任务回写）。
@@ -262,7 +264,19 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 			exp = &t
 		}
 		status = discountstatus.EffectiveStatus(status, exp, 0, 0, redeemNow)
-		redeemCodes = append(redeemCodes, jo("code", code, "status", status))
+		// discount / note：前端展示用（`{{ (discount*10).toFixed(1) }} 折`）。
+		// 曾漏返回 discount → 前端 Number(undefined)*10 = NaN → 显示「NaN 折」。
+		var noteVal any
+		if note.Valid {
+			noteVal = note.String
+		}
+		redeemCodes = append(redeemCodes, jo(
+			"code", code,
+			"discount", phpFloatOf(discount),
+			"note", noteVal,
+			"status", status,
+			"expires_at", nullableISOTime(expiresAt),
+		))
 	}
 
 	var refreshAt any

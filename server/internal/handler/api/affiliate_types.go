@@ -68,6 +68,9 @@ type AffiliateSummary struct {
 	Rate float64
 	// TotalRebate 是累计返佣（分）。
 	TotalRebate int64
-	// Invitees 是我邀请来的人（每人贡献多少返佣）。
+	// InvitedCount 是我拉来的人总数（全量，不受列表窗口影响）。
+	// 与 /api/invite/me 的 invited_count 同口径，页面「已邀请成功 N 人」用它。
+	InvitedCount int
+	// Invitees 是列表展示用的人（只含最近 30 天加入的，避免页面被拉长）。
 	Invitees []AffiliateInvitee
 }
