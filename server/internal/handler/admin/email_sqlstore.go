@@ -131,38 +131,9 @@ func (s *mailSQLStore) MailUserByLogin(ctx context.Context, query string) (*Mail
 
 // MailRecipients 对齐 MailBatchService::recipientQuery（all / filter）。
 func (s *mailSQLStore) MailRecipients(ctx context.Context, f MailRecipientFilter, now time.Time) ([]MailUser, error) {
-	where := []string{"1=1"}
-	args := []any{}
-	if len(f.PlanIDs) > 0 {
-		ph := make([]string, len(f.PlanIDs))
-		for i, id := range f.PlanIDs {
-			ph[i] = "?"
-			args = append(args, id)
-		}
-		where = append(where, "u.plan_id IN ("+strings.Join(ph, ",")+")")
-	}
-	switch f.UserStatus {
-	case "all":
-		// 全部：所有【已启用】用户（含无套餐 / 已过期 / 已超量，但【不含被封禁】）。
-		// 用于「向全站已启用用户发宣传」，没买过套餐的人也能收到。
-		where = append(where, "u.enabled = 1")
-	case "depleted":
-		// 已耗尽：过期 或 流量超量（二者都表示套餐已经用不了了）。
-		// 只在已启用账号里算（被封禁的账号不属于「状态」范畴）。
-		where = append(where, "u.enabled = 1 AND (",
-			"(u.expired_at IS NOT NULL AND u.expired_at < ?)",
-			"OR (u.traffic_limit > 0 AND u.traffic_used >= u.traffic_limit)",
-			"OR (u.monthly_traffic_limit > 0 AND u.monthly_traffic_used >= u.monthly_traffic_limit))")
-		args = append(args, now)
-	default: // normal：正常可用 = 已启用 且 未过期 且 未超量。
-		where = append(where, "u.enabled = 1",
-			"(u.expired_at IS NULL OR u.expired_at > ?)",
-			"(u.traffic_limit <= 0 OR u.traffic_used < u.traffic_limit)",
-			"(u.monthly_traffic_limit <= 0 OR u.monthly_traffic_used < u.monthly_traffic_limit)")
-		args = append(args, now)
-	}
+	where, args := mailRecipientWhere(f, now)
 	q := "SELECT " + mailUserColumns + " FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE " +
-		strings.Join(where, " AND ") + " ORDER BY u.id ASC"
+		where + " ORDER BY u.id ASC"
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -177,6 +148,51 @@ func (s *mailSQLStore) MailRecipients(ctx context.Context, f MailRecipientFilter
 		out = append(out, *u)
 	}
 	return out, rows.Err()
+}
+
+// mailRecipientWhere 把筛选条件编译成 WHERE 子句与参数（纯函数，便于单测）。
+//
+// 两条硬条件对所有分支都成立：
+//   - enabled = 1 —— 封禁用户永不发信（产品口径）；
+//   - email 非空  —— users.email 可空，空串/NULL 既发不出去，扫进 string 还会让整批失败。
+func mailRecipientWhere(f MailRecipientFilter, now time.Time) (string, []any) {
+	where := []string{"u.enabled = 1", "u.email IS NOT NULL", "u.email <> ''"}
+	args := []any{}
+
+	// 套餐筛选：「未购买过套餐」= plan_id IS NULL（买过就一定有 plan_id，到期也保留）。
+	planPlaceholders := make([]string, 0, len(f.PlanIDs))
+	for _, id := range f.PlanIDs {
+		planPlaceholders = append(planPlaceholders, "?")
+		args = append(args, id)
+	}
+	switch {
+	case len(planPlaceholders) > 0 && f.NoPlan:
+		where = append(where, "(u.plan_id IN ("+strings.Join(planPlaceholders, ",")+") OR u.plan_id IS NULL)")
+	case len(planPlaceholders) > 0:
+		where = append(where, "u.plan_id IN ("+strings.Join(planPlaceholders, ",")+")")
+	case f.NoPlan:
+		where = append(where, "u.plan_id IS NULL")
+	}
+
+	switch f.UserStatus {
+	case "all":
+		// 全部：所有【已启用且有邮箱】用户（含无套餐 / 已过期 / 已超量，但【不含被封禁】）。
+		// 用于「向全站已启用用户发宣传」，没买过套餐的人也能收到。
+	case "depleted":
+		// 已耗尽：过期 或 流量超量（二者都表示套餐已经用不了了）。
+		where = append(where, "(",
+			"(u.expired_at IS NOT NULL AND u.expired_at < ?)",
+			"OR (u.traffic_limit > 0 AND u.traffic_used >= u.traffic_limit)",
+			"OR (u.monthly_traffic_limit > 0 AND u.monthly_traffic_used >= u.monthly_traffic_limit))")
+		args = append(args, now)
+	default: // normal：正常可用 = 未过期 且 未超量。
+		where = append(where,
+			"(u.expired_at IS NULL OR u.expired_at > ?)",
+			"(u.traffic_limit <= 0 OR u.traffic_used < u.traffic_limit)",
+			"(u.monthly_traffic_limit <= 0 OR u.monthly_traffic_used < u.monthly_traffic_limit)")
+		args = append(args, now)
+	}
+	return strings.Join(where, " AND "), args
 }
 
 const mailLogSelectColumns = `id, type, status, to_email, to_user_id, subject, scene, batch_id, error, created_at`

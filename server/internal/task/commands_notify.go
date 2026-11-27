@@ -149,9 +149,15 @@ type notifyUser struct {
 
 // scanNotifyUser 从查询结果扫一行用户。
 func scanNotifyUser(rows *sql.Rows) (*notifyUser, error) {
+	return scanNotifyUserRow(rows)
+}
+
+// scanNotifyUserRow 扫一行用户（*sql.Rows 与 *sql.Row 都满足 Scan 接口，
+// 定时发信的单发分支用 QueryRow 复用同一套列序）。
+func scanNotifyUserRow(row interface{ Scan(...any) error }) (*notifyUser, error) {
 	var u notifyUser
 	var expiredAt sql.NullTime
-	if err := rows.Scan(&u.ID, &u.Email, &u.Token, &u.TrafficLimit, &u.TrafficUsed,
+	if err := row.Scan(&u.ID, &u.Email, &u.Token, &u.TrafficLimit, &u.TrafficUsed,
 		&expiredAt, &u.PlanID, &u.MonthlyTrafficUsed, &u.MonthlyTrafficLimit); err != nil {
 		return nil, err
 	}
