@@ -273,13 +273,6 @@ onMounted(() => {
         <template #icon><UserIcon name="cart" :size="20" /></template>
       </ListRow>
       <ListRow
-        label="邀请好友"
-        sub="我的邀请码 · 兑换码"
-        @press="router.push({ name: 'user-invite' })"
-      >
-        <template #icon><UserIcon name="person" :size="20" /></template>
-      </ListRow>
-      <ListRow
         label="使用文档"
         sub="客户端配置 · 常见问题"
         @press="router.push({ name: 'user-tutorials' })"

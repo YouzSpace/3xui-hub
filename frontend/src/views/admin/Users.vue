@@ -674,7 +674,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
             <span v-else>无套餐（无流量）</span>
           </span>
         </div>
-        <div v-if="detail.plan_type === 'period' && detail.plan_months > 1 && detail.next_traffic_reset_at" class="au-detail-row">
+        <div v-if="detail.plan_type === 'period' && detail.next_traffic_reset_at && (!detail.expired_at || new Date(detail.next_traffic_reset_at).getTime() < new Date(detail.expired_at).getTime() - 3 * 24 * 60 * 60 * 1000)" class="au-detail-row">
           <span class="au-detail-label">流量重置</span>
           <span class="au-detail-value">
             {{ Math.max(0, Math.ceil((new Date(detail.next_traffic_reset_at) - new Date()) / (1000 * 60 * 60 * 24))) }} 天后

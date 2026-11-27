@@ -1,4 +1,4 @@
-﻿package admin
+package admin
 
 // 管理端邮件域（P8c）的类型与依赖。
 //
@@ -122,9 +122,16 @@ type MailLogFilter struct {
 }
 
 // MailRecipientFilter 是批量发信的收件人筛选（mode=all|filter）。
+//
+// 所有分支都隐含两条硬条件（封禁与无邮箱的人永不收信）：
+//   - u.enabled = 1       —— 被封禁的账号不发（产品口径，见 mailBatchSend）
+//   - u.email 非空         —— users.email 列可空，空邮箱发不出去，扫进来还会让整批失败
 type MailRecipientFilter struct {
 	// PlanIDs 限定套餐（可多选）；空 = 不限套餐。
-	PlanIDs    []int64
+	PlanIDs []int64
+	// NoPlan 表示「未购买过套餐」（u.plan_id IS NULL）。
+	// 与 PlanIDs 同时给 → (plan_id IN (...) OR plan_id IS NULL)：套餐多选里勾了「未购买过套餐」。
+	NoPlan     bool
 	UserStatus string // all（全部已启用用户）|normal（正常：未过期且未超量）|depleted（已耗尽：过期或超量）；空按 normal
 }
 

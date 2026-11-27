@@ -511,6 +511,9 @@ func (d *MailDomain) mailBatchSend(c *gin.Context) {
 	v.field("body", "required", "string", "max:65535")
 	v.field("mode", "required", "in:all,filter,single")
 	v.field("plan_id", "nullable", "integer")
+	v.field("plan_ids", "nullable", "array")
+	v.field("plan_ids.*", "nullable", "integer")
+	v.field("include_no_plan", "nullable", "boolean")
 	v.field("user_status", "nullable", "in:all,normal,depleted")
 	v.field("single_query", "nullable", "string", "max:255")
 	if !v.passes() {
@@ -679,7 +682,8 @@ func (d *MailDomain) resolveRecipients(ctx context.Context, data map[string]any,
 
 	filter := MailRecipientFilter{UserStatus: "normal"}
 	if mode == "all" {
-		// 全部注册用户：不加任何条件（不看套餐 / 状态），直接全量。
+		// 全量：所有【已启用且有邮箱】用户，不看套餐 / 状态（封禁用户由 store 层恒定排除）。
+		// 这里的 plan_ids / include_no_plan 一律忽略 —— 「全量」就是全量，避免两个入口语义打架。
 		filter.UserStatus = "all"
 	} else {
 		if s, ok := inputString(data["user_status"]); ok && s != "" {
@@ -687,6 +691,8 @@ func (d *MailDomain) resolveRecipients(ctx context.Context, data map[string]any,
 		}
 		// 限定套餐支持多选：plan_ids 数组优先，兼容旧的单值 plan_id。
 		filter.PlanIDs = parsePlanIDs(data)
+		// 「未购买过套餐」= plan_id IS NULL，可与套餐多选并存（并集）。
+		filter.NoPlan = inputBool(data["include_no_plan"])
 	}
 	users, err := d.store.MailRecipients(ctx, filter, d.now().UTC())
 	if err != nil {
@@ -971,9 +977,32 @@ func (d *MailDomain) mailSaveScheduleConfig(c *gin.Context) {
 		}
 		return true, ""
 	})
+	checkSub("plan_ids", "", func(val any) (bool, string) {
+		arr, ok := val.([]any)
+		if !ok {
+			return false, "The config.plan_ids field must be an array."
+		}
+		// 元素逐个校验（checkSub 按字面键查值，`plan_ids.*` 这种通配在这里查不到，
+		// 所以放在数组分支里做，语义等价于 Laravel 的 plan_ids.* 规则）。
+		for _, item := range arr {
+			if item == nil {
+				continue
+			}
+			if !phpIntegerPasses(item) {
+				return false, "The config.plan_ids.* field must be an integer."
+			}
+		}
+		return true, ""
+	})
+	checkSub("include_no_plan", "", func(val any) (bool, string) {
+		if _, ok := val.(bool); !ok {
+			return false, "The config.include_no_plan field must be true or false."
+		}
+		return true, ""
+	})
 	checkSub("user_status", "", func(val any) (bool, string) {
 		s, ok := inputString(val)
-		if !ok || !containsString([]string{"normal", "depleted"}, s) {
+		if !ok || !containsString([]string{"all", "normal", "depleted"}, s) {
 			return false, "The selected config.user_status is invalid."
 		}
 		return true, ""

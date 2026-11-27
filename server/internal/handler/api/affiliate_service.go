@@ -121,18 +121,30 @@ func (s *AffiliateService) Grant(ctx context.Context, order *Order) error {
 }
 
 // Summary 返回「我的邀请」数据（比例 + 累计返佣 + 被邀请人列表）。
+//
+// 列表只保留「最近 30 天加入」的人：邀请数一多，全量列表会把页面拉得很长。
+// 但**总人数不裁剪** —— InvitedCount 始终是全量，页面「已邀请成功 N 人」不受影响。
 func (s *AffiliateService) Summary(ctx context.Context, userID uint64) (*AffiliateSummary, error) {
 	if s == nil || s.store == nil {
 		return nil, errAffiliateUnavailable
 	}
-	total, invitees, err := s.store.RebateSummary(ctx, userID)
+	total, all, err := s.store.RebateSummary(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
+	cutoff := s.now().AddDate(0, 0, -30)
+	recent := make([]AffiliateInvitee, 0, len(all))
+	for _, it := range all {
+		// 加入时间未知的（NULL）保留：宁可多显示一行，也不把数据悄悄吞掉。
+		if !it.InvitedAt.Valid || !it.InvitedAt.Time.Before(cutoff) {
+			recent = append(recent, it)
+		}
+	}
 	return &AffiliateSummary{
-		Rate:        s.Rate(ctx),
-		TotalRebate: total,
-		Invitees:    invitees,
+		Rate:         s.Rate(ctx),
+		TotalRebate:  total,
+		InvitedCount: len(all),
+		Invitees:     recent,
 	}, nil
 }
 

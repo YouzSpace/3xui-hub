@@ -234,6 +234,27 @@
   color: var(--lbl2);
 }
 
+/* 已使用/已过期：折叠开关 + 历史区 */
+.iv-gift-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 13px 16px;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--sep);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--lbl2);
+  cursor: pointer;
+}
+.iv-gift-history .iv-gift { background: transparent; }
+.iv-gift--used .iv-gift-code { font-size: 14px; color: var(--lbl3); }
+.iv-gift--used .iv-gift-discount { color: var(--lbl3); }
+
 .iv-empty { margin: 0; padding: 24px 16px; text-align: center; font-size: 13px; color: var(--lbl3); }
 .iv-empty--inset { padding: 20px 16px; }
 .iv-hero--empty { padding: 32px 20px; }

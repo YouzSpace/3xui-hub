@@ -138,17 +138,27 @@
                 <label class="email-label">收件人（邮箱或用户 ID）</label>
                 <Input v-model="batch.single_query" placeholder="a@example.com 或 12" />
               </div>
-              <template v-else>
+              <template v-else-if="batch.mode === 'filter'">
                 <div>
                   <label class="email-label">用户状态</label>
                   <Select v-model="batch.user_status" :options="userStatusOptions" />
                 </div>
                 <div>
-                  <label class="email-label">限定套餐（可选）</label>
-                  <Select v-model="batch.plan_id" :options="batchPlanOptions" />
+                  <label class="email-label">限定套餐（可选，可多选）</label>
+                  <MultiSelect
+                    v-model="batch.plan_ids"
+                    :options="batchPlanOptions"
+                    placeholder="不限套餐"
+                  />
                 </div>
               </template>
             </div>
+
+            <!-- 全量：说清「发给谁」，避免误以为包含被封禁账号 -->
+            <p v-if="batch.mode === 'all'" class="email-hint email-all-note">
+              <Badge variant="info">全量</Badge>
+              发给所有已启用账号（含未购买过套餐、已过期、已超量的人）；<strong>被封禁的账号不会收到</strong>。
+            </p>
 
             <div class="email-mt">
               <label class="email-label">邮件标题</label>
@@ -494,17 +504,26 @@
             <label class="email-label">收件人（邮箱或用户 ID）</label>
             <Input v-model="schedule.config.single_query" placeholder="a@example.com 或 12" />
           </div>
-          <template v-else>
+          <template v-else-if="schedule.config.mode === 'filter'">
             <div>
               <label class="email-label">用户状态</label>
               <Select v-model="schedule.config.user_status" :options="userStatusOptions" />
             </div>
             <div>
-              <label class="email-label">限定套餐（可选）</label>
-              <Select v-model="schedule.config.plan_id" :options="batchPlanOptions" />
+              <label class="email-label">限定套餐（可选，可多选）</label>
+              <MultiSelect
+                v-model="schedule.config.plan_ids"
+                :options="batchPlanOptions"
+                placeholder="不限套餐"
+              />
             </div>
           </template>
         </div>
+
+        <p v-if="schedule.config.mode === 'all'" class="email-hint email-all-note">
+          <Badge variant="info">全量</Badge>
+          发给所有已启用账号（含未购买过套餐、已过期、已超量的人）；<strong>被封禁的账号不会收到</strong>。
+        </p>
 
         <div class="email-mt">
           <label class="email-label">邮件标题</label>
@@ -642,6 +661,7 @@ import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
+import MultiSelect from '@/components/ui/MultiSelect.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Icon from '@/components/ui/Icon.vue'
 import Modal from '@/components/ui/Modal.vue'
@@ -1174,10 +1194,11 @@ const saveNotifyCfg = async () => {
 
 // ============ 批量发信 ============
 const batch = ref({
-  mode: 'filter',        // filter=按条件群发 / single=单发
+  mode: 'filter',        // filter=按条件群发 / all=全部用户（不含封禁） / single=单发
   subject: '',
   body: '',
-  plan_id: '',
+  plan_ids: [],
+  include_no_plan: false,
   user_status: 'normal',
   single_query: '',
 })
@@ -1285,6 +1306,15 @@ const resumeBatchPolling = () => {
   pollBatchProgress(batchPollSeq)
 }
 
+// 把「限定套餐」的多选值拆成后端要的两个字段：
+//   plan_ids        —— 具体套餐 id 数组（0 是「未购买过套餐」的占位，剔除）
+//   include_no_plan —— 是否包含未购买过套餐的人
+const splitPlanSelection = (ids) => {
+  const arr = Array.isArray(ids) ? ids : []
+  const planIds = arr.filter((id) => Number(id) > 0).map((id) => Number(id))
+  return { plan_ids: planIds, include_no_plan: arr.some((id) => Number(id) === 0) }
+}
+
 const onBatchSend = async () => {
   if (!batch.value.subject.trim()) return toast.error('请填写邮件标题')
   if (!batch.value.body.trim()) return toast.error('请填写邮件内容')
@@ -1300,7 +1330,7 @@ const onBatchSend = async () => {
   try {
     const res = await adminApi.batchSendEmail({
       ...batch.value,
-      plan_id: batch.value.plan_id || null,
+      ...splitPlanSelection(batch.value.plan_ids),
     })
     batchResult.value = res
     toast.success(`已加入发送队列，共 ${res.total} 封`)
@@ -1320,7 +1350,8 @@ const schedule = ref({
   config: {
     mode: 'filter',
     user_status: 'normal',
-    plan_id: '',
+    plan_ids: [],
+    include_no_plan: false,
     single_query: '',
     subject: '',
     body: '',
@@ -1339,12 +1370,17 @@ const loadSchedule = async () => {
     schedule.value.day = data.day ?? 1
     schedule.value.time = data.time || '09:00'
     const c = data.config || {}
+    // 旧配置可能存的是 plan_id（单值）或 over/expired 状态 —— 读回时统一归一，
+    // 否则下拉会显示空白、一保存又把非法值提交回去。
+    const legacyPlanID = Number(c.plan_id) > 0 ? Number(c.plan_id) : null
+    const rawPlanIDs = Array.isArray(c.plan_ids) ? c.plan_ids.map(Number).filter((n) => n > 0) : []
+    const planIDs = rawPlanIDs.length > 0 ? rawPlanIDs : legacyPlanID ? [legacyPlanID] : []
     schedule.value.config = {
-      // 'all' 在下拉里没有对应项（旧默认值），归一为「按条件群发」显示；
-      // 后端对 all/filter 的处理本来就相同（都按 user_status 过滤）
-      mode: c.mode === 'single' ? 'single' : 'filter',
-      user_status: c.user_status || 'normal',
-      plan_id: c.plan_id || '',
+      // 'all' 是合法值（全量），'filter' 是默认；其余旧值一律归到 filter
+      mode: c.mode === 'single' || c.mode === 'all' ? c.mode : 'filter',
+      user_status: normalizeUserStatus(c.user_status),
+      plan_ids: c.include_no_plan === true ? [0, ...planIDs] : planIDs,
+      include_no_plan: c.include_no_plan === true,
       single_query: c.single_query || '',
       subject: c.subject || '',
       body: c.body || '',
@@ -1361,7 +1397,7 @@ const buildSchedulePayload = () => ({
   time: schedule.value.time,
   config: {
     ...schedule.value.config,
-    plan_id: schedule.value.config.plan_id || null,
+    ...splitPlanSelection(schedule.value.config.plan_ids),
   },
 })
 
@@ -1423,14 +1459,23 @@ const recipientOptions = [
 
 const sendModeOptions = [
   { label: '按条件群发', value: 'filter' },
+  { label: '全部用户（不含封禁）', value: 'all' },
   { label: '单发（指定一个人）', value: 'single' },
 ]
 
+// 与后端 MailRecipientFilter.UserStatus 的真实枚举一一对应（all / normal / depleted）。
+// 旧版这里是 over / expired —— 后端早已不认这两个值，选中会直接被 400 拒掉。
+// 'all' 保留在列表里：它和「发送方式=全部用户」不冲突 —— 按条件群发 + 不限状态
+// 仍然可以叠加「限定套餐」，这是 filter 模式独有的组合。
 const userStatusOptions = [
   { label: '正常（未过期、未超量）', value: 'normal' },
-  { label: '流量超量', value: 'over' },
-  { label: '已过期', value: 'expired' },
+  { label: '已耗尽（过期或超量）', value: 'depleted' },
+  { label: '不限状态', value: 'all' },
 ]
+
+// 旧配置里的历史值 → 现在的枚举（读回时不至于显示成空）。
+const LEGACY_USER_STATUS = { over: 'depleted', expired: 'depleted' }
+const normalizeUserStatus = (v) => LEGACY_USER_STATUS[v] || (v === 'normal' || v === 'depleted' || v === 'all' ? v : 'normal')
 
 const logTypeOptions = [
   { label: '全部', value: '' },
@@ -1446,9 +1491,12 @@ const logStatusOptions = [
   { label: '失败', value: 'failed' },
 ]
 
-// 批量发信「限定套餐」：与套餐下拉同源
+// 批量发信「限定套餐」：与套餐下拉同源。
+// 第一项是「未购买过套餐」（= plan_id 为空），走独立字段 include_no_plan，
+// 可以和具体套餐一起勾（后端按并集取人）。value 用 0 只是占位，提交时会被剔除。
+const NO_PLAN_OPTION = { label: '未购买过套餐', value: 0 }
 const batchPlanOptions = computed(() => [
-  { label: '全部套餐', value: '' },
+  NO_PLAN_OPTION,
   ...planOptions.value.map((p) => ({ label: p.name, value: p.id })),
 ])
 
