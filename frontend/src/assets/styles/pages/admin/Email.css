@@ -50,13 +50,6 @@ html.dark .email-warn-note { color: #fbbf24; }
 .email-col > .email-card:last-child,
 .email-col > .email-save-wrap:last-child { margin-bottom: 0; }
 
-/* 1280px 以下并成一列：两栏时每栏太窄，输入框会被挤到换行 */
-@media (max-width: 1280px) {
-}
-
-/* 窄屏：卡片内边距收一点，避免输入框被挤 */
-@media (max-width: 640px) {
-}
 .email-card { margin-bottom: var(--space-5); }
 /* 通栏卡（自动通知/发信日志）：不在两栏网格内，本身就是块级，宽度自然撑满。
    留一条规则是为了在「被误塞回 .email-cols」时能看出来，而不是静默变半宽。 */
@@ -67,6 +60,7 @@ html.dark .email-warn-note { color: #fbbf24; }
 .email-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
 /* 3 个并列参数（通知收件邮箱 / 阈值 / 天数）一排放下 */
 .email-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* 1100px 以下：3 列参数排成 2 列（640px 以下由文件末尾的窄屏块并成 1 列） */
 @media (max-width: 1100px) { .email-grid--3 { grid-template-columns: 1fr 1fr; } }
 /* 8 项刚好 4 行两列，不需要按开关数量切换列数 */
 .email-label { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-secondary); display: block; margin-bottom: var(--space-1); }
@@ -214,3 +208,49 @@ html.dark .email-warn-note { color: #fbbf24; }
 
 /* 注册邮箱域名策略（PR #144）：白名单/黑名单块 + 行内文字按钮 */
 .email-title { font-size: var(--text-xl); font-weight: var(--font-semibold); margin-bottom: var(--space-5); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   手机端：整页改单列（电脑格式不变）
+   ══════════════════════════════════════════════════════════════════════
+   ⚠️ 两条教训，改前必读：
+   1. 这段规则在把内联样式抽成独立 CSS 文件时曾被整块丢空（只剩一个空壳媒体块），
+      结果手机端仍按两栏排、每栏不到 180px，输入框和下拉被挤成一条条 —— 别再删。
+   2. **必须放在文件最末尾**：媒体查询不提升优先级，同样特异性下后写的赢。
+      放到基础规则（.email-cols / .email-grid / .email-save-wrap …）前面会被覆盖，
+      症状是「明明写了媒体查询却不生效」。
+   断点 640px：手机竖屏（CSS 宽 360–430）必命中；电脑窗口 ≥640px 完全不受影响。
+   ────────────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  /* 主布局：两栏（左=SMTP 配置 / 右=批量发信）→ 单列，批量发信掉到下面 */
+  .email-cols { grid-template-columns: minmax(0, 1fr); }
+
+  /* 两栏时「列内最后一张卡吸收剩余高度」是为了左右底部对齐；
+     单列没有对齐对象，留着会把卡片拉成满屏高、正文框变成一大片空白 */
+  .email-col > .email-card:last-child { flex: 0 0 auto; }
+  .email-col > .email-card:last-child textarea.email-template { flex: 0 0 auto; }
+  .email-col > .email-card:last-child > .email-save-wrap:last-child { margin-top: 0; }
+
+  /* 页宽放开，别在手机上留白 */
+  .email-page { max-width: 100%; }
+
+  /* 卡片内表单栅格：两列 / 三列全部并成一列 */
+  .email-grid,
+  .email-grid--3 { grid-template-columns: 1fr; }
+
+  /* 标签「统一占两行高」是两栏时为了对齐输入框；单列每行只有一个字段，不需要 */
+  .email-cols .email-label { min-height: 0; display: block; margin-bottom: var(--space-1); }
+
+  /* 「用哪个账号发」定宽 220px 在手机上会挤出屏幕 */
+  .email-test-account { width: 100%; }
+
+  /* 保存按钮整行铺满，拇指好点 */
+  .email-save-wrap { justify-content: stretch; }
+  .email-save-wrap > button { width: 100%; }
+
+  /* 通知场景两列 → 单列 */
+  .email-scenes { grid-template-columns: 1fr; }
+
+  /* 表格列多，窄屏允许横向滚动而不是把列压扁 */
+  .email-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .email-log-to, .email-log-subject { max-width: 120px; }
+}
