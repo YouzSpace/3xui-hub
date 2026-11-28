@@ -27,6 +27,13 @@ type parsedLink struct {
 // parseLink 对应两个解析器开头的正则 + 参数 + 名称解析。
 // 解析失败（协议不支持 / 形态不匹配）返回 (nil, false)，调用方跳过该节点。
 func parseLink(link string) (*parsedLink, bool) {
+	// vmess 的分享格式与其它协议不同：整段 JSON 的 base64，没有 `uuid@host:port`。
+	// 先单独解，否则 linkPattern 永远匹配不上 → vmess 节点在 Clash / sing-box 订阅里
+	// 被静默丢弃（只剩 base64 订阅里有）。
+	if strings.HasPrefix(link, "vmess://") {
+		return parseVmessLink(link)
+	}
+
 	m := linkPattern.FindStringSubmatch(link)
 	if m == nil {
 		return nil, false
@@ -54,6 +61,84 @@ func parseLink(link string) (*parsedLink, bool) {
 		parsed.Name = urldecode(link[h+1:])
 	}
 	return parsed, true
+}
+
+// parseVmessLink 把 vmess:// 的 base64(JSON) 分享链接折算成统一结构。
+//
+// 字段来源（xray/v2ray 的 vmess 分享 JSON）：
+//   - add / port / id / ps：地址、端口、凭据、备注；
+//   - net：传输（tcp/ws/grpc/xhttp/httpupgrade）→ Params["type"]；
+//   - type：tcp 的伪装方式（none/http）→ Params["headerType"]；
+//   - host / path：ws / httpupgrade / xhttp 的 Host 与 Path；**grpc 的 serviceName 也放 path**，
+//     这里额外折出 Params["serviceName"]（Clash / sing-box 的 grpc 只认这个键）；
+//   - tls / sni：安全层与 SNI；scy：vmess 加密方式（clash 侧叫 cipher）。
+func parseVmessLink(link string) (*parsedLink, bool) {
+	payload := strings.TrimPrefix(link, "vmess://")
+	// 第三方订阅会给 vmess 补 `#中性名`（thirdparty 的改名校验），base64 段必须先截掉，
+	// 否则整段解码失败 → 节点被丢。
+	fragment := ""
+	if h := strings.IndexByte(payload, '#'); h >= 0 {
+		fragment = urldecode(payload[h+1:])
+		payload = payload[:h]
+	}
+	raw, ok := decodeBase64URL(payload)
+	if !ok {
+		return nil, false
+	}
+	doc, ok := decodeJSONAny(raw).(phpMap)
+	if !ok {
+		return nil, false
+	}
+
+	server := phpTrim(jsonFieldString(doc, "add"))
+	port := parseIntPrefix(phpTrim(jsonFieldString(doc, "port")))
+	if server == "" || port <= 0 || phpTrim(jsonFieldString(doc, "id")) == "" {
+		return nil, false
+	}
+
+	params := map[string]string{}
+	network := phpTrim(jsonFieldString(doc, "net"))
+	if network == "" {
+		network = "tcp"
+	}
+	params["type"] = network
+	if tls := phpTrim(jsonFieldString(doc, "tls")); tls != "" && tls != "none" {
+		params["security"] = tls
+	}
+	if sni := phpTrim(jsonFieldString(doc, "sni")); sni != "" {
+		params["sni"] = sni
+	}
+	host := phpTrim(jsonFieldString(doc, "host"))
+	path := phpTrim(jsonFieldString(doc, "path"))
+	if host != "" {
+		params["host"] = host
+	}
+	if path != "" {
+		params["path"] = path
+	}
+	if network == "grpc" && path != "" {
+		params["serviceName"] = path
+	}
+	if headerType := phpTrim(jsonFieldString(doc, "type")); headerType != "" && headerType != "none" {
+		params["headerType"] = headerType
+	}
+	if cipher := phpTrim(jsonFieldString(doc, "scy")); cipher != "" {
+		params["enc"] = cipher
+	}
+
+	name := phpTrim(jsonFieldString(doc, "ps"))
+	if phpTrim(fragment) != "" {
+		name = phpTrim(fragment)
+	}
+
+	return &parsedLink{
+		Protocol: "vmess",
+		UserPart: payload,
+		Server:   serverHost(server),
+		Port:     port,
+		Params:   params,
+		Name:     name,
+	}, true
 }
 
 // serverHost 把正则的 host 捕获组归一成「能直接写进客户端 server 字段」的形态。
@@ -401,6 +486,16 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 		name = fallbackName(parsed)
 	}
 
+	// mihomo 的传输支持分协议：xhttp 只有 vless 支持，trojan 只有 tcp/ws/grpc（没有 HTTP 伪装）。
+	// 不支持的组合写进 YAML 会让 mihomo 整份配置加载失败（比丢一个节点严重），所以跳过该节点。
+	network := mapOr(parsed.Params, "type", "tcp")
+	if network == "xhttp" && parsed.Protocol != "vless" {
+		return nil
+	}
+	if parsed.Protocol == "trojan" && network == "tcp" && strings.EqualFold(parsed.Params["headerType"], "http") {
+		return nil
+	}
+
 	switch parsed.Protocol {
 	case "ss":
 		method, password, ok := parseSsCredentials(parsed.UserPart)
@@ -437,15 +532,18 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 			"server", parsed.Server,
 			"port", jsonNumber(itoa(parsed.Port)),
 			"udp", true,
-			"password", vmessUUID,
+			"uuid", vmessUUID,
 			"client-fingerprint", mapOr(parsed.Params, "fp", "chrome"),
 		)
-		// mihomo：aid≠0 时透传 alter_id + 对应加密；aid=0 一律 none
-		if phpInt(jsonField(auth, "alterId")) > 0 {
-			proxy.set("alter_id", jsonNumber(itoa(phpInt(jsonField(auth, "alterId")))))
-			proxy.set("encryption", mapOr(parsed.Params, "enc", "auto"))
+		// mihomo 的 vmess 必填 uuid / alterId / cipher：缺任何一个，它解析整份配置时
+		// 会 `has unset fields` 直接失败（不是丢一个节点，是整份 Clash 配置加载不了）。
+		// aid=0（AEAD）固定 cipher=none，aid>0 才透传链接里的 scy。
+		alterID := phpInt(jsonField(auth, "alterId"))
+		proxy.set("alterId", jsonNumber(itoa(alterID)))
+		if alterID > 0 {
+			proxy.set("cipher", mapOr(parsed.Params, "enc", "auto"))
 		} else {
-			proxy.set("encryption", "none")
+			proxy.set("cipher", "none")
 		}
 		applyClashTlsAndNetwork(&proxy, parsed.Params, parsed.Server)
 		return proxy
@@ -465,7 +563,8 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 		)
 		if _, hasSni := parsed.Params["sni"]; hasSni || mapOr(parsed.Params, "insecure", "0") != "0" {
 			proxy.set("tls", true)
-			proxy.set("servername", cleanSni(mapOr(parsed.Params, "sni", parsed.Server)))
+			// mihomo 的 hysteria2 只认 sni（没有 servername）。
+			proxy.set("sni", cleanSni(mapOr(parsed.Params, "sni", parsed.Server)))
 		}
 		if fp, has := parsed.Params["fp"]; has {
 			proxy.set("client-fingerprint", fp)
@@ -595,13 +694,16 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 			return nil
 		}
 		outbound.set("uuid", vmessUUID)
-		// sing-box 只认这几种 vmess 加密
+		// sing-box 的 vmess 字段名是 security（不是 cipher），alter_id 缺省 0 可省。
 		enc := mapOr(parsed.Params, "enc", "auto")
 		switch enc {
 		case "none", "aes-128-gcm", "chacha20-poly1305", "xchacha20-poly1305":
-			outbound.set("cipher", enc)
+			outbound.set("security", enc)
 		default:
-			outbound.set("cipher", "auto")
+			outbound.set("security", "auto")
+		}
+		if alterID := phpInt(jsonField(auth, "alterId")); alterID > 0 {
+			outbound.set("alter_id", jsonNumber(itoa(alterID)))
 		}
 
 	case "ss":
@@ -647,7 +749,9 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 	}
 
 	// TLS / Reality
-	if security, has := parsed.Params["security"]; has {
+	// hysteria2 的 TLS 段在上面按协议分支单独建好了（含 insecure / utls），这里不能再覆盖：
+	// 通用块只写 {enabled, server_name}，覆盖后自签证书的 insecure 与指纹全丢。
+	if security, has := parsed.Params["security"]; has && parsed.Protocol != "hysteria2" && parsed.Protocol != "hysteria" {
 		switch security {
 		case "tls":
 			outbound.set("tls", obj(
@@ -664,19 +768,25 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 					"short_id", mapOr(parsed.Params, "sid", ""),
 				),
 			)
-			if fp, hasFp := parsed.Params["fp"]; hasFp {
-				tlsConfig.set("utls", obj("enabled", true, "fingerprint", fp))
-			}
+			// sing-box 的 reality client 强制 uTLS：缺 fp 会直接报
+			// "uTLS is required by reality client"，链接没带就回落 chrome。
+			fp := mapOr(parsed.Params, "fp", "chrome")
+			tlsConfig.set("utls", obj("enabled", true, "fingerprint", fp))
 			outbound.set("tls", tlsConfig)
 		}
 	}
 
 	// 传输协议
+	// Xray 的「TCP + HTTP 伪装」在 sing-box 里没有忠实对应（它的 http transport 在 TLS 下是
+	// HTTP/2、且请求方法/头语义不同），映射过去只会得到一条连不上的节点 —— 直接跳过。
+	if mapOr(parsed.Params, "type", "tcp") == "tcp" && strings.EqualFold(parsed.Params["headerType"], "http") {
+		return nil
+	}
 	network := mapOr(parsed.Params, "type", "tcp")
 	if network != "" && network != "tcp" && network != "none" {
 		// sing-box 1.14.1 不支持 xhttp 等传输：跳过该节点
 		switch network {
-		case "ws", "grpc", "http", "httpupgrade":
+		case "ws", "grpc", "httpupgrade":
 		default:
 			return nil
 		}
@@ -687,11 +797,19 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 				transport.set("service_name", sn)
 			}
 		}
-		if path, has := parsed.Params["path"]; has {
+		// sing-box 的 grpc transport 没有 path 字段：vmess 的 serviceName 恰好放在链接的
+		// path 里，若不排除会把 path 一起写进 grpc 段 —— sing-box 对未知字段是**致命错误**，
+		// 整份配置都加载不了。
+		if path, has := parsed.Params["path"]; has && network != "grpc" {
 			transport.set("path", path)
 		}
 		if host, has := parsed.Params["host"]; has {
-			transport.set("headers", obj("Host", host))
+			if network == "httpupgrade" {
+				// sing-box 的 httpupgrade Host 是独立字段，不从 headers 取。
+				transport.set("host", host)
+			} else {
+				transport.set("headers", obj("Host", host))
+			}
 		}
 		outbound.set("transport", transport)
 	}

@@ -119,9 +119,6 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		if pqv := phpTrim(jsonFieldString(client, "mldsa65Verify")); pqv != "" {
 			query += "&pqv=" + rawurlencode(pqv)
 		}
-		if flowApplies(inbound) {
-			query += "&flow=" + xrayFlow
-		}
 	case "tls":
 		sni := jsonFieldString(stream, "tlsSettings", "serverName")
 		if sni == "" {
@@ -132,6 +129,32 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		query += "&fp=chrome"
 	}
 
+	query += xrayTransportQuery(network, stream)
+
+	// flow 统一在这里追加：vless + tcp + reality/tls 都要（见 flowApplies）。
+	// 节点侧渲染（nodeapi/render.go 的 streamAllowsFlow）给这些入站的每个 client 都写了
+	// flow=xtls-rprx-vision；链接缺 flow 就是「服务端要求 vision、客户端没开」——握手被拒，
+	// 节点整条连不上。此前只有 reality 分支加，tcp+TLS 的入站因此一直拿不到 flow。
+	if flowApplies(inbound) {
+		query += "&flow=" + xrayFlow
+	}
+
+	return "vless://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
+		"?" + query + "#" + rawurlencode(inboundLabel(node, inbound))
+}
+
+// xrayTransportQuery 是「传输层参数」的唯一实现（vless / trojan 共用；vmess 走分享 JSON，单独拼）。
+//
+// 入站表单里每种传输都有对应字段，节点侧渲染（internal/protocol/transport/*）把它们写进
+// streamSettings；订阅链接必须一个不落地带出来，否则客户端按默认值建流：
+//   - ws：path + host；httpupgrade：path + host；
+//   - grpc：serviceName（服务端配了非空、链接缺 → 必然握手失败）；
+//   - xhttp：path/host/mode + extra / x_padding_bytes（与出站链接同源）；
+//   - tcp：headerType=http + path + host（HTTP 伪装）。
+//
+// 返回串以 & 开头；网络没有传输参数时返回空串。
+func xrayTransportQuery(network string, stream any) string {
+	query := ""
 	switch network {
 	case "ws":
 		query += "&path=" + rawurlencode(coalesceString(jsonField(stream, "wsSettings", "path"), "/"))
@@ -152,29 +175,27 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 	case "xhttp":
 		// 与出站链接生成器同源：xhttp 参数（含高级字段 extra / x_padding_bytes）
 		query += xhttpQuery(jsonFieldMap(stream, "xhttpSettings"))
+	case "tcp":
+		if jsonFieldString(stream, "tcpSettings", "header", "type") == "http" {
+			// TCP header 伪装（与 3x-ui 订阅口径一致：request.path + Host，response 优先）
+			// PHP: $header['request']['path'][0] ?? '/'（值为空串时用空串，不回落 '/'）
+			reqPath, okPath := firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "request", "path"))
+			if !okPath {
+				reqPath = "/"
+			}
+			query += "&headerType=http&path=" + rawurlencode(reqPath)
+			// PHP：$header['response']['headers']['Host'][0] ?? $header['request']['headers']['Host'][0] ?? ''
+			// 注意这里是 `??`（键不存在/值为 null 才回落），空串**不会**触发回落。
+			headerHost, ok := firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "response", "headers", "Host"))
+			if !ok {
+				headerHost, _ = firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "request", "headers", "Host"))
+			}
+			if headerHost != "" {
+				query += "&host=" + rawurlencode(headerHost)
+			}
+		}
 	}
-
-	if network == "tcp" && jsonFieldString(stream, "tcpSettings", "header", "type") == "http" {
-		// TCP header 伪装（与 3x-ui 订阅口径一致：request.path + Host，response 优先）
-		// PHP: $header['request']['path'][0] ?? '/'（值为空串时用空串，不回落 '/')
-		reqPath, okPath := firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "request", "path"))
-		if !okPath {
-			reqPath = "/"
-		}
-		query += "&headerType=http&path=" + rawurlencode(reqPath)
-		// PHP：$header['response']['headers']['Host'][0] ?? $header['request']['headers']['Host'][0] ?? ''
-		// 注意这里是 `??`（键不存在/值为 null 才回落），空串**不会**触发回落。
-		headerHost, ok := firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "response", "headers", "Host"))
-		if !ok {
-			headerHost, _ = firstStringOK(jsonFieldSlice(stream, "tcpSettings", "header", "request", "headers", "Host"))
-		}
-		if headerHost != "" {
-			query += "&host=" + rawurlencode(headerHost)
-		}
-	}
-
-	return "vless://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
-		"?" + query + "#" + rawurlencode(inboundLabel(node, inbound))
+	return query
 }
 
 func xrayVmessURI(node Node, inbound XrayInbound, user *User, host string) string {
@@ -189,11 +210,18 @@ func xrayVmessURI(node Node, inbound XrayInbound, user *User, host string) strin
 	}
 	wsHost := jsonFieldString(stream, "wsSettings", "host")
 	wsPath := jsonFieldString(stream, "wsSettings", "path")
-	// vmess 分享 JSON 的 "type" 表示 tcp 伪装方式；grpc 的 serviceName 放在 path。
+	// vmess 分享 JSON 的 "type" 表示 tcp 伪装方式；grpc 的 serviceName 放在 path；
+	// xhttp / httpupgrade 没有独立段，path + host 照样落这两个键（否则客户端按默认 `/` 建流）。
 	vmType := "none"
 	switch network {
 	case "grpc":
 		wsPath = jsonFieldString(stream, "grpcSettings", "serviceName")
+	case "xhttp":
+		wsPath = coalesceString(jsonField(stream, "xhttpSettings", "path"), "/")
+		wsHost = jsonFieldString(stream, "xhttpSettings", "host")
+	case "httpupgrade":
+		wsPath = coalesceString(jsonField(stream, "httpupgradeSettings", "path"), "/")
+		wsHost = jsonFieldString(stream, "httpupgradeSettings", "host")
 	case "tcp":
 		if jsonFieldString(stream, "tcpSettings", "header", "type") == "http" {
 			vmType = "http"
@@ -249,19 +277,21 @@ func xrayTrojanURI(node Node, inbound XrayInbound, user *User, host string) stri
 	}
 
 	sec := "none"
-	query := ""
+	sni := ""
 	if security == "tls" {
 		sec = "tls"
-		sni := jsonFieldString(stream, "tlsSettings", "serverName")
+		sni = jsonFieldString(stream, "tlsSettings", "serverName")
 		if sni == "" {
 			sni = host
 		}
-		query = "&sni=" + rawurlencode(sni)
 	}
-	query = "security=" + sec + "&type=" + network + query
-	if network == "ws" {
-		query += "&path=" + rawurlencode(coalesceString(jsonField(stream, "wsSettings", "path"), "/"))
+	query := "security=" + sec + "&type=" + network
+	if sni != "" {
+		query += "&sni=" + rawurlencode(sni)
 	}
+	// trojan 的传输参数与 vless 同源：ws / httpupgrade / grpc / xhttp / tcp 伪装都要带。
+	// 只写 type 会让客户端按默认 path、空 serviceName 建流，服务端配了就必然握手失败。
+	query += xrayTransportQuery(network, stream)
 
 	return "trojan://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
 		"?" + query + "#" + rawurlencode(inboundLabel(node, inbound))

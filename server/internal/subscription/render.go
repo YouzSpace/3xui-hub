@@ -192,15 +192,24 @@ func (s *Service) generateClash(user *User, plan *Plan, links []string, cfg *sit
 		writeClashScalar(&b, proxy, "cipher", "cipher")
 		writeClashScalar(&b, proxy, "password", "password")
 		writeClashScalar(&b, proxy, "encryption", "encryption")
-		writeClashScalar(&b, proxy, "alter_id", "alter_id")
+		// mihomo 的 vmess 字段名是驼峰 alterId（不是 alter_id），写错会被当未知键。
+		writeClashScalar(&b, proxy, "alterId", "alterId")
 		writeClashScalar(&b, proxy, "flow", "flow")
 		writeClashBool(&b, proxy, "udp", "udp")
 		writeClashBool(&b, proxy, "sniffing", "sniffing")
 		writeClashBool(&b, proxy, "tls", "tls")
 
-		// PHP: `if (isset($proxy['sni'])) $yaml .= "    servername: {$proxy['sni']}\n";`
-		writeClashScalar(&b, proxy, "sni", "servername")
-		writeClashScalar(&b, proxy, "servername", "servername")
+		// mihomo 的 TLS SNI 键名分协议：vless/vmess 读 `servername`，trojan 与 hysteria2 读 `sni`。
+		// 写错就是「SNI 被忽略、回落到 server 地址」——服务器用 IP、证书挂域名时必然握手失败。
+		switch phpString(field(proxy, "type")) {
+		case "trojan", "hysteria2", "hysteria":
+			writeClashScalar(&b, proxy, "sni", "sni")
+			writeClashScalar(&b, proxy, "servername", "sni")
+		default:
+			// PHP: `if (isset($proxy['sni'])) $yaml .= "    servername: {$proxy['sni']}\n";`
+			writeClashScalar(&b, proxy, "sni", "servername")
+			writeClashScalar(&b, proxy, "servername", "servername")
+		}
 		writeClashScalar(&b, proxy, "client-fingerprint", "client-fingerprint")
 
 		// hysteria2 专有字段（老协议不产出这些键，节点正文字节不变）
